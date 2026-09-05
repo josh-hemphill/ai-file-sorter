@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>AiFileSorter.Core</RootNamespace>
+    <Description>AOT-safe domain library for scanning, media categorization, archive-entity suggestions, and filing plans.</Description>
+    <IsPublishable>false</IsPublishable>
+  </PropertyGroup>
+</Project>

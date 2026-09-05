@@ -4,6 +4,10 @@ AI File Sorter is a cross-platform Qt/C++ desktop application with one shared
 analysis workflow and two main entry styles: the normal GUI flow and a
 UI-neutral headless flow used by integrations.
 
+A parallel .NET 9 Avalonia Native AOT rewrite is under `dotnet/`. That track
+isolates analysis from the UI process so file locks and inference work cannot
+freeze the window. See [Avalonia Native AOT conversion](avalonia-aot-conversion.md).
+
 ## Main layers
 
 - **UI layer**: `MainApp`, dialogs, menus, translations, preview widgets, and

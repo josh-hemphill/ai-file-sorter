@@ -1,0 +1,31 @@
+name: Dotnet Avalonia
+
+on:
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - "dotnet/**"
+      - ".github/workflows/dotnet.yml"
+  push:
+    branches: [ main, dev ]
+    paths:
+      - "dotnet/**"
+      - ".github/workflows/dotnet.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dotnet
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: Restore and test
+        run: dotnet test AiFileSorter.sln -c Release --nologo

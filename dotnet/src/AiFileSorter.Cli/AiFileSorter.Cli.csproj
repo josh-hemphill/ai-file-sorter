@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>aifs</AssemblyName>
+    <RootNamespace>AiFileSorter.Cli</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Description>Headless and engine-worker entry point for the Avalonia AOT rewrite.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AiFileSorter.Core\AiFileSorter.Core.csproj" />
+  </ItemGroup>
+</Project>

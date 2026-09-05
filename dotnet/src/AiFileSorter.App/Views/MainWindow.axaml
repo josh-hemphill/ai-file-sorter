@@ -1,0 +1,83 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:AiFileSorter.App.ViewModels"
+        xmlns:models="using:AiFileSorter.Core.Models"
+        x:Class="AiFileSorter.App.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="AI File Sorter"
+        Width="1100"
+        Height="740"
+        MinWidth="820"
+        MinHeight="560">
+  <DockPanel Margin="16">
+    <StackPanel DockPanel.Dock="Top" Spacing="10">
+      <TextBlock FontSize="22" FontWeight="SemiBold" Text="AI File Sorter" />
+      <TextBlock Opacity="0.8" TextWrapping="Wrap"
+                 Text="Avalonia Native AOT preview. Analysis runs on a worker thread or isolated engine process, opens files with shared reads, and skips items locked by other apps." />
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <TextBlock VerticalAlignment="Center" Text="Folder" Margin="0,0,8,0" />
+        <TextBox Grid.Column="1" Text="{Binding FolderPath}" Watermark="/path/to/folder" Margin="0,0,8,0" />
+        <Button Grid.Column="2" Content="Browse…" Click="OnBrowseClicked" />
+      </Grid>
+      <WrapPanel>
+        <CheckBox Content="Include subfolders" IsChecked="{Binding Recursive}" Margin="0,0,16,0" />
+        <CheckBox Content="Categorize audio/video content" IsChecked="{Binding AnalyzeMediaContent}" Margin="0,0,16,0" />
+        <CheckBox Content="More consistent categories" IsChecked="{Binding ConsistentStyle}" />
+      </WrapPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="Analyze" Command="{Binding AnalyzeCommand}" />
+        <Button Content="Cancel" Command="{Binding CancelAnalyzeCommand}" />
+        <Button Content="Export plan" Command="{Binding ExportPlanCommand}" />
+        <Button Content="Export remote handoff" Command="{Binding ExportHandoffCommand}" />
+      </StackPanel>
+      <TextBlock Text="{Binding EngineMode, StringFormat='Engine: {0}'}" Opacity="0.75" />
+      <ProgressBar Height="8" Minimum="0" Maximum="1" Value="{Binding ProgressFraction}" />
+      <TextBlock Text="{Binding ProgressText}" />
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <TabControl Margin="0,16,0,0">
+      <TabItem Header="Suggestions">
+        <ListBox ItemsSource="{Binding Entries}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="models:CategorizedItem">
+              <Grid ColumnDefinitions="2*,Auto,Auto,2*,2*,3*" Margin="0,4">
+                <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1" Text="{Binding Family}" Margin="8,0,0,0" />
+                <TextBlock Grid.Column="2" Text="{Binding Category}" Margin="8,0,0,0" />
+                <TextBlock Grid.Column="3" Text="{Binding Subcategory}" Margin="8,0,0,0" TextWrapping="Wrap" />
+                <TextBlock Grid.Column="4" Text="{Binding SuggestedName}" Margin="8,0,0,0" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="5" Text="{Binding Rationale}" Margin="8,0,0,0" Opacity="0.8" TextWrapping="Wrap" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </TabItem>
+      <TabItem Header="Project archives">
+        <ListBox ItemsSource="{Binding ArchiveEntities}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="models:ArchiveEntitySuggestion">
+              <StackPanel Margin="0,6" Spacing="2">
+                <TextBlock FontWeight="SemiBold" Text="{Binding ProjectName}" />
+                <TextBlock Text="{Binding SuggestedArchiveName, StringFormat='Archive as {0}'}" />
+                <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding Reason}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </TabItem>
+      <TabItem Header="Locked files">
+        <ListBox ItemsSource="{Binding LockedItems}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="models:CategorizedItem">
+              <StackPanel Margin="0,6" Spacing="2">
+                <TextBlock FontWeight="SemiBold" Text="{Binding FileName}" />
+                <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding LockReason}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>

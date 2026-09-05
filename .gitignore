@@ -159,6 +159,7 @@ changelog/
 !/docs/testing.md
 !/docs/categorization-behavior.md
 !/docs/updater-contract.md
+!/docs/avalonia-aot-conversion.md
 
 # Build artifacts
 

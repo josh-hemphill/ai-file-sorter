@@ -50,7 +50,17 @@ is missing or stale, rebuild the relevant test target before rerunning `ctest`.
 - Packaging/build-script changes: validate the relevant platform build path in
   addition to unit tests.
 
-## Live headless LLM tests
+## Avalonia / .NET tests
+
+The parallel rewrite under `dotnet/` has its own xUnit suite:
+
+```text
+dotnet test dotnet/AiFileSorter.sln -c Release
+```
+
+That suite covers project detection, media content categorization, archive-entity
+suggestions, plan persistence, and remote-handoff prompt construction. It does
+not replace the Catch2 Qt tests.
 
 The opt-in live suite is useful when you want to validate the real runtime,
 selected local model, emitted status JSON, and actual filesystem effects. It is
