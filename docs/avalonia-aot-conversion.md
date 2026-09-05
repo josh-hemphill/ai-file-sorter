@@ -4,5 +4,6 @@ The investigation and first implementation live under [`dotnet/README.md`](../do
 
 The Qt/C++ application remains the production UI. The `dotnet/` tree is a
 parallel rewrite that isolates analysis from the GUI, categorizes audio/video
-content, suggests zip/tar project entities, and can export a filing plan for a
-stronger remote model.
+content, suggests zip/tar project entities, stores suggestions in an AOT-safe
+SQLite database, and can round-trip remote path proposals before applying
+changes locally.

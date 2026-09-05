@@ -13,9 +13,11 @@ public partial class MainWindow : Window
         InitializeComponent();
     }
 
+    private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
+
     private async void OnBrowseClicked(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is not MainWindowViewModel viewModel)
+        if (ViewModel is null)
         {
             return;
         }
@@ -29,7 +31,62 @@ public partial class MainWindow : Window
         var path = folders.FirstOrDefault()?.TryGetLocalPath();
         if (!string.IsNullOrWhiteSpace(path))
         {
-            viewModel.SetFolder(path);
+            ViewModel.SetFolder(path);
+        }
+    }
+
+    private async void OnModelsClicked(object? sender, RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        var dialog = new ModelsWindow
+        {
+            DataContext = ViewModel.Llm
+        };
+        await dialog.ShowDialog(this).ConfigureAwait(true);
+        ViewModel.SaveLlmSettings();
+    }
+
+    private async void OnImportProposalClicked(object? sender, RoutedEventArgs e)
+    {
+        if (ViewModel is null)
+        {
+            return;
+        }
+
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Import remote path proposal JSON",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("JSON") { Patterns = ["*.json"] }
+            ]
+        }).ConfigureAwait(true);
+
+        var path = files.FirstOrDefault()?.TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var json = await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(true);
+            var proposal = Core.Plans.RemotePlanHandoff.ParseModelJson(json);
+            var merged = new Core.Engine.AnalysisEngine().MergeRemote(
+                ViewModel.PlanFromRows(),
+                proposal,
+                Core.Engine.AnalysisEngine.DefaultDatabasePath());
+            ViewModel.ApplyPlan(merged);
+            ViewModel.Status = "Imported remote path proposals into the local database. Review Proposed path, then apply locally.";
+        }
+        catch (System.Exception ex)
+        {
+            ViewModel.Status = "Import failed: " + ex.Message;
         }
     }
 }

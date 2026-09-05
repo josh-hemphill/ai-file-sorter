@@ -1,20 +1,73 @@
-using AiFileSorter.Core.Json;
 using AiFileSorter.Core.Models;
 
 namespace AiFileSorter.Core.Persistence;
 
-public sealed record PlanCatalog
+/// <summary>Persists filing plans to SQLite by default, with JSON fallback for .json paths.</summary>
+public sealed class SuggestionStore : IDisposable
 {
-    public IReadOnlyList<FilingPlan> Plans { get; init; } = [];
+    private readonly JsonPlanCatalog? _json;
+    private readonly SuggestionDatabase? _sqlite;
+
+    public SuggestionStore(string databasePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        if (IsJsonPath(databasePath))
+        {
+            _json = new JsonPlanCatalog(databasePath);
+        }
+        else
+        {
+            _sqlite = new SuggestionDatabase(databasePath);
+        }
+    }
+
+    public void SavePlan(FilingPlan plan)
+    {
+        if (_sqlite is not null)
+        {
+            _sqlite.SavePlan(plan);
+            return;
+        }
+
+        _json!.SavePlan(plan);
+    }
+
+    public void SaveRemoteRevision(FilingPlan plan, RemoteStructureSuggestion proposal)
+    {
+        if (_sqlite is not null)
+        {
+            _sqlite.SaveRemoteRevision(plan, proposal);
+            return;
+        }
+
+        _json!.SavePlan(plan);
+    }
+
+    public FilingPlan? LoadLatestPlan(string rootPath) =>
+        _sqlite?.LoadLatestPlan(rootPath) ?? _json!.LoadLatestPlan(rootPath);
+
+    public FilingPlan? LoadPlan(string planId) =>
+        _sqlite?.LoadPlan(planId) ?? _json!.LoadPlan(planId);
+
+    public IReadOnlyList<string> ListPlanIds() =>
+        _sqlite?.ListPlanIds() ?? _json!.ListPlanIds();
+
+    public void Dispose()
+    {
+        _sqlite?.Dispose();
+        _json?.Dispose();
+    }
+
+    public static bool IsJsonPath(string path) =>
+        path.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>Persists filing plans as JSON so Native AOT UI/CLI builds do not need SQLite reflection.</summary>
-public sealed class SuggestionStore : IDisposable
+public sealed class JsonPlanCatalog : IDisposable
 {
     private readonly string _path;
     private readonly object _gate = new();
 
-    public SuggestionStore(string databasePath)
+    public JsonPlanCatalog(string databasePath)
     {
         _path = databasePath;
         var directory = Path.GetDirectoryName(databasePath);
@@ -34,7 +87,7 @@ public sealed class SuggestionStore : IDisposable
                 .Prepend(plan)
                 .Take(25)
                 .ToArray();
-            var json = AppJson.Serialize(new PlanCatalog { Plans = plans });
+            var json = Json.AppJson.Serialize(new PlanCatalog { Plans = plans });
             var temp = _path + ".tmp";
             File.WriteAllText(temp, json);
             File.Move(temp, _path, overwrite: true);
@@ -67,11 +120,16 @@ public sealed class SuggestionStore : IDisposable
 
         try
         {
-            return AppJson.Deserialize<PlanCatalog>(File.ReadAllText(_path));
+            return Json.AppJson.Deserialize<PlanCatalog>(File.ReadAllText(_path));
         }
         catch (System.Text.Json.JsonException)
         {
             return new PlanCatalog();
         }
     }
+}
+
+public sealed record PlanCatalog
+{
+    public IReadOnlyList<FilingPlan> Plans { get; init; } = [];
 }

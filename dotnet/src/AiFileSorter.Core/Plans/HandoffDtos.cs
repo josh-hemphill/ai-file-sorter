@@ -2,7 +2,7 @@ namespace AiFileSorter.Core.Plans;
 
 public sealed record CompactHandoffDocument
 {
-    public string Kind { get; init; } = "aifs.remoteHandoff.v1";
+    public string Kind { get; init; } = "aifs.remoteHandoff.v2";
     public string PlanId { get; init; } = "";
     public string Root { get; init; } = "";
     public string Style { get; init; } = "";
@@ -10,6 +10,17 @@ public sealed record CompactHandoffDocument
     public IReadOnlyList<CompactArchiveEntity> ArchiveEntities { get; init; } = [];
     public IReadOnlyList<string> Locked { get; init; } = [];
     public IReadOnlyList<CompactBucket> Buckets { get; init; } = [];
+    public IReadOnlyList<CompactHandoffFile> Files { get; init; } = [];
+}
+
+public sealed record CompactHandoffFile
+{
+    public string FullPath { get; init; } = "";
+    public string FileName { get; init; } = "";
+    public string Family { get; init; } = "";
+    public string? LocalRelativePath { get; init; }
+    public string? Category { get; init; }
+    public string? Subcategory { get; init; }
 }
 
 public sealed record CompactHandoffSummary

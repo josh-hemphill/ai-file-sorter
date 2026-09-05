@@ -103,7 +103,7 @@ public sealed class MediaAndPlanTests
         File.WriteAllText(Path.Combine(root.Path, "weekly_podcast_episode.mp3"), "audio");
         Write(root.Path, "UnityGame/Assets/player.cs", "class Player {}");
         Write(root.Path, "UnityGame/ProjectSettings/ProjectVersion.txt", "2019");
-        var dbPath = Path.Combine(root.Path, "suggestions.db");
+        var dbPath = Path.Combine(root.Path, "suggestions.sqlite");
 
         var engine = new AnalysisEngine();
         var plan = await engine.AnalyzeAsync(new AnalysisRequest

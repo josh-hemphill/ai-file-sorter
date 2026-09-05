@@ -1,0 +1,70 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:AiFileSorter.App.ViewModels"
+        xmlns:llm="using:AiFileSorter.Core.Llm"
+        x:Class="AiFileSorter.App.Views.ModelsWindow"
+        x:DataType="vm:LlmSettingsViewModel"
+        Title="Select LLM"
+        Width="720"
+        Height="640"
+        MinWidth="560"
+        MinHeight="480"
+        WindowStartupLocation="CenterOwner">
+  <DockPanel Margin="16">
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+      <Button Content="Close" Click="OnCloseClicked" />
+    </StackPanel>
+    <ScrollViewer>
+      <StackPanel Spacing="10">
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="Model management" />
+        <TextBlock Opacity="0.8" TextWrapping="Wrap"
+                   Text="Remote models receive a compact filing plan and return proposed relative paths. Local GGUF and visual backends are registered here; inference stays in the existing C++ sidecar." />
+
+        <TextBlock FontWeight="SemiBold" Text="Endpoint" />
+        <ComboBox SelectedIndex="{Binding SelectedKindIndex}">
+          <ComboBoxItem Content="Heuristic (local metadata)" />
+          <ComboBoxItem Content="OpenAI" />
+          <ComboBoxItem Content="Gemini" />
+          <ComboBoxItem Content="Custom OpenAI-compatible API" />
+          <ComboBoxItem Content="Local GGUF sidecar" />
+        </ComboBox>
+        <TextBlock Text="{Binding Summary, StringFormat='Active: {0}'}" Opacity="0.85" />
+
+        <TextBlock FontWeight="SemiBold" Text="OpenAI" />
+        <TextBox Watermark="API key" Text="{Binding OpenAiApiKey}" PasswordChar="•" />
+        <TextBox Watermark="Model" Text="{Binding OpenAiModel}" />
+
+        <TextBlock FontWeight="SemiBold" Text="Gemini" />
+        <TextBox Watermark="API key" Text="{Binding GeminiApiKey}" PasswordChar="•" />
+        <TextBox Watermark="Model" Text="{Binding GeminiModel}" />
+
+        <TextBlock FontWeight="SemiBold" Text="Custom OpenAI-compatible API" />
+        <TextBox Watermark="Display name" Text="{Binding CustomName}" />
+        <TextBox Watermark="Base URL" Text="{Binding CustomBaseUrl}" />
+        <TextBox Watermark="API key" Text="{Binding CustomApiKey}" PasswordChar="•" />
+        <TextBox Watermark="Model" Text="{Binding CustomModel}" />
+
+        <TextBlock FontWeight="SemiBold" Text="Local GGUF (C++ sidecar)" />
+        <ComboBox ItemsSource="{Binding BuiltinLocalModels}" SelectedItem="{Binding SelectedLocalModel}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="llm:LlmCatalogEntry">
+              <TextBlock Text="{Binding DisplayName}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <TextBox Watermark="GGUF path" Text="{Binding LocalGgufPath}" />
+        <TextBox Watermark="mmproj path" Text="{Binding LocalMmprojPath}" />
+        <TextBox Watermark="Model storage directory" Text="{Binding ModelStorageDir}" />
+
+        <TextBlock FontWeight="SemiBold" Text="Visual backend" />
+        <ComboBox ItemsSource="{Binding VisualBackends}" SelectedItem="{Binding SelectedVisualBackend}">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="llm:LlmCatalogEntry">
+              <TextBlock Text="{Binding DisplayName}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

@@ -44,7 +44,16 @@ public sealed class RemotePlanHandoff
                         SuggestedName = entry.SuggestedName,
                         Rationale = entry.Rationale
                     }).ToArray()
-                }).ToArray()
+                }).ToArray(),
+            Files = plan.Entries.Select(entry => new CompactHandoffFile
+            {
+                FullPath = entry.FullPath,
+                FileName = entry.FileName,
+                Family = entry.Family.ToString(),
+                LocalRelativePath = entry.LocalRelativePath,
+                Category = entry.Category,
+                Subcategory = entry.Subcategory
+            }).ToArray()
         };
 
         var compactJson = AppJson.Serialize(compact);
@@ -75,10 +84,11 @@ public sealed class RemotePlanHandoff
     {
         var builder = new StringBuilder();
         builder.AppendLine("You are helping organize a local filesystem. Return JSON only.");
-        builder.AppendLine("Do not move or rename files. Propose a cleaner top-level folder structure.");
+        builder.AppendLine("Do not move or rename files. Propose updated relative paths for the local suggestion database.");
+        builder.AppendLine("The operator will review and apply accepted rows locally.");
         builder.AppendLine("Keep project folders listed as archive entities together as a single zip/tar item.");
-        builder.AppendLine("Prefer stable category names. Use this schema:");
-        builder.AppendLine("""{"proposedRootName":"string","rationale":"string","folders":[{"category":"string","subcategory":"string","notes":"string"}]}""");
+        builder.AppendLine("Prefer stable category names. Prefer this schema:");
+        builder.AppendLine("""{"proposedRootName":"string","rationale":"string","folders":[{"category":"string","subcategory":"string","notes":"string"}],"updates":[{"fullPath":"string","fileName":"string","proposedRelativePath":"Category/Subcategory/name.ext","category":"string","subcategory":"string","rationale":"string"}]}""");
         builder.AppendLine();
         builder.AppendLine($"Root: {plan.RootPath}");
         builder.AppendLine($"Files: {plan.Summary.FileCount}, folders: {plan.Summary.DirectoryCount}, archive entities: {plan.Summary.ArchiveEntityCount}, locked: {plan.Summary.LockedCount}");

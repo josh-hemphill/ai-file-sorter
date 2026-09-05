@@ -28,6 +28,32 @@ public sealed record ScanOptions
     {
         Flags = ScanFlags.Files | ScanFlags.Directories | ScanFlags.Recursive
     };
+
+    public ScanOptions WithContent(ContentAnalysisOptions content)
+    {
+        var flags = ScanFlags.None;
+        if (content.CategorizeFiles)
+        {
+            flags |= ScanFlags.Files;
+        }
+
+        if (content.CategorizeDirectories)
+        {
+            flags |= ScanFlags.Directories;
+        }
+
+        if (content.IncludeSubdirectories || Recursive)
+        {
+            flags |= ScanFlags.Recursive;
+        }
+
+        if (IncludeHidden)
+        {
+            flags |= ScanFlags.HiddenFiles;
+        }
+
+        return this with { Flags = flags };
+    }
 }
 
 public enum EntryKind
@@ -65,6 +91,25 @@ public enum CategorizationStyle
 {
     Refined,
     Consistent
+}
+
+public enum SuggestionStatus
+{
+    Local,
+    RemoteProposed,
+    Accepted,
+    Rejected,
+    Applied,
+    Conflict
+}
+
+public enum LlmKind
+{
+    Heuristic,
+    OpenAi,
+    Gemini,
+    CustomApi,
+    LocalGguf
 }
 
 public sealed record ScannedItem(
@@ -126,6 +171,14 @@ public sealed record CategorizedItem
     public bool IsLocked { get; init; }
     public string? LockReason { get; init; }
     public MediaMetadata? Media { get; init; }
+    public string? LocalRelativePath { get; init; }
+    public string? RemoteRelativePath { get; init; }
+    public string? AcceptedRelativePath { get; init; }
+    public SuggestionStatus Status { get; init; } = SuggestionStatus.Local;
+    public bool Selected { get; init; } = true;
+
+    public string EffectiveRelativePath =>
+        AcceptedRelativePath ?? RemoteRelativePath ?? LocalRelativePath ?? FileName;
 }
 
 public sealed record FilingPlanSummary
@@ -153,14 +206,59 @@ public sealed record FilingPlan
     public FilingPlanSummary Summary { get; init; } = new();
 }
 
+public sealed record ContentAnalysisOptions
+{
+    public bool CategorizeFiles { get; init; } = true;
+    public bool CategorizeDirectories { get; init; } = true;
+    public bool IncludeSubdirectories { get; init; } = true;
+    public bool UseSubcategories { get; init; } = true;
+    public bool AnalyzeDocuments { get; init; }
+    public bool AnalyzeImages { get; init; }
+    public bool AnalyzeMedia { get; init; } = true;
+    public bool ProcessDocumentsOnly { get; init; }
+    public bool ProcessImagesOnly { get; init; }
+    public bool OfferRenameDocuments { get; init; }
+    public bool OfferRenameImages { get; init; }
+    public bool OfferRenameMedia { get; init; } = true;
+    public bool RenameDocumentsOnly { get; init; }
+    public bool RenameImagesOnly { get; init; }
+    public bool AddDocumentDateToCategory { get; init; }
+    public bool AddImageDateToCategory { get; init; }
+    public bool AddImageDatePlaceToFilename { get; init; }
+    public bool UseWhitelist { get; init; }
+    public string ActiveWhitelist { get; init; } = "Unrestricted";
+}
+
+public sealed record LlmEndpointSettings
+{
+    public LlmKind Kind { get; init; } = LlmKind.Heuristic;
+    public string OpenAiApiKey { get; init; } = "";
+    public string OpenAiModel { get; init; } = "gpt-4.1-mini";
+    public string GeminiApiKey { get; init; } = "";
+    public string GeminiModel { get; init; } = "gemini-2.5-flash";
+    public string CustomName { get; init; } = "";
+    public string CustomBaseUrl { get; init; } = "";
+    public string CustomApiKey { get; init; } = "";
+    public string CustomModel { get; init; } = "";
+    public string LocalGgufPath { get; init; } = "";
+    public string LocalMmprojPath { get; init; } = "";
+    public string ModelStorageDir { get; init; } = "";
+    public string VisualBackendId { get; init; } = "gemma-3-4b-it";
+    public string BuiltinLocalModelId { get; init; } = "gemma-3-4b-it";
+}
+
 public sealed record AnalysisRequest
 {
     public required string RootPath { get; init; }
     public ScanOptions Scan { get; init; } = ScanOptions.DefaultRecursive();
     public CategorizationStyle Style { get; init; } = CategorizationStyle.Refined;
-    public bool AnalyzeMediaContent { get; init; } = true;
-    public bool SuggestMediaRenames { get; init; } = true;
     public string? DatabasePath { get; init; }
+    public ContentAnalysisOptions Content { get; init; } = new();
+    public LlmEndpointSettings Llm { get; init; } = new();
+
+    public bool AnalyzeMediaContent => Content.AnalyzeMedia;
+
+    public bool SuggestMediaRenames => Content.OfferRenameMedia;
 }
 
 public sealed record AnalysisProgress
@@ -177,6 +275,7 @@ public sealed record RemoteStructureSuggestion
     public string? ProposedRootName { get; init; }
     public string Rationale { get; init; } = "";
     public IReadOnlyList<RemoteFolderSuggestion> Folders { get; init; } = [];
+    public IReadOnlyList<RemotePathUpdate> Updates { get; init; } = [];
     public string? RawResponse { get; init; }
 }
 
@@ -187,10 +286,46 @@ public sealed record RemoteFolderSuggestion
     public string? Notes { get; init; }
 }
 
+public sealed record RemotePathUpdate
+{
+    public string? FullPath { get; init; }
+    public string? FileName { get; init; }
+    public required string ProposedRelativePath { get; init; }
+    public string? Category { get; init; }
+    public string? Subcategory { get; init; }
+    public string? Rationale { get; init; }
+}
+
 public sealed record RemoteHandoffPayload
 {
-    public string Kind { get; init; } = "aifs.remoteHandoff.v1";
+    public string Kind { get; init; } = "aifs.remoteHandoff.v2";
     public required FilingPlan Plan { get; init; }
     public required string CompactPrompt { get; init; }
     public required string CompactJson { get; init; }
+}
+
+public sealed record ApplyMove(
+    string SourcePath,
+    string DestinationPath,
+    string RelativePath,
+    string FileName);
+
+public sealed record ApplyDryRun
+{
+    public IReadOnlyList<ApplyMove> Moves { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed record ApplyResult
+{
+    public bool DryRun { get; init; }
+    public IReadOnlyList<ApplyMove> Applied { get; init; } = [];
+    public IReadOnlyList<string> Errors { get; init; } = [];
+    public string? UndoPlanPath { get; init; }
+}
+
+public sealed record AppSettings
+{
+    public LlmEndpointSettings Llm { get; init; } = new();
+    public ContentAnalysisOptions Content { get; init; } = new();
 }

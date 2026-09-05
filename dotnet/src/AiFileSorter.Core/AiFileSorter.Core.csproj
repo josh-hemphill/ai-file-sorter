@@ -4,4 +4,7 @@
     <Description>AOT-safe domain library for scanning, media categorization, archive-entity suggestions, and filing plans.</Description>
     <IsPublishable>false</IsPublishable>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+  </ItemGroup>
 </Project>

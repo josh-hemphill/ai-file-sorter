@@ -5,79 +5,159 @@
         x:Class="AiFileSorter.App.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title="AI File Sorter"
-        Width="1100"
-        Height="740"
-        MinWidth="820"
-        MinHeight="560">
-  <DockPanel Margin="16">
-    <StackPanel DockPanel.Dock="Top" Spacing="10">
-      <TextBlock FontSize="22" FontWeight="SemiBold" Text="AI File Sorter" />
-      <TextBlock Opacity="0.8" TextWrapping="Wrap"
-                 Text="Avalonia Native AOT preview. Analysis runs on a worker thread or isolated engine process, opens files with shared reads, and skips items locked by other apps." />
-      <Grid ColumnDefinitions="Auto,*,Auto">
-        <TextBlock VerticalAlignment="Center" Text="Folder" Margin="0,0,8,0" />
-        <TextBox Grid.Column="1" Text="{Binding FolderPath}" Watermark="/path/to/folder" Margin="0,0,8,0" />
-        <Button Grid.Column="2" Content="Browse…" Click="OnBrowseClicked" />
-      </Grid>
-      <WrapPanel>
-        <CheckBox Content="Include subfolders" IsChecked="{Binding Recursive}" Margin="0,0,16,0" />
-        <CheckBox Content="Categorize audio/video content" IsChecked="{Binding AnalyzeMediaContent}" Margin="0,0,16,0" />
-        <CheckBox Content="More consistent categories" IsChecked="{Binding ConsistentStyle}" />
-      </WrapPanel>
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <Button Content="Analyze" Command="{Binding AnalyzeCommand}" />
-        <Button Content="Cancel" Command="{Binding CancelAnalyzeCommand}" />
-        <Button Content="Export plan" Command="{Binding ExportPlanCommand}" />
-        <Button Content="Export remote handoff" Command="{Binding ExportHandoffCommand}" />
-      </StackPanel>
+        Width="1440"
+        Height="860"
+        MinWidth="1100"
+        MinHeight="640">
+  <DockPanel Margin="12">
+    <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,8,0,0">
       <TextBlock Text="{Binding EngineMode, StringFormat='Engine: {0}'}" Opacity="0.75" />
+      <TextBlock Text="{Binding ModelSummary, StringFormat='Models: {0}'}" Opacity="0.75" />
       <ProgressBar Height="8" Minimum="0" Maximum="1" Value="{Binding ProgressFraction}" />
       <TextBlock Text="{Binding ProgressText}" />
       <TextBlock Text="{Binding Status}" TextWrapping="Wrap" />
     </StackPanel>
 
-    <TabControl Margin="0,16,0,0">
-      <TabItem Header="Suggestions">
-        <ListBox ItemsSource="{Binding Entries}">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="models:CategorizedItem">
-              <Grid ColumnDefinitions="2*,Auto,Auto,2*,2*,3*" Margin="0,4">
-                <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="1" Text="{Binding Family}" Margin="8,0,0,0" />
-                <TextBlock Grid.Column="2" Text="{Binding Category}" Margin="8,0,0,0" />
-                <TextBlock Grid.Column="3" Text="{Binding Subcategory}" Margin="8,0,0,0" TextWrapping="Wrap" />
-                <TextBlock Grid.Column="4" Text="{Binding SuggestedName}" Margin="8,0,0,0" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="5" Text="{Binding Rationale}" Margin="8,0,0,0" Opacity="0.8" TextWrapping="Wrap" />
-              </Grid>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </TabItem>
-      <TabItem Header="Project archives">
-        <ListBox ItemsSource="{Binding ArchiveEntities}">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="models:ArchiveEntitySuggestion">
-              <StackPanel Margin="0,6" Spacing="2">
-                <TextBlock FontWeight="SemiBold" Text="{Binding ProjectName}" />
-                <TextBlock Text="{Binding SuggestedArchiveName, StringFormat='Archive as {0}'}" />
-                <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding Reason}" />
-              </StackPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </TabItem>
-      <TabItem Header="Locked files">
-        <ListBox ItemsSource="{Binding LockedItems}">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="models:CategorizedItem">
-              <StackPanel Margin="0,6" Spacing="2">
-                <TextBlock FontWeight="SemiBold" Text="{Binding FileName}" />
-                <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding LockReason}" />
-              </StackPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </TabItem>
-    </TabControl>
+    <Grid ColumnDefinitions="360,*" ColumnSpacing="12">
+      <ScrollViewer>
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="22" FontWeight="SemiBold" Text="AI File Sorter" />
+          <TextBlock Opacity="0.8" TextWrapping="Wrap"
+                     Text="Avalonia Native AOT preview. Analysis, SQLite, and remote handoff never run on the UI thread. Remote models only write proposed paths; you apply the final database locally." />
+          <Grid ColumnDefinitions="Auto,*,Auto">
+            <TextBlock VerticalAlignment="Center" Text="Folder" Margin="0,0,8,0" />
+            <TextBox Grid.Column="1" Text="{Binding FolderPath}" Watermark="/path/to/folder" Margin="0,0,8,0" />
+            <Button Grid.Column="2" Content="Browse…" Click="OnBrowseClicked" />
+          </Grid>
+
+          <TextBlock FontWeight="SemiBold" Text="Categorization" Margin="0,8,0,0" />
+          <CheckBox Content="Use subcategories" IsChecked="{Binding UseSubcategories}" />
+          <CheckBox Content="Categorize files" IsChecked="{Binding CategorizeFiles}" />
+          <CheckBox Content="Categorize folders" IsChecked="{Binding CategorizeDirectories}" />
+          <CheckBox Content="Scan subfolders" IsChecked="{Binding IncludeSubdirectories}" />
+          <CheckBox Content="More consistent categories" IsChecked="{Binding ConsistentStyle}" />
+          <CheckBox Content="Use a whitelist" IsChecked="{Binding UseWhitelist}" />
+          <ComboBox ItemsSource="{Binding WhitelistNames}" SelectedItem="{Binding ActiveWhitelist}" IsEnabled="{Binding UseWhitelist}" />
+
+          <TextBlock FontWeight="SemiBold" Text="Documents" Margin="0,8,0,0" />
+          <CheckBox IsChecked="{Binding AnalyzeDocuments}">
+            <TextBlock Text="Analyze document files by content" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding ProcessDocumentsOnly}">
+            <TextBlock Text="Process document files only" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox Content="Offer to rename document files" IsChecked="{Binding OfferRenameDocuments}" />
+          <CheckBox IsChecked="{Binding RenameDocumentsOnly}">
+            <TextBlock Text="Do not categorize document files (only rename)" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding AddDocumentDateToCategory}">
+            <TextBlock Text="Add document creation date to category name" TextWrapping="Wrap" />
+          </CheckBox>
+
+          <TextBlock FontWeight="SemiBold" Text="Pictures" Margin="0,8,0,0" />
+          <CheckBox IsChecked="{Binding AnalyzeImages}">
+            <TextBlock Text="Analyze picture files by content" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding ProcessImagesOnly}">
+            <TextBlock Text="Process picture files only" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox Content="Offer to rename picture files" IsChecked="{Binding OfferRenameImages}" />
+          <CheckBox IsChecked="{Binding RenameImagesOnly}">
+            <TextBlock Text="Do not categorize picture files (only rename)" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding AddImageDateToCategory}">
+            <TextBlock Text="Add image creation date to category name" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding AddImageDatePlaceToFilename}">
+            <TextBlock Text="Add photo date to filename" TextWrapping="Wrap" />
+          </CheckBox>
+
+          <TextBlock FontWeight="SemiBold" Text="Audio / video" Margin="0,8,0,0" />
+          <CheckBox IsChecked="{Binding AnalyzeMedia}">
+            <TextBlock Text="Categorize audio/video by content" TextWrapping="Wrap" />
+          </CheckBox>
+          <CheckBox IsChecked="{Binding OfferRenameMedia}">
+            <TextBlock Text="Add audio/video metadata to file name" TextWrapping="Wrap" />
+          </CheckBox>
+
+          <WrapPanel Margin="0,8,0,0">
+            <Button Content="Analyze folder" Command="{Binding AnalyzeCommand}" Margin="0,0,8,8" />
+            <Button Content="Cancel" Command="{Binding CancelAnalyzeCommand}" Margin="0,0,8,8" />
+            <Button Content="Select LLM…" Click="OnModelsClicked" Margin="0,0,8,8" />
+          </WrapPanel>
+          <WrapPanel>
+            <Button Content="Export plan" Command="{Binding ExportPlanCommand}" Margin="0,0,8,8" />
+            <Button Content="Export remote handoff" Command="{Binding ExportHandoffCommand}" Margin="0,0,8,8" />
+            <Button Content="Ask remote model" Command="{Binding AskRemoteCommand}" Margin="0,0,8,8" />
+            <Button Content="Import proposal…" Click="OnImportProposalClicked" Margin="0,0,8,8" />
+          </WrapPanel>
+          <WrapPanel>
+            <Button Content="Accept remote" Command="{Binding AcceptRemoteSelectedCommand}" Margin="0,0,8,8" />
+            <Button Content="Keep local" Command="{Binding KeepLocalSelectedCommand}" Margin="0,0,8,8" />
+            <Button Content="Reject remote" Command="{Binding RejectRemoteSelectedCommand}" Margin="0,0,8,8" />
+            <Button Content="Dry-run apply" Command="{Binding PreviewApplyCommand}" Margin="0,0,8,8" />
+            <Button Content="Apply locally" Command="{Binding ApplyLocallyCommand}" Margin="0,0,8,8" />
+          </WrapPanel>
+        </StackPanel>
+      </ScrollViewer>
+
+      <TabControl Grid.Column="1">
+        <TabItem Header="Suggestions">
+          <DockPanel>
+            <Grid DockPanel.Dock="Top" ColumnDefinitions="Auto,2*,Auto,*,*,2.4*,Auto,2*" Margin="0,0,0,6">
+              <Button Content="In" Command="{Binding SortByCommand}" CommandParameter="status" Padding="4,2" Opacity="0.85" />
+              <Button Grid.Column="1" Content="Name" Command="{Binding SortByCommand}" CommandParameter="name" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="4,2" />
+              <Button Grid.Column="2" Content="Family" Command="{Binding SortByCommand}" CommandParameter="family" Padding="4,2" />
+              <Button Grid.Column="3" Content="Category" Command="{Binding SortByCommand}" CommandParameter="category" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="4,2" />
+              <Button Grid.Column="4" Content="Subcategory" Command="{Binding SortByCommand}" CommandParameter="subcategory" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="4,2" />
+              <Button Grid.Column="5" Content="Proposed path" Command="{Binding SortByCommand}" CommandParameter="path" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="4,2" />
+              <Button Grid.Column="6" Content="Status" Command="{Binding SortByCommand}" CommandParameter="status" Padding="4,2" />
+              <TextBlock Grid.Column="7" Text="Notes" VerticalAlignment="Center" Margin="4,0,0,0" FontWeight="SemiBold" />
+            </Grid>
+            <ListBox ItemsSource="{Binding Rows}" Background="Transparent">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:SuggestionRowViewModel">
+                  <Grid ColumnDefinitions="Auto,2*,Auto,*,*,2.4*,Auto,2*" ColumnSpacing="4" Margin="0,2">
+                    <CheckBox IsChecked="{Binding Selected}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding FileName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding Family}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="{Binding Category}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="4" Text="{Binding Subcategory}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="5" Text="{Binding ProposedPath}" MinHeight="28" />
+                    <TextBlock Grid.Column="6" Text="{Binding Status}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="7" Text="{Binding Notes}" Opacity="0.85" TextWrapping="Wrap" VerticalAlignment="Center" />
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </TabItem>
+        <TabItem Header="Project archives">
+          <ListBox ItemsSource="{Binding ArchiveEntities}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:ArchiveEntitySuggestion">
+                <StackPanel Margin="0,6" Spacing="2">
+                  <TextBlock FontWeight="SemiBold" Text="{Binding ProjectName}" />
+                  <TextBlock Text="{Binding SuggestedArchiveName, StringFormat='Archive as {0}'}" />
+                  <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding Reason}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </TabItem>
+        <TabItem Header="Locked files">
+          <ListBox ItemsSource="{Binding LockedItems}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:CategorizedItem">
+                <StackPanel Margin="0,6" Spacing="2">
+                  <TextBlock FontWeight="SemiBold" Text="{Binding FileName}" />
+                  <TextBlock Opacity="0.8" TextWrapping="Wrap" Text="{Binding LockReason}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </TabItem>
+      </TabControl>
+    </Grid>
   </DockPanel>
 </Window>
