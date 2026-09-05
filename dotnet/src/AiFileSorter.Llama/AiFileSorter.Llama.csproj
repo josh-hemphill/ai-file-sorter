@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>aifs-llama</AssemblyName>
+    <RootNamespace>AiFileSorter.Llama</RootNamespace>
+    <PublishAot>false</PublishAot>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Description>CPU GGUF sidecar. Loaded out of process so llama.cpp cannot freeze the Avalonia UI.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LLamaSharp" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AiFileSorter.Core\AiFileSorter.Core.csproj" />
+  </ItemGroup>
+</Project>

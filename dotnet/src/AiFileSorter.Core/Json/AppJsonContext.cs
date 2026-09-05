@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AiFileSorter.Core.Ipc;
+using AiFileSorter.Core.Llm;
 using AiFileSorter.Core.Models;
 using AiFileSorter.Core.Persistence;
 using AiFileSorter.Core.Plans;
@@ -37,6 +38,9 @@ namespace AiFileSorter.Core.Json;
 [JsonSerializable(typeof(ApplyDryRun))]
 [JsonSerializable(typeof(ApplyMove))]
 [JsonSerializable(typeof(ApplyResult))]
+[JsonSerializable(typeof(GgufDownloadMeta))]
+[JsonSerializable(typeof(LlamaCompleteRequest))]
+[JsonSerializable(typeof(LlamaCompleteResponse))]
 [JsonSerializable(typeof(Dictionary<string, int>))]
 internal partial class AppJsonContext : JsonSerializerContext;
 

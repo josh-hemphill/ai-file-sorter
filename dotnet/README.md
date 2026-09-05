@@ -77,11 +77,24 @@ dotnet run --project dotnet/src/AiFileSorter.Cli -- handoff /path/to/folder --pr
 dotnet run --project dotnet/src/AiFileSorter.Cli -- merge proposal.json --path /path/to/folder
 dotnet run --project dotnet/src/AiFileSorter.Cli -- apply /path/to/folder --dry-run
 dotnet publish dotnet/src/AiFileSorter.Cli/AiFileSorter.Cli.csproj -c Release -r linux-x64
-dotnet publish dotnet/src/AiFileSorter.App/AiFileSorter.App.csproj -c Release -r linux-x64
+dotnet run --project dotnet/src/AiFileSorter.Cli -- models
+dotnet run --project dotnet/src/AiFileSorter.Cli -- download gemma-3-4b-it
+dotnet publish dotnet/src/AiFileSorter.Llama/AiFileSorter.Llama.csproj -c Release -r linux-x64 --self-contained
 ```
 
 Native AOT publish needs the platform C toolchain (`clang` and `zlib` on Linux,
 MSVC on Windows, Xcode on macOS). AOT does not cross-compile across OS families.
+
+## Local GGUF models
+
+Select LLM downloads the same suggested files as the Qt dialog:
+
+- **Categorization & documents:** Gemma 3 4B IT, Mistral 7B Instruct, Gemma 1.1 7B IT, legacy LLaMa 3B
+- **Image analysis:** Gemma 3 4B IT (text + mmproj) and LLaVA 1.6 Mistral 7B (text + mmproj)
+
+Downloads are resumable (`.part` + `.aifs.meta`), validate the `GGUF` magic header, and land in the Qt storage directory (`~/.local/share/aifilesorter/llms` on Linux) so the two UIs can share files. URLs come from `app/resources/.env` and can be overridden with the same environment variables (`LOCAL_LLM_3B_DOWNLOAD_URL`, `GEMMA3_4B_MMPROJ_URL`, …).
+
+Inference is **not** compiled into `aifs-ui`. Publish `aifs-llama` (LLamaSharp CPU, not Native AOT) beside the UI. The engine calls that sidecar for local categorization, document excerpts, and JSON path proposals.
 
 ## AOT-safe SQLite and tables
 

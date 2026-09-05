@@ -29,10 +29,20 @@ public sealed class FilingPlanBuilder
         ScanResult scan,
         AnalysisRequest request,
         IProgress<AnalysisProgress>? progress,
+        CancellationToken cancellationToken) =>
+        Build(rootPath, scan, request, llamaClient: null, progress, cancellationToken);
+
+    public FilingPlan Build(
+        string rootPath,
+        ScanResult scan,
+        AnalysisRequest request,
+        ILocalLlmClient? llamaClient,
+        IProgress<AnalysisProgress>? progress,
         CancellationToken cancellationToken)
     {
         var content = request.Content;
         var allowed = content.UseWhitelist ? LlmCatalog.AllowedCategories(content.ActiveWhitelist) : null;
+        var gguf = CreateGgufCategorizer(request, llamaClient);
         var entries = new List<CategorizedItem>(scan.Items.Count);
         var locked = new List<CategorizedItem>();
         var current = 0;
@@ -50,7 +60,7 @@ public sealed class FilingPlanBuilder
                 Message = item.FileName
             });
 
-            var categorized = Finalize(Categorize(item, request), rootPath, content, allowed);
+            var categorized = Finalize(Categorize(item, request, gguf), rootPath, content, allowed);
             if (categorized.IsLocked)
             {
                 locked.Add(categorized);
@@ -108,7 +118,7 @@ public sealed class FilingPlanBuilder
         };
     }
 
-    private CategorizedItem Categorize(ScannedItem item, AnalysisRequest request)
+    private CategorizedItem Categorize(ScannedItem item, AnalysisRequest request, LocalGgufCategorizer? gguf)
     {
         var content = request.Content;
         if (item.Kind == EntryKind.Directory && item.Family == FileFamily.Archive)
@@ -154,11 +164,16 @@ public sealed class FilingPlanBuilder
         }
 
         var categorized = HeuristicCategorizer.Categorize(item, request.Style);
+        if (gguf is not null)
+        {
+            return gguf.TryCategorize(item, content, request.Style, categorized) ?? categorized;
+        }
+
         if (item.Family == FileFamily.Document && content.AnalyzeDocuments)
         {
             categorized = categorized with
             {
-                Rationale = "Document content analysis is queued for the selected LLM sidecar; extension-based category is used until that sidecar runs."
+                Rationale = "Document content analysis needs a downloaded local GGUF or remote model; extension-based category is used for now."
             };
         }
 
@@ -166,11 +181,34 @@ public sealed class FilingPlanBuilder
         {
             categorized = categorized with
             {
-                Rationale = "Picture content analysis is queued for the visual LLM sidecar; extension-based category is used until that sidecar runs."
+                Rationale = "Picture content analysis needs the visual GGUF + mmproj pair; extension-based category is used for now."
             };
         }
 
         return categorized;
+    }
+
+    private static LocalGgufCategorizer? CreateGgufCategorizer(AnalysisRequest request, ILocalLlmClient? overrideClient)
+    {
+        if (request.Llm.Kind != LlmKind.LocalGguf)
+        {
+            return null;
+        }
+
+        var client = LocalLlmFactory.TryCreate(overrideClient);
+        if (client is null || !client.IsAvailable)
+        {
+            return null;
+        }
+
+        var modelPath = GgufCatalog.ResolveCategorizationModelPath(request.Llm);
+        if (string.IsNullOrWhiteSpace(modelPath))
+        {
+            return null;
+        }
+
+        var visual = GgufCatalog.ResolveVisualPaths(request.Llm);
+        return new LocalGgufCategorizer(client, modelPath, visual.MmprojPath);
     }
 
     private static CategorizedItem Finalize(

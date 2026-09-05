@@ -1,6 +1,7 @@
 using AiFileSorter.Core.Engine;
 using AiFileSorter.Core.Ipc;
 using AiFileSorter.Core.Json;
+using AiFileSorter.Core.Llm;
 using AiFileSorter.Core.Models;
 using AiFileSorter.Core.Persistence;
 using AiFileSorter.Core.Plans;
@@ -26,6 +27,8 @@ public static class Program
                 "handoff" => await HandoffAsync(args[1..]).ConfigureAwait(false),
                 "merge" => await MergeAsync(args[1..]).ConfigureAwait(false),
                 "apply" => await ApplyAsync(args[1..]).ConfigureAwait(false),
+                "models" => ListModels(),
+                "download" => await DownloadModelAsync(args[1..]).ConfigureAwait(false),
                 "engine" => await RunEngineAsync().ConfigureAwait(false),
                 _ => Fail($"Unknown command '{args[0]}'.")
             };
@@ -156,6 +159,49 @@ public static class Program
         var result = new AnalysisEngine().Apply(plan, options.DryRun, dbPath);
         Console.WriteLine(AppJson.Serialize(result));
         return Task.FromResult(result.Errors.Count == 0 ? 0 : 1);
+    }
+
+    private static int ListModels()
+    {
+        foreach (var artifact in GgufCatalog.AllArtifacts)
+        {
+            Console.WriteLine($"{artifact.Id}\t{artifact.DisplayName}\t{GgufCatalog.FormatFunctions(artifact)}\t{artifact.ResolveUrl()}");
+        }
+
+        return 0;
+    }
+
+    private static async Task<int> DownloadModelAsync(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return Fail("download requires an artifact id. Use: aifs models");
+        }
+
+        var artifact = GgufCatalog.FindArtifact(args[0]);
+        if (artifact is null)
+        {
+            return Fail($"Unknown artifact '{args[0]}'. Use: aifs models");
+        }
+
+        string? storage = null;
+        for (var i = 1; i < args.Length; i++)
+        {
+            if (args[i] is "--dir" && i + 1 < args.Length)
+            {
+                storage = args[++i];
+            }
+        }
+
+        using var downloader = new GgufDownloader();
+        var progress = new Progress<GgufDownloadProgress>(update =>
+        {
+            Console.Error.WriteLine(update.Status);
+        });
+        await downloader.DownloadAsync(artifact, storage, progress).ConfigureAwait(false);
+        var probe = downloader.Probe(artifact, storage);
+        Console.WriteLine(probe.Path);
+        return 0;
     }
 
     private static async Task<int> RunEngineAsync()
@@ -435,6 +481,8 @@ public static class Program
               aifs handoff <folder> [--prompt-only] [--plan-id <id>] [--endpoint <url>] [--model <name>] [--api-key <key>]
               aifs merge <proposal.json> --path <folder> [--db <path>]
               aifs apply <folder> [--dry-run] [--db <path>]
+              aifs models
+              aifs download <artifact-id> [--dir <storage>]
               aifs engine
             """);
     }

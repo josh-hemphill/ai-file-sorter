@@ -1,12 +1,16 @@
+using System.Collections.ObjectModel;
 using System.Linq;
 using AiFileSorter.Core.Llm;
 using AiFileSorter.Core.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 
 namespace AiFileSorter.App.ViewModels;
 
 public sealed partial class LlmSettingsViewModel : ObservableObject
 {
+    public GgufDownloader Downloader { get; } = new();
+
     [ObservableProperty]
     private LlmKind kind = LlmKind.Heuristic;
 
@@ -41,7 +45,7 @@ public sealed partial class LlmSettingsViewModel : ObservableObject
     private string localMmprojPath = "";
 
     [ObservableProperty]
-    private string modelStorageDir = "";
+    private string modelStorageDir = GgufStorage.DefaultDirectory();
 
     [ObservableProperty]
     private string visualBackendId = "gemma-3-4b-it";
@@ -49,25 +53,13 @@ public sealed partial class LlmSettingsViewModel : ObservableObject
     [ObservableProperty]
     private string builtinLocalModelId = "gemma-3-4b-it";
 
-    public IReadOnlyList<LlmCatalogEntry> RemoteEndpoints => LlmCatalog.RemoteEndpoints;
-    public IReadOnlyList<LlmCatalogEntry> BuiltinLocalModels => LlmCatalog.BuiltinLocalModels;
-    public IReadOnlyList<LlmCatalogEntry> VisualBackends => LlmCatalog.VisualBackends;
+    public ObservableCollection<GgufDownloadItemViewModel> CategorizationDownloads { get; } = [];
+    public ObservableCollection<GgufDownloadItemViewModel> VisualDownloads { get; } = [];
+    public IReadOnlyList<GgufVisualBackend> VisualBackendChoices => GgufCatalog.VisualBackends;
 
-    public LlmCatalogEntry? SelectedLocalModel
+    public GgufVisualBackend? SelectedVisualBackendChoice
     {
-        get => BuiltinLocalModels.FirstOrDefault(entry => entry.Id == BuiltinLocalModelId);
-        set
-        {
-            if (value is not null)
-            {
-                BuiltinLocalModelId = value.Id;
-            }
-        }
-    }
-
-    public LlmCatalogEntry? SelectedVisualBackend
-    {
-        get => VisualBackends.FirstOrDefault(entry => entry.Id == VisualBackendId);
+        get => GgufCatalog.FindVisualBackend(VisualBackendId);
         set
         {
             if (value is not null)
@@ -84,6 +76,17 @@ public sealed partial class LlmSettingsViewModel : ObservableObject
     }
 
     public string Summary => LlmCatalog.Summarize(ToSettings());
+    public bool ShowLocalDownloads => Kind == LlmKind.LocalGguf;
+
+    public LlmSettingsViewModel()
+    {
+        foreach (var model in GgufCatalog.CategorizationModels)
+        {
+            CategorizationDownloads.Add(new GgufDownloadItemViewModel(model.Artifact, this));
+        }
+
+        RebuildVisualDownloads();
+    }
 
     public void Load(LlmEndpointSettings settings)
     {
@@ -98,37 +101,132 @@ public sealed partial class LlmSettingsViewModel : ObservableObject
         CustomModel = settings.CustomModel;
         LocalGgufPath = settings.LocalGgufPath;
         LocalMmprojPath = settings.LocalMmprojPath;
-        ModelStorageDir = settings.ModelStorageDir;
+        ModelStorageDir = string.IsNullOrWhiteSpace(settings.ModelStorageDir)
+            ? GgufStorage.DefaultDirectory()
+            : settings.ModelStorageDir;
         VisualBackendId = settings.VisualBackendId;
         BuiltinLocalModelId = settings.BuiltinLocalModelId;
-        OnPropertyChanged(nameof(Summary));
-        OnPropertyChanged(nameof(SelectedLocalModel));
-        OnPropertyChanged(nameof(SelectedVisualBackend));
+        RefreshDownloads();
+        NotifySummary();
     }
 
-    public LlmEndpointSettings ToSettings() => new()
+    public LlmEndpointSettings ToSettings()
     {
-        Kind = Kind,
-        OpenAiApiKey = OpenAiApiKey,
-        OpenAiModel = OpenAiModel,
-        GeminiApiKey = GeminiApiKey,
-        GeminiModel = GeminiModel,
-        CustomName = CustomName,
-        CustomBaseUrl = CustomBaseUrl,
-        CustomApiKey = CustomApiKey,
-        CustomModel = CustomModel,
-        LocalGgufPath = LocalGgufPath,
-        LocalMmprojPath = LocalMmprojPath,
-        ModelStorageDir = ModelStorageDir,
-        VisualBackendId = VisualBackendId,
-        BuiltinLocalModelId = BuiltinLocalModelId
-    };
+        var resolved = GgufCatalog.ResolveCategorizationModelPath(new LlmEndpointSettings
+        {
+            BuiltinLocalModelId = BuiltinLocalModelId,
+            ModelStorageDir = ModelStorageDir,
+            LocalGgufPath = LocalGgufPath
+        });
+        var visual = GgufCatalog.ResolveVisualPaths(new LlmEndpointSettings
+        {
+            VisualBackendId = VisualBackendId,
+            ModelStorageDir = ModelStorageDir,
+            LocalGgufPath = LocalGgufPath,
+            LocalMmprojPath = LocalMmprojPath
+        });
+        return new LlmEndpointSettings
+        {
+            Kind = Kind,
+            OpenAiApiKey = OpenAiApiKey,
+            OpenAiModel = OpenAiModel,
+            GeminiApiKey = GeminiApiKey,
+            GeminiModel = GeminiModel,
+            CustomName = CustomName,
+            CustomBaseUrl = CustomBaseUrl,
+            CustomApiKey = CustomApiKey,
+            CustomModel = CustomModel,
+            LocalGgufPath = resolved,
+            LocalMmprojPath = visual.MmprojPath ?? "",
+            ModelStorageDir = ModelStorageDir,
+            VisualBackendId = VisualBackendId,
+            BuiltinLocalModelId = BuiltinLocalModelId
+        };
+    }
+
+    public void OnDownloadFinished()
+    {
+        LocalGgufPath = GgufCatalog.ResolveCategorizationModelPath(ToSettings());
+        LocalMmprojPath = GgufCatalog.ResolveVisualPaths(ToSettings()).MmprojPath ?? "";
+        NotifySummary();
+        RefreshDownloads();
+    }
+
+    public void RefreshDownloads()
+    {
+        foreach (var item in CategorizationDownloads)
+        {
+            item.Refresh();
+        }
+
+        foreach (var item in VisualDownloads)
+        {
+            item.Refresh();
+        }
+    }
+
+    public void SelectModel(string id)
+    {
+        BuiltinLocalModelId = id;
+        Kind = LlmKind.LocalGguf;
+        OnDownloadFinished();
+    }
+
+    [RelayCommand]
+    private void SelectCategorizationModel(string? id)
+    {
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            SelectModel(id);
+        }
+    }
+
+    [RelayCommand]
+    private void ResetStorageDir()
+    {
+        ModelStorageDir = GgufStorage.DefaultDirectory();
+    }
+
+    public void SetStorageDir(string path)
+    {
+        ModelStorageDir = path;
+        RefreshDownloads();
+        NotifySummary();
+    }
 
     partial void OnKindChanged(LlmKind value)
     {
-        OnPropertyChanged(nameof(Summary));
         OnPropertyChanged(nameof(SelectedKindIndex));
+        OnPropertyChanged(nameof(ShowLocalDownloads));
+        NotifySummary();
     }
-    partial void OnBuiltinLocalModelIdChanged(string value) => OnPropertyChanged(nameof(SelectedLocalModel));
-    partial void OnVisualBackendIdChanged(string value) => OnPropertyChanged(nameof(SelectedVisualBackend));
+
+    partial void OnBuiltinLocalModelIdChanged(string value)
+    {
+        foreach (var item in CategorizationDownloads)
+        {
+            item.NotifySelected();
+        }
+
+        NotifySummary();
+    }
+
+    partial void OnVisualBackendIdChanged(string value)
+    {
+        RebuildVisualDownloads();
+        OnPropertyChanged(nameof(SelectedVisualBackendChoice));
+        NotifySummary();
+    }
+
+    partial void OnModelStorageDirChanged(string value) => RefreshDownloads();
+
+    private void RebuildVisualDownloads()
+    {
+        VisualDownloads.Clear();
+        var backend = GgufCatalog.FindVisualBackend(VisualBackendId) ?? GgufCatalog.VisualBackends[0];
+        VisualDownloads.Add(new GgufDownloadItemViewModel(backend.TextModel, this));
+        VisualDownloads.Add(new GgufDownloadItemViewModel(backend.Mmproj, this));
+    }
+
+    private void NotifySummary() => OnPropertyChanged(nameof(Summary));
 }

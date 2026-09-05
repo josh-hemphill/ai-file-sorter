@@ -29,3 +29,6 @@ jobs:
 
       - name: Restore and test
         run: dotnet test AiFileSorter.sln -c Release --nologo
+
+      - name: Build GGUF sidecar
+        run: dotnet build src/AiFileSorter.Llama/AiFileSorter.Llama.csproj -c Release --nologo

@@ -23,18 +23,23 @@ public static class LlmCatalog
     ];
 
     public static IReadOnlyList<LlmCatalogEntry> BuiltinLocalModels { get; } =
-    [
-        new() { Id = "gemma-3-4b-it", Kind = LlmKind.LocalGguf, DisplayName = "Gemma 3 4B IT Q4_K_M", Notes = "Default local GGUF. Inference stays in the C++ sidecar." },
-        new() { Id = "mistral-7b", Kind = LlmKind.LocalGguf, DisplayName = "Mistral 7B Instruct v0.2 Q5_K_M", Notes = "Local GGUF sidecar." },
-        new() { Id = "gemma-1.1-7b", Kind = LlmKind.LocalGguf, DisplayName = "Gemma 1.1 7B IT Q5_K_M", Notes = "Local GGUF sidecar." },
-        new() { Id = "llama-3b-legacy", Kind = LlmKind.LocalGguf, DisplayName = "LLaMa 3b v3.2 Instruct Q8, legacy", Notes = "Legacy local GGUF sidecar." }
-    ];
+        GgufCatalog.CategorizationModels.Select(model => new LlmCatalogEntry
+        {
+            Id = model.Id,
+            Kind = LlmKind.LocalGguf,
+            DisplayName = model.DisplayName,
+            Notes = GgufCatalog.FormatFunctions(model.Artifact)
+        }).ToArray();
 
     public static IReadOnlyList<LlmCatalogEntry> VisualBackends { get; } =
-    [
-        new() { Id = "gemma-3-4b-it", Kind = LlmKind.LocalGguf, DisplayName = "Gemma 3 4B IT", IsVisual = true, Notes = "Visual sidecar for picture content. Not compiled into the AOT UI." },
-        new() { Id = "llava-v1.6-mistral-7b", Kind = LlmKind.LocalGguf, DisplayName = "LLaVA 1.6 Mistral 7B", IsVisual = true, Notes = "Visual sidecar for picture content." }
-    ];
+        GgufCatalog.VisualBackends.Select(backend => new LlmCatalogEntry
+        {
+            Id = backend.Id,
+            Kind = LlmKind.LocalGguf,
+            DisplayName = backend.DisplayName,
+            IsVisual = true,
+            Notes = "Requires text GGUF + mmproj for picture analysis."
+        }).ToArray();
 
     public static IReadOnlyList<string> WhitelistNames { get; } =
         ["Unrestricted", "Media library", "Documents"];
@@ -59,8 +64,7 @@ public static class LlmCatalog
         LlmKind.CustomApi => string.IsNullOrWhiteSpace(settings.CustomName)
             ? "Custom API"
             : settings.CustomName,
-        LlmKind.LocalGguf => BuiltinLocalModels.FirstOrDefault(entry => entry.Id == settings.BuiltinLocalModelId)?.DisplayName
-            ?? "Local GGUF sidecar",
+        LlmKind.LocalGguf => DescribeLocal(settings),
         _ => "Heuristic (local metadata)"
     };
 
@@ -80,5 +84,13 @@ public static class LlmCatalog
                 ),
             _ => null
         };
+    }
+
+    private static string DescribeLocal(LlmEndpointSettings settings)
+    {
+        var choice = GgufCatalog.FindCategorizationModel(settings.BuiltinLocalModelId);
+        var path = GgufCatalog.ResolveCategorizationModelPath(settings);
+        var name = choice?.DisplayName ?? "Local GGUF";
+        return string.IsNullOrWhiteSpace(path) ? $"{name} (not downloaded)" : $"{name} (ready)";
     }
 }

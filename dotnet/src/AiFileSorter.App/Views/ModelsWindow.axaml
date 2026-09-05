@@ -5,10 +5,10 @@
         x:Class="AiFileSorter.App.Views.ModelsWindow"
         x:DataType="vm:LlmSettingsViewModel"
         Title="Select LLM"
-        Width="720"
-        Height="640"
-        MinWidth="560"
-        MinHeight="480"
+        Width="820"
+        Height="760"
+        MinWidth="640"
+        MinHeight="560"
         WindowStartupLocation="CenterOwner">
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
@@ -16,9 +16,9 @@
     </StackPanel>
     <ScrollViewer>
       <StackPanel Spacing="10">
-        <TextBlock FontSize="18" FontWeight="SemiBold" Text="Model management" />
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="Select LLM" />
         <TextBlock Opacity="0.8" TextWrapping="Wrap"
-                   Text="Remote models receive a compact filing plan and return proposed relative paths. Local GGUF and visual backends are registered here; inference stays in the existing C++ sidecar." />
+                   Text="Choose a backend. Suggested local GGUFs can be downloaded here for categorization, document summaries, and image analysis. Inference runs in the aifs-llama sidecar, not in the UI process." />
 
         <TextBlock FontWeight="SemiBold" Text="Endpoint" />
         <ComboBox SelectedIndex="{Binding SelectedKindIndex}">
@@ -26,7 +26,7 @@
           <ComboBoxItem Content="OpenAI" />
           <ComboBoxItem Content="Gemini" />
           <ComboBoxItem Content="Custom OpenAI-compatible API" />
-          <ComboBoxItem Content="Local GGUF sidecar" />
+          <ComboBoxItem Content="Local GGUF" />
         </ComboBox>
         <TextBlock Text="{Binding Summary, StringFormat='Active: {0}'}" Opacity="0.85" />
 
@@ -44,26 +44,75 @@
         <TextBox Watermark="API key" Text="{Binding CustomApiKey}" PasswordChar="•" />
         <TextBox Watermark="Model" Text="{Binding CustomModel}" />
 
-        <TextBlock FontWeight="SemiBold" Text="Local GGUF (C++ sidecar)" />
-        <ComboBox ItemsSource="{Binding BuiltinLocalModels}" SelectedItem="{Binding SelectedLocalModel}">
-          <ComboBox.ItemTemplate>
-            <DataTemplate x:DataType="llm:LlmCatalogEntry">
-              <TextBlock Text="{Binding DisplayName}" />
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
-        <TextBox Watermark="GGUF path" Text="{Binding LocalGgufPath}" />
-        <TextBox Watermark="mmproj path" Text="{Binding LocalMmprojPath}" />
-        <TextBox Watermark="Model storage directory" Text="{Binding ModelStorageDir}" />
+        <TextBlock FontWeight="SemiBold" Text="Local model storage" />
+        <Grid ColumnDefinitions="*,Auto,Auto">
+          <TextBox Text="{Binding ModelStorageDir}" Watermark="Model storage directory" />
+          <Button Grid.Column="1" Content="Browse…" Click="OnBrowseStorageClicked" Margin="8,0,0,0" />
+          <Button Grid.Column="2" Content="Reset" Command="{Binding ResetStorageDirCommand}" Margin="8,0,0,0" />
+        </Grid>
 
-        <TextBlock FontWeight="SemiBold" Text="Visual backend" />
-        <ComboBox ItemsSource="{Binding VisualBackends}" SelectedItem="{Binding SelectedVisualBackend}">
+        <TextBlock FontWeight="SemiBold" Text="Local LLM (categorization &amp; documents)" />
+        <TextBlock Opacity="0.8" TextWrapping="Wrap"
+                   Text="Select a suggested model, then Download. These GGUFs cover folder categorization and document-by-content summaries. Gemma 3 4B IT is also the default visual text model." />
+        <ItemsControl ItemsSource="{Binding CategorizationDownloads}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:GgufDownloadItemViewModel">
+              <Border BorderBrush="#33FFFFFF" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,8">
+                <StackPanel Spacing="4">
+                  <Grid ColumnDefinitions="Auto,*">
+                    <RadioButton GroupName="LocalGguf"
+                                 IsChecked="{Binding IsSelected}"
+                                 Content="{Binding DisplayName}" />
+                  </Grid>
+                  <TextBlock Opacity="0.8" Text="{Binding FunctionsLabel, StringFormat='Functions: {0}'}" />
+                  <TextBlock TextWrapping="Wrap" Opacity="0.75" Text="{Binding RemoteUrl, StringFormat='URL: {0}'}" />
+                  <TextBlock TextWrapping="Wrap" Opacity="0.75" Text="{Binding LocalPath, StringFormat='Local: {0}'}" />
+                  <TextBlock Text="{Binding SizeText}" />
+                  <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                  <ProgressBar Height="6" Minimum="0" Maximum="1" Value="{Binding Progress}" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Download" Command="{Binding DownloadCommand}" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" />
+                    <Button Content="Delete" Command="{Binding DeleteCommand}" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <TextBlock FontWeight="SemiBold" Text="Image analysis models" />
+        <TextBlock Opacity="0.8" TextWrapping="Wrap"
+                   Text="Download both the visual text GGUF and its mmproj. Picture analysis stays disabled until both files are present." />
+        <ComboBox ItemsSource="{Binding VisualBackendChoices}" SelectedItem="{Binding SelectedVisualBackendChoice}">
           <ComboBox.ItemTemplate>
-            <DataTemplate x:DataType="llm:LlmCatalogEntry">
+            <DataTemplate x:DataType="llm:GgufVisualBackend">
               <TextBlock Text="{Binding DisplayName}" />
             </DataTemplate>
           </ComboBox.ItemTemplate>
         </ComboBox>
+        <ItemsControl ItemsSource="{Binding VisualDownloads}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:GgufDownloadItemViewModel">
+              <Border BorderBrush="#33FFFFFF" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,8,0,0">
+                <StackPanel Spacing="4">
+                  <TextBlock FontWeight="SemiBold" Text="{Binding DisplayName}" />
+                  <TextBlock Opacity="0.8" Text="{Binding FunctionsLabel, StringFormat='Functions: {0}'}" />
+                  <TextBlock TextWrapping="Wrap" Opacity="0.75" Text="{Binding RemoteUrl, StringFormat='URL: {0}'}" />
+                  <TextBlock TextWrapping="Wrap" Opacity="0.75" Text="{Binding LocalPath, StringFormat='Local: {0}'}" />
+                  <TextBlock Text="{Binding SizeText}" />
+                  <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                  <ProgressBar Height="6" Minimum="0" Maximum="1" Value="{Binding Progress}" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Download" Command="{Binding DownloadCommand}" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" />
+                    <Button Content="Delete" Command="{Binding DeleteCommand}" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
       </StackPanel>
     </ScrollViewer>
   </DockPanel>

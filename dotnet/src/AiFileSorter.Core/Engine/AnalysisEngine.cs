@@ -13,6 +13,7 @@ public sealed class AnalysisEngine
     private readonly FilingPlanBuilder _planBuilder;
     private readonly RemotePlanHandoff _handoff;
     private readonly ApplyService _applyService;
+    private readonly ILocalLlmClient? _llamaClient;
 
     public AnalysisEngine()
         : this(new FileScanner(), new FilingPlanBuilder(), new RemotePlanHandoff(), new ApplyService())
@@ -23,12 +24,14 @@ public sealed class AnalysisEngine
         FileScanner scanner,
         FilingPlanBuilder planBuilder,
         RemotePlanHandoff handoff,
-        ApplyService applyService)
+        ApplyService applyService,
+        ILocalLlmClient? llamaClient = null)
     {
         _scanner = scanner;
         _planBuilder = planBuilder;
         _handoff = handoff;
         _applyService = applyService;
+        _llamaClient = llamaClient;
     }
 
     public async Task<FilingPlan> AnalyzeAsync(
@@ -53,7 +56,7 @@ public sealed class AnalysisEngine
         });
 
         var plan = await Task.Run(
-                () => _planBuilder.Build(request.RootPath, scan, request, progress, cancellationToken),
+                () => _planBuilder.Build(request.RootPath, scan, request, _llamaClient, progress, cancellationToken),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -117,6 +120,31 @@ public sealed class AnalysisEngine
         LlmEndpointSettings settings,
         CancellationToken cancellationToken = default)
     {
+        if (settings.Kind == LlmKind.LocalGguf)
+        {
+            var llama = LocalLlmFactory.TryCreate();
+            var modelPath = GgufCatalog.ResolveCategorizationModelPath(settings);
+            if (llama is null || !llama.IsAvailable)
+            {
+                throw new InvalidOperationException("Local GGUF is selected but aifs-llama was not found next to the app.");
+            }
+
+            if (string.IsNullOrWhiteSpace(modelPath))
+            {
+                throw new InvalidOperationException("Download a local GGUF from Select LLM before asking it for path updates.");
+            }
+
+            var localPayload = new RemotePlanHandoff().Create(plan);
+            var text = llama.Complete(new LlamaCompleteRequest
+            {
+                ModelPath = modelPath,
+                SystemPrompt = "Return JSON only. No markdown.",
+                UserPrompt = localPayload.CompactPrompt,
+                MaxTokens = 512
+            }, cancellationToken);
+            return RemotePlanHandoff.ParseModelJson(text);
+        }
+
         var resolved = LlmCatalog.ResolveRemoteEndpoint(settings);
         if (resolved is null)
         {
