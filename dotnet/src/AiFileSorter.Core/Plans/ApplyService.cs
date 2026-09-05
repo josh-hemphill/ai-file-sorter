@@ -18,7 +18,19 @@ public sealed class ApplyService
                 continue;
             }
 
-            if (entry.Status is not (SuggestionStatus.Accepted or SuggestionStatus.Local or SuggestionStatus.RemoteProposed or SuggestionStatus.Conflict))
+            if (entry.IsArchiveEntity)
+            {
+                warnings.Add($"{entry.FileName}: archive-entity suggestions are not auto-zipped yet.");
+                continue;
+            }
+
+            if (entry.Status is SuggestionStatus.RemoteProposed or SuggestionStatus.Conflict)
+            {
+                warnings.Add($"{entry.FileName}: remote proposal is pending review (accept or keep local first).");
+                continue;
+            }
+
+            if (entry.Status is not (SuggestionStatus.Accepted or SuggestionStatus.Local))
             {
                 continue;
             }

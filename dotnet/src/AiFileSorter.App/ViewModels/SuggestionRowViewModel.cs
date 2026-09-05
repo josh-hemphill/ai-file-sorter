@@ -77,4 +77,14 @@ public sealed partial class SuggestionRowViewModel : ObservableObject
         ProposedPath = Item.LocalRelativePath ?? Item.FileName;
         Status = SuggestionStatus.Rejected;
     }
+
+    partial void OnProposedPathChanged(string value)
+    {
+        if (Status is SuggestionStatus.Rejected or SuggestionStatus.Applied)
+        {
+            return;
+        }
+
+        Status = SuggestionStatus.Accepted;
+    }
 }

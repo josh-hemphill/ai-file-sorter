@@ -103,6 +103,10 @@ public sealed class SuggestionDatabaseAndApplyTests
         Assert.Equal("Media/Podcasts/Weekly/show.mp3", merged.Entries[0].RemoteRelativePath);
         Assert.Equal(SuggestionStatus.RemoteProposed, merged.Entries[0].Status);
         Assert.True(File.Exists(source));
+
+        var preview = new ApplyService().Preview(merged);
+        Assert.Empty(preview.Moves);
+        Assert.Contains(preview.Warnings, warning => warning.Contains("pending review"));
     }
 
     [Fact]
