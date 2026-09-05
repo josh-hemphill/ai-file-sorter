@@ -114,12 +114,67 @@ public sealed class GgufCatalogAndDownloadTests
             RootPath = root.Path,
             Scan = ScanOptions.DefaultRecursive(),
             Content = new ContentAnalysisOptions { AnalyzeDocuments = true, AnalyzeMedia = false },
-            Llm = new LlmEndpointSettings { Kind = LlmKind.LocalGguf, LocalGgufPath = model }
+            Llm = new LlmEndpointSettings { Kind = LlmKind.LocalGguf, BuiltinLocalModelId = "", LocalGgufPath = model }
         }, progress: null);
 
         Assert.Contains(plan.Entries, entry => entry.FileName == "invoice.txt" && entry.Category == "Finance" && entry.Subcategory == "Invoices");
         Assert.Equal(1, fake.Calls);
     }
+
+    [Fact]
+    public void Display_name_env_overrides_catalog_label()
+    {
+        using (new EnvVarScope("LOCAL_LLM_3B_DISPLAY_NAME", "Gemma fixture"))
+        {
+            Assert.Equal("Gemma fixture", GgufCatalog.Gemma3Categorization.ResolveDisplayName());
+            Assert.Equal("Mistral 7B Instruct v0.2 Q5_K_M", GgufCatalog.Mistral7B.ResolveDisplayName());
+        }
+    }
+
+    [Fact]
+    public void Shared_gemma_gguf_satisfies_visual_text_model()
+    {
+        using var root = new TempFolder();
+        var dest = GgufStorage.DestinationPath(GgufCatalog.Gemma3Categorization, root.Path);
+        GgufFileValidation.WriteTinyFixture(dest);
+        using var downloader = new GgufDownloader();
+        var probe = downloader.Probe(GgufCatalog.Gemma3VisualModel, root.Path);
+        Assert.Equal(GgufLocalState.Complete, probe.State);
+        Assert.Equal(dest, probe.Path);
+        Assert.Contains("shared", probe.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Selected_catalog_model_does_not_reuse_a_different_downloaded_gguf()
+    {
+        using var root = new TempFolder();
+        var gemma = GgufStorage.DestinationPath(GgufCatalog.Gemma3Categorization, root.Path);
+        GgufFileValidation.WriteTinyFixture(gemma);
+        var settings = new LlmEndpointSettings
+        {
+            Kind = LlmKind.LocalGguf,
+            BuiltinLocalModelId = "mistral-7b",
+            ModelStorageDir = root.Path,
+            LocalGgufPath = gemma
+        };
+        Assert.Equal("", GgufCatalog.ResolveCategorizationModelPath(settings));
+        Assert.Equal(gemma, GgufCatalog.ResolveCategorizationModelPath(settings with { BuiltinLocalModelId = "gemma-3-4b-it" }));
+    }
+}
+
+public sealed class EnvVarScope : IDisposable
+{
+    private readonly string _name;
+    private readonly string? _previous;
+
+    public EnvVarScope(string name, string value)
+    {
+        _name = name;
+        _previous = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, value);
+    }
+
+    public void Dispose() => Environment.SetEnvironmentVariable(_name, _previous);
 }
 
 public sealed class ScriptedLlamaClient : ILocalLlmClient

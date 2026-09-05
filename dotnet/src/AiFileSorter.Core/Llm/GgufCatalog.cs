@@ -29,6 +29,7 @@ public sealed record GgufArtifact
     public required string Id { get; init; }
     public required string DisplayName { get; init; }
     public required string UrlEnv { get; init; }
+    public string NameEnv { get; init; } = "";
     public required string DefaultUrl { get; init; }
     public required string RelativePath { get; init; }
     public required GgufArtifactKind Kind { get; init; }
@@ -40,6 +41,20 @@ public sealed record GgufArtifact
     {
         var env = Environment.GetEnvironmentVariable(UrlEnv);
         return string.IsNullOrWhiteSpace(env) ? DefaultUrl : env.Trim();
+    }
+
+    public string ResolveDisplayName()
+    {
+        if (!string.IsNullOrWhiteSpace(NameEnv))
+        {
+            var env = Environment.GetEnvironmentVariable(NameEnv);
+            if (!string.IsNullOrWhiteSpace(env))
+            {
+                return env.Trim();
+            }
+        }
+
+        return DisplayName;
     }
 }
 
@@ -67,6 +82,7 @@ public static class GgufCatalog
         Id = "gemma-3-4b-it",
         DisplayName = "Gemma 3 4B IT Q4_K_M",
         UrlEnv = "LOCAL_LLM_3B_DOWNLOAD_URL",
+        NameEnv = "LOCAL_LLM_3B_DISPLAY_NAME",
         DefaultUrl = "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
         RelativePath = "gemma-3-4b-it-Q4_K_M.gguf",
         Kind = GgufArtifactKind.TextModel,
@@ -80,6 +96,7 @@ public static class GgufCatalog
         Id = "mistral-7b",
         DisplayName = "Mistral 7B Instruct v0.2 Q5_K_M",
         UrlEnv = "LOCAL_LLM_7B_DOWNLOAD_URL",
+        NameEnv = "LOCAL_LLM_7B_DISPLAY_NAME",
         DefaultUrl = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q5_K_M.gguf",
         RelativePath = "mistral-7b-instruct-v0.2.Q5_K_M.gguf",
         Kind = GgufArtifactKind.TextModel,
@@ -92,6 +109,7 @@ public static class GgufCatalog
         Id = "gemma-1.1-7b",
         DisplayName = "Gemma 1.1 7B IT Q5_K_M",
         UrlEnv = "LOCAL_LLM_7B_GEMMA_DOWNLOAD_URL",
+        NameEnv = "LOCAL_LLM_7B_GEMMA_DISPLAY_NAME",
         DefaultUrl = "https://huggingface.co/bartowski/gemma-1.1-7b-it-GGUF/resolve/main/gemma-1.1-7b-it-Q5_K_M.gguf",
         RelativePath = "gemma-1.1-7b-it-Q5_K_M.gguf",
         Kind = GgufArtifactKind.TextModel,
@@ -103,6 +121,7 @@ public static class GgufCatalog
         Id = "llama-3b-legacy",
         DisplayName = "LLaMa 3b v3.2 Instruct Q8, legacy",
         UrlEnv = "LOCAL_LLM_3B_LEGACY_DOWNLOAD_URL",
+        NameEnv = "LOCAL_LLM_3B_LEGACY_DISPLAY_NAME",
         DefaultUrl = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q8_0.gguf",
         RelativePath = "Llama-3.2-3B-Instruct-Q8_0.gguf",
         Kind = GgufArtifactKind.TextModel,
@@ -198,17 +217,67 @@ public static class GgufCatalog
 
     public static string ResolveCategorizationModelPath(LlmEndpointSettings settings)
     {
-        if (!string.IsNullOrWhiteSpace(settings.LocalGgufPath) && File.Exists(settings.LocalGgufPath))
+        var choice = FindCategorizationModel(settings.BuiltinLocalModelId);
+        if (choice is not null)
         {
-            return settings.LocalGgufPath;
+            var catalogPath = GgufStorage.ResolveExistingPath(choice.Artifact, settings.ModelStorageDir);
+            if (!string.IsNullOrWhiteSpace(catalogPath))
+            {
+                return catalogPath;
+            }
         }
 
-        var choice = FindCategorizationModel(settings.BuiltinLocalModelId) ?? CategorizationModels[0];
-        return GgufStorage.ResolveExistingPath(choice.Artifact, settings.ModelStorageDir) ?? "";
+        if (string.IsNullOrWhiteSpace(settings.LocalGgufPath) || !File.Exists(settings.LocalGgufPath))
+        {
+            return "";
+        }
+
+        if (choice is not null && IsOtherCatalogModelPath(choice, settings.LocalGgufPath, settings.ModelStorageDir))
+        {
+            return "";
+        }
+
+        return settings.LocalGgufPath;
     }
+
+    private static bool IsOtherCatalogModelPath(GgufModelChoice selected, string path, string? storageDir)
+    {
+        foreach (var model in CategorizationModels)
+        {
+            if (model.Id.Equals(selected.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var destination = GgufStorage.DestinationPath(model.Artifact, storageDir);
+            if (PathsEqual(destination, path))
+            {
+                return true;
+            }
+
+            var existing = GgufStorage.ResolveExistingPath(model.Artifact, storageDir);
+            if (!string.IsNullOrWhiteSpace(existing) && PathsEqual(existing, path))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     public static (string? ModelPath, string? MmprojPath) ResolveVisualPaths(LlmEndpointSettings settings)
     {
+        var backend = FindVisualBackend(settings.VisualBackendId);
+        if (backend is not null)
+        {
+            return (
+                GgufStorage.ResolveExistingPath(backend.TextModel, settings.ModelStorageDir),
+                GgufStorage.ResolveExistingPath(backend.Mmproj, settings.ModelStorageDir));
+        }
+
         if (!string.IsNullOrWhiteSpace(settings.LocalGgufPath) &&
             !string.IsNullOrWhiteSpace(settings.LocalMmprojPath) &&
             File.Exists(settings.LocalGgufPath) &&
@@ -217,9 +286,6 @@ public static class GgufCatalog
             return (settings.LocalGgufPath, settings.LocalMmprojPath);
         }
 
-        var backend = FindVisualBackend(settings.VisualBackendId) ?? VisualBackends[0];
-        return (
-            GgufStorage.ResolveExistingPath(backend.TextModel, settings.ModelStorageDir),
-            GgufStorage.ResolveExistingPath(backend.Mmproj, settings.ModelStorageDir));
+        return (null, null);
     }
 }

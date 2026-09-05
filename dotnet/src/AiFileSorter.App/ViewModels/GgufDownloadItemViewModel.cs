@@ -20,7 +20,7 @@ public sealed partial class GgufDownloadItemViewModel : ObservableObject
     }
 
     public GgufArtifact Artifact { get; }
-    public string DisplayName => Artifact.DisplayName;
+    public string DisplayName => Artifact.ResolveDisplayName();
     public string ArtifactId => Artifact.Id;
 
     [ObservableProperty]
@@ -76,7 +76,7 @@ public sealed partial class GgufDownloadItemViewModel : ObservableObject
         LocalPath = probe.Path;
         IsComplete = probe.State == GgufLocalState.Complete;
         CanDelete = probe.State is GgufLocalState.Complete or GgufLocalState.Partial or GgufLocalState.Corrupt;
-        CanDownload = !IsDownloading && probe.State is not GgufLocalState.MissingUrl;
+        CanDownload = !IsDownloading && probe.State is not GgufLocalState.MissingUrl and not GgufLocalState.Complete;
         SizeText = probe.BytesOnDisk > 0
             ? GgufDownloader.FormatSize(probe.BytesOnDisk) + (probe.ExpectedBytes is > 0 ? " / " + GgufDownloader.FormatSize(probe.ExpectedBytes.Value) : "")
             : "";

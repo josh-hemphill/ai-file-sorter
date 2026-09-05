@@ -27,7 +27,7 @@ public static class LlmCatalog
         {
             Id = model.Id,
             Kind = LlmKind.LocalGguf,
-            DisplayName = model.DisplayName,
+            DisplayName = model.Artifact.ResolveDisplayName(),
             Notes = GgufCatalog.FormatFunctions(model.Artifact)
         }).ToArray();
 
@@ -90,7 +90,7 @@ public static class LlmCatalog
     {
         var choice = GgufCatalog.FindCategorizationModel(settings.BuiltinLocalModelId);
         var path = GgufCatalog.ResolveCategorizationModelPath(settings);
-        var name = choice?.DisplayName ?? "Local GGUF";
+        var name = choice?.Artifact.ResolveDisplayName() ?? "Local GGUF";
         return string.IsNullOrWhiteSpace(path) ? $"{name} (not downloaded)" : $"{name} (ready)";
     }
 }

@@ -71,9 +71,9 @@
                   <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
                   <ProgressBar Height="6" Minimum="0" Maximum="1" Value="{Binding Progress}" />
                   <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button Content="Download" Command="{Binding DownloadCommand}" />
-                    <Button Content="Cancel" Command="{Binding CancelCommand}" />
-                    <Button Content="Delete" Command="{Binding DeleteCommand}" />
+                    <Button Content="Download" Command="{Binding DownloadCommand}" IsEnabled="{Binding CanDownload}" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsDownloading}" />
+                    <Button Content="Delete" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDelete}" />
                   </StackPanel>
                 </StackPanel>
               </Border>
@@ -104,9 +104,9 @@
                   <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
                   <ProgressBar Height="6" Minimum="0" Maximum="1" Value="{Binding Progress}" />
                   <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button Content="Download" Command="{Binding DownloadCommand}" />
-                    <Button Content="Cancel" Command="{Binding CancelCommand}" />
-                    <Button Content="Delete" Command="{Binding DeleteCommand}" />
+                    <Button Content="Download" Command="{Binding DownloadCommand}" IsEnabled="{Binding CanDownload}" />
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsDownloading}" />
+                    <Button Content="Delete" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDelete}" />
                   </StackPanel>
                 </StackPanel>
               </Border>

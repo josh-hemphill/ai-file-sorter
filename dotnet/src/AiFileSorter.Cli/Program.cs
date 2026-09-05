@@ -165,7 +165,7 @@ public static class Program
     {
         foreach (var artifact in GgufCatalog.AllArtifacts)
         {
-            Console.WriteLine($"{artifact.Id}\t{artifact.DisplayName}\t{GgufCatalog.FormatFunctions(artifact)}\t{artifact.ResolveUrl()}");
+            Console.WriteLine($"{artifact.Id}\t{artifact.ResolveDisplayName()}\t{GgufCatalog.FormatFunctions(artifact)}\t{artifact.ResolveUrl()}");
         }
 
         return 0;

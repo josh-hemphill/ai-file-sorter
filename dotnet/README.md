@@ -27,9 +27,9 @@ The Avalonia architecture splits those concerns:
 3. **SQLite suggestion database** via `SQLitePCLRaw` (WAL + busy timeout), not
    `Microsoft.Data.Sqlite`. The UI table is a compiled-binding grid, not
    Avalonia DataGrid.
-4. **Local GGUF stays a sidecar later**. Embedding llama.cpp in the UI process
-   would recreate the freeze. Phase 3 should keep the existing C++ headless
-   binary as an optional worker, not compile it into the Avalonia AOT image.
+4. **Local GGUF is a sidecar** (`aifs-llama`). Embedding llama.cpp in the UI
+   process would recreate the freeze. The AOT UI only selects and downloads
+   GGUF files; inference stays out of `aifs-ui`.
 
 ## What this slice ports and adds
 
@@ -64,6 +64,7 @@ dotnet/
   src/AiFileSorter.Core     AOT-safe domain library
   src/AiFileSorter.Cli      Headless CLI + engine worker (`aifs`)
   src/AiFileSorter.App      Avalonia Native AOT UI (`aifs-ui`)
+  src/AiFileSorter.Llama    CPU GGUF sidecar (`aifs-llama`, not Native AOT)
   tests/AiFileSorter.Core.Tests
 ```
 
@@ -130,11 +131,11 @@ Libraries considered and skipped for AOT:
 ## Phased path to feature parity
 
 1. **This PR**: UI isolation, lock-tolerant IO, media content categories,
-   archive-entity suggestions, content-control parity, model catalog, SQLite
-   suggestion DB, remote path-proposal merge, local apply.
-2. Optional local GGUF sidecar via the current C++ `--headless` contract.
-3. Document and image content analysis as additional engine stages (PDFium /
-   visual LLM remain out of the AOT UI).
+   archive-entity suggestions, content-control parity, GGUF select/download,
+   SQLite suggestion DB, remote path-proposal merge, local apply, `aifs-llama`
+   sidecar for categorization and document excerpts.
+2. Real mmproj/LLaVA image inference in the sidecar (downloads already land).
+3. Document PDF text extraction (PDFium stays out of the AOT UI).
 4. Review/apply/undo polish, then deprecate the Qt UI.
 
 Do not attempt to Native-AOT llama.cpp, PDFium, and the Avalonia UI into one
