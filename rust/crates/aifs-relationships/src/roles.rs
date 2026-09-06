@@ -93,7 +93,7 @@ fn role_for(
     }
     if is_year_name(name)
         && !path_has_broad_segment(root)
-        && !BROAD_NAMES.contains(&session_root_name)
+        && !(root.parent().is_none() && BROAD_NAMES.contains(&session_root_name))
     {
         return Some(DirectoryRoleKind::WeakArchive);
     }
@@ -256,6 +256,23 @@ mod tests {
                 role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "2024"
             }),
             "year folders at a Downloads scan root must stay organisable"
+        );
+    }
+
+    #[test]
+    fn nested_year_folder_under_downloads_scan_root_can_still_be_an_archive() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
+        snapshot.entries = vec![
+            dir("Projects"),
+            dir("Projects/2019"),
+            file("Projects/2019/notes.txt", FileFamily::Document),
+        ];
+        classify_directories(&mut snapshot);
+        assert!(
+            snapshot.directory_roles.iter().any(|role| {
+                role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "Projects/2019"
+            }),
+            "nested year folders that are not dump children should keep archive context"
         );
     }
 }

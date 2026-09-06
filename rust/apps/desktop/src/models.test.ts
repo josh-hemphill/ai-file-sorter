@@ -36,7 +36,16 @@ test("withSlotKind clears foreign fields", () => {
   );
   assert.equal(next.kind, "catalog");
   assert.equal(next.model, undefined);
-  assert.equal(next.api_key, "");
+  assert.equal(next.api_key, undefined);
   assert.equal(next.api_key_set, false);
   assert.deepEqual(slotBackend(next), { kind: "catalog", catalog_id: "gemma-3-4b-it" });
+});
+
+test("withSlotKind round-trip to hosted omits a blank key", () => {
+  const off = withSlotKind(
+    { id: "vision", kind: "open_ai", model: "x", api_key_set: true },
+    "off",
+  );
+  const hosted = withSlotKind(off, "open_ai");
+  assert.equal(hosted.api_key, undefined);
 });

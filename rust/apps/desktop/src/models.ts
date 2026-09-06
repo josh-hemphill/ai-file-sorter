@@ -67,7 +67,7 @@ export function withSlotKind(slot: ModelSlot, kind: ModelBackend["kind"]): Model
   return {
     id: slot.id,
     kind,
-    api_key: hosted ? slot.api_key : "",
+    api_key: hosted ? slot.api_key : undefined,
     api_key_set: hosted ? slot.api_key_set : false,
     catalog_id: kind === "catalog" ? (slot.catalog_id ?? BUILTIN_CATALOG[0].id) : undefined,
     path: kind === "local_gguf" ? (slot.path ?? "") : undefined,

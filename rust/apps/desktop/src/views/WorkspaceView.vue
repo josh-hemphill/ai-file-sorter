@@ -701,7 +701,7 @@ function familyOf(entry: ObservedEntry): string {
           </button>
           <button
             type="button"
-            :disabled="busy || !journal || journal.dry_run || journal.status === 'undone'"
+            :disabled="busy || !journalForPlan || journalForPlan.dry_run || journalForPlan.status === 'undone'"
             @click="runUndo"
           >
             Undo
