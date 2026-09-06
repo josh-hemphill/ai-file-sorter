@@ -50,16 +50,17 @@ jobs:
   desktop-ui:
     name: Vue typecheck
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust/apps/desktop
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v2
         with:
           version: 12.3.4
           runtime: node@24
-          working-directory: rust/apps/desktop
+          package-json-file: rust/apps/desktop/package.json
           cache: true
-          require-lockfile: true
+          cache-dependency-path: rust/apps/desktop/pnpm-lock.yaml
       - run: pnpm test
-        working-directory: rust/apps/desktop
       - run: pnpm exec vue-tsc --noEmit
-        working-directory: rust/apps/desktop
