@@ -367,32 +367,30 @@ fn move_file(src: &Path, dest: &Path, on_heartbeat: &mut impl FnMut()) -> Result
 }
 
 fn is_same_file(src: &Path, dest: &Path) -> bool {
-    let Ok(src_meta) = fs::symlink_metadata(src) else {
-        return false;
-    };
-    let Ok(dest_meta) = fs::symlink_metadata(dest) else {
-        return false;
-    };
-    same_file_identity(&src_meta, &dest_meta)
-}
-
-#[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    false
+    #[cfg(unix)]
+    {
+        let Ok(src_meta) = fs::symlink_metadata(src) else {
+            return false;
+        };
+        let Ok(dest_meta) = fs::symlink_metadata(dest) else {
+            return false;
+        };
+        use std::os::unix::fs::MetadataExt;
+        src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino()
+    }
+    #[cfg(windows)]
+    {
+        // `file_index` is unstable (`windows_by_handle`). Canonical paths match for
+        // case-only renames of the same directory entry.
+        match (fs::canonicalize(src), fs::canonicalize(dest)) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
 fn is_cross_device(error: &io::Error) -> bool {

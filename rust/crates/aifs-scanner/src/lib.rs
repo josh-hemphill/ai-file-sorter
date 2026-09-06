@@ -464,14 +464,7 @@ fn inode_from_metadata(metadata: &Metadata, identity: &mut FileIdentity) {
     identity.inode = Some(metadata.ino());
 }
 
-#[cfg(windows)]
-fn inode_from_metadata(metadata: &Metadata, identity: &mut FileIdentity) {
-    use std::os::windows::fs::MetadataExt;
-    identity.device = Some(u64::from(metadata.volume_serial_number().unwrap_or(0)));
-    identity.inode = metadata.file_index();
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn inode_from_metadata(_metadata: &Metadata, _identity: &mut FileIdentity) {}
 
 fn finalize_snapshot(snapshot: &mut WorkspaceSnapshot) {
