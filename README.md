@@ -14,8 +14,9 @@ the engine, CLI, and Tauri 2 + Vue 3 workspace.
   vocabulary. The assistant never gets SQL or raw filesystem operations.
 
 See [`rust/docs/architecture.md`](rust/docs/architecture.md),
-[`rust/docs/domain-model.md`](rust/docs/domain-model.md), and
-[`rust/docs/protocol.md`](rust/docs/protocol.md).
+[`rust/docs/domain-model.md`](rust/docs/domain-model.md),
+[`rust/docs/protocol.md`](rust/docs/protocol.md), and the
+[`golden-path execution plan`](rust/docs/golden-path-execution-plan.md).
 
 ## Quick start
 
