@@ -33,7 +33,8 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 ## Events
 
 - `progress { stage, current, total?, message }` — may repeat; never terminal.
-- `log { level, message }` — never terminal.
+- `log { level, message }` — never terminal. Scan uses this for projects, skips, and
+  bundles so the UI can show a live identification stream.
 - `ready`, `scan_completed`, `revision`, `planned`, `journal`, `chat_reply`,
   `cancelled`, `failed`, `shutdown` — terminal for their request.
 

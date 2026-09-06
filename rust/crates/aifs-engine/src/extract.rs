@@ -9,7 +9,7 @@ use aifs_worker_client::WorkerClient;
 /// Spawns whatever worker binaries are installed and fills `snapshot.evidence`.
 pub fn extract_into_supervised(
     snapshot: &mut WorkspaceSnapshot,
-    mut on_progress: impl FnMut(u64, u64),
+    mut on_progress: impl FnMut(u64, u64, &str),
 ) {
     let mut media = WorkerClient::try_connect(WorkerKind::Media);
     let mut document = WorkerClient::try_connect(WorkerKind::Document);
@@ -18,7 +18,7 @@ pub fn extract_into_supervised(
     let total = snapshot.entries.len() as u64;
     let mut bags = Vec::new();
     for (index, entry) in snapshot.entries.iter().enumerate() {
-        on_progress(index as u64 + 1, total);
+        on_progress(index as u64 + 1, total, entry.path.as_str());
         if let Some(evidence) = extract_one(
             &root,
             entry,

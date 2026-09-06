@@ -7,17 +7,24 @@ mod extract;
 
 use aifs_ai_tools::{execute, interpret, MOCK_ASSISTANT_MODEL};
 use aifs_apply::{apply_plan_with_hooks, undo_journal_with_hooks, ApplyHook};
-use aifs_domain::{JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, WorkspaceSnapshot};
+use aifs_domain::{
+    BundleConstraint, JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, SkipReason,
+    WorkspaceSnapshot,
+};
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
-    decode_line, encode_line, Command, Envelope, ErrorCode, Event, ProposalPolicy, Request,
-    RequestId, ScanOptions, PROTOCOL_VERSION,
+    decode_line, encode_line, Command, Envelope, ErrorCode, Event, LogLevel, ProposalPolicy,
+    Request, RequestId, ScanOptions, PROTOCOL_VERSION,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{scan, ScanError};
 use aifs_store::WorkspaceStore;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+const SCAN_LOG_CAP: usize = 400;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Engine crate version reported on `hello`.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -221,17 +228,12 @@ impl Engine {
             },
         ));
 
+        let mut last_progress = Instant::now()
+            .checked_sub(PROGRESS_INTERVAL)
+            .unwrap_or_else(Instant::now);
         let mut snapshot = match scan(root, &options, session, |current, message| {
-            if current == 1 || current % 50 == 0 {
-                emit(Envelope::reply(
-                    id,
-                    Event::Progress {
-                        stage: "scan".to_owned(),
-                        current,
-                        total: None,
-                        message: message.to_owned(),
-                    },
-                ));
+            if should_emit_progress(&mut last_progress, current, None) {
+                emit_progress(emit, id, "scan", current, None, message);
             }
         }) {
             Ok(snapshot) => snapshot,
@@ -241,29 +243,42 @@ impl Engine {
             }
         };
 
-        emit(Envelope::reply(
+        emit_progress(
+            emit,
             id,
-            Event::Progress {
-                stage: "relationships".to_owned(),
-                current: snapshot.entries.len() as u64,
-                total: Some(snapshot.entries.len() as u64),
-                message: "detecting bundles".to_owned(),
-            },
-        ));
+            "scan",
+            snapshot.entries.len() as u64,
+            Some(snapshot.entries.len() as u64),
+            "walk complete",
+        );
+        emit_scan_logs(emit, id, &snapshot);
+
+        emit_progress(
+            emit,
+            id,
+            "relationships",
+            0,
+            Some(snapshot.entries.len() as u64),
+            "detecting bundles",
+        );
         enrich(&mut snapshot, options.protect_projects);
+        emit_relationship_logs(emit, id, &snapshot);
+        emit_progress(
+            emit,
+            id,
+            "relationships",
+            snapshot.entries.len() as u64,
+            Some(snapshot.entries.len() as u64),
+            format!("{} bundles", snapshot.bundles.len()),
+        );
 
         if options.extract_metadata {
-            extract::extract_into_supervised(&mut snapshot, |current, total| {
-                if current == 1 || current % 50 == 0 || current == total {
-                    emit(Envelope::reply(
-                        id,
-                        Event::Progress {
-                            stage: "extract".to_owned(),
-                            current,
-                            total: Some(total),
-                            message: "reading evidence via workers".to_owned(),
-                        },
-                    ));
+            last_progress = Instant::now()
+                .checked_sub(PROGRESS_INTERVAL)
+                .unwrap_or_else(Instant::now);
+            extract::extract_into_supervised(&mut snapshot, |current, total, path| {
+                if should_emit_progress(&mut last_progress, current, Some(total)) {
+                    emit_progress(emit, id, "extract", current, Some(total), path);
                 }
             });
         }
@@ -655,6 +670,142 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
     )
 }
 
+fn emit_progress(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    stage: &str,
+    current: u64,
+    total: Option<u64>,
+    message: impl Into<String>,
+) {
+    emit(Envelope::reply(
+        id,
+        Event::Progress {
+            stage: stage.to_owned(),
+            current,
+            total,
+            message: message.into(),
+        },
+    ));
+}
+
+fn emit_log(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    level: LogLevel,
+    message: impl Into<String>,
+) {
+    emit(Envelope::reply(
+        id,
+        Event::Log {
+            level,
+            message: message.into(),
+        },
+    ));
+}
+
+fn should_emit_progress(last: &mut Instant, current: u64, total: Option<u64>) -> bool {
+    if current <= 1 || total == Some(current) {
+        *last = Instant::now();
+        return true;
+    }
+    if last.elapsed() >= PROGRESS_INTERVAL {
+        *last = Instant::now();
+        return true;
+    }
+    false
+}
+
+fn skip_log_line(path: &str, reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::ProtectedProject { rule_id } => {
+            format!("{path} · skipped · protected project ({rule_id})")
+        }
+        SkipReason::Symlink => format!("{path} · skipped · symlink"),
+        SkipReason::Hidden => format!("{path} · skipped · hidden"),
+        SkipReason::Junk => format!("{path} · skipped · junk"),
+        SkipReason::DepthLimit => format!("{path} · skipped · depth limit"),
+        SkipReason::Error { message } => format!("{path} · skipped · {message}"),
+    }
+}
+
+fn emit_scan_logs(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    snapshot: &WorkspaceSnapshot,
+) {
+    let mut remaining = SCAN_LOG_CAP;
+    for project in &snapshot.projects {
+        if remaining == 0 {
+            break;
+        }
+        emit_log(
+            emit,
+            id,
+            LogLevel::Info,
+            format!(
+                "{} · {} · {}",
+                project.root.as_str(),
+                project.name,
+                project.reason
+            ),
+        );
+        remaining -= 1;
+    }
+    for skipped in &snapshot.skipped {
+        if remaining == 0 {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                format!(
+                    "{} more skipped entries omitted from the stream",
+                    snapshot.skipped.len().saturating_sub(SCAN_LOG_CAP)
+                ),
+            );
+            break;
+        }
+        let level = match skipped.reason {
+            SkipReason::Error { .. } => LogLevel::Warn,
+            _ => LogLevel::Info,
+        };
+        emit_log(
+            emit,
+            id,
+            level,
+            skip_log_line(skipped.path.as_str(), &skipped.reason),
+        );
+        remaining -= 1;
+    }
+}
+
+fn emit_relationship_logs(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    snapshot: &WorkspaceSnapshot,
+) {
+    for bundle in snapshot.bundles.iter().take(SCAN_LOG_CAP) {
+        let constraint = match &bundle.constraint {
+            BundleConstraint::Protected { reason } => format!("protected · {reason}"),
+            BundleConstraint::MoveTogether => "keep together".to_owned(),
+            BundleConstraint::PreserveLayout { root } => {
+                format!("move as a unit · {}", root.as_str())
+            }
+            BundleConstraint::Soft => "suggestion".to_owned(),
+        };
+        emit_log(
+            emit,
+            id,
+            LogLevel::Info,
+            format!(
+                "{} · {constraint} · {} members",
+                bundle.label,
+                bundle.members.len()
+            ),
+        );
+    }
+}
+
 fn emit_apply_progress(
     emit: &mut impl FnMut(Envelope),
     id: &RequestId,
@@ -793,6 +944,57 @@ mod tests {
                 .any(|envelope| matches!(envelope.event, Event::Progress { .. })),
             "scan should emit progress before completing"
         );
+    }
+
+    #[test]
+    fn scan_stream_includes_projects_skips_and_bundles() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/inbox-mixed");
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root,
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let logs: Vec<_> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter().any(|line| line.contains("Rust project")),
+            "expected project log, got {logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("protected project") || line.contains("keep together")),
+            "expected skip or bundle log, got {logs:?}"
+        );
+        let stages: Vec<_> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Progress { stage, .. } => Some(stage.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(stages.contains(&"scan"), "stages={stages:?}");
+        assert!(stages.contains(&"relationships"), "stages={stages:?}");
     }
 
     fn terminal(events: Vec<Envelope>) -> Event {

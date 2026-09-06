@@ -6,7 +6,7 @@ use aifs_domain::{
     RevisionId, RevisionPatch, SessionId, WorkspaceSnapshot,
 };
 use aifs_engine_client::{discover_engine_binary, EngineClient};
-use aifs_protocol::{Event, FolderStyle, ProposalPolicy, ScanOptions};
+use aifs_protocol::{Event, FolderStyle, LogLevel, ProposalPolicy, ScanOptions};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -21,6 +21,49 @@ struct ProgressPayload {
     current: u64,
     total: Option<u64>,
     message: String,
+}
+
+#[derive(Clone, Serialize)]
+struct LogPayload {
+    level: String,
+    message: String,
+}
+
+fn forward_engine_event(app: &AppHandle, event: &Event) {
+    match event {
+        Event::Progress {
+            stage,
+            current,
+            total,
+            message,
+        } => {
+            let _ = app.emit(
+                "engine-progress",
+                ProgressPayload {
+                    stage: stage.clone(),
+                    current: *current,
+                    total: *total,
+                    message: message.clone(),
+                },
+            );
+        }
+        Event::Log { level, message } => {
+            let level = match level {
+                LogLevel::Debug => "debug",
+                LogLevel::Info => "info",
+                LogLevel::Warn => "warn",
+                LogLevel::Error => "error",
+            };
+            let _ = app.emit(
+                "engine-log",
+                LogPayload {
+                    level: level.to_owned(),
+                    message: message.clone(),
+                },
+            );
+        }
+        _ => {}
+    }
 }
 
 fn with_client<T>(
@@ -107,23 +150,7 @@ fn scan_root(
                     session: None,
                 },
                 |envelope| {
-                    if let Event::Progress {
-                        stage,
-                        current,
-                        total,
-                        message,
-                    } = &envelope.event
-                    {
-                        let _ = app.emit(
-                            "engine-progress",
-                            ProgressPayload {
-                                stage: stage.clone(),
-                                current: *current,
-                                total: *total,
-                                message: message.clone(),
-                            },
-                        );
-                    }
+                    forward_engine_event(&app, &envelope.event);
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -215,23 +242,7 @@ fn apply_plan(
                     dry_run,
                 },
                 |envelope| {
-                    if let Event::Progress {
-                        stage,
-                        current,
-                        total,
-                        message,
-                    } = &envelope.event
-                    {
-                        let _ = app.emit(
-                            "engine-progress",
-                            ProgressPayload {
-                                stage: stage.clone(),
-                                current: *current,
-                                total: *total,
-                                message: message.clone(),
-                            },
-                        );
-                    }
+                    forward_engine_event(&app, &envelope.event);
                 },
             )
             .map_err(|error| error.to_string())?;

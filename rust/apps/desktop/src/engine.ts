@@ -4,6 +4,7 @@ import type {
   ApplyJournal,
   ChatReply,
   Id,
+  LogEvent,
   OperationPlan,
   PlanIssue,
   ProgressEvent,
@@ -81,4 +82,8 @@ export function onEngineProgress(
   handler: (event: ProgressEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<ProgressEvent>("engine-progress", (event) => handler(event.payload));
+}
+
+export function onEngineLog(handler: (event: LogEvent) => void): Promise<UnlistenFn> {
+  return listen<LogEvent>("engine-log", (event) => handler(event.payload));
 }
