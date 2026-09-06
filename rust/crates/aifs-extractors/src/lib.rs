@@ -18,9 +18,19 @@ const MAX_MP4_TEXT_BYTES: u64 = 64 * 1024;
 
 /// Fills `snapshot.evidence` with media tags for readable audio/video files.
 pub fn extract_into(snapshot: &mut WorkspaceSnapshot) {
+    extract_into_with_progress(snapshot, |_, _| {});
+}
+
+/// Like [`extract_into`], reporting `(current, total)` entries as each file is visited.
+pub fn extract_into_with_progress(
+    snapshot: &mut WorkspaceSnapshot,
+    mut on_progress: impl FnMut(u64, u64),
+) {
     let root = snapshot.root.clone();
+    let total = snapshot.entries.len() as u64;
     let mut bags = Vec::new();
-    for entry in &snapshot.entries {
+    for (index, entry) in snapshot.entries.iter().enumerate() {
+        on_progress(index as u64 + 1, total);
         if let Some(evidence) = extract_entry(&root, entry) {
             bags.push(evidence);
         }

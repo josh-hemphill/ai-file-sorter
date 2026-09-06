@@ -1,6 +1,6 @@
 //! Command-line interface that talks to `aifs-engine` over stdio.
 
-use aifs_domain::{RevisionAuthor, RevisionPatch};
+use aifs_domain::{JournalStatus, RevisionAuthor, RevisionPatch};
 use aifs_engine_client::{discover_engine_binary, EngineClient};
 use aifs_protocol::{ProposalPolicy, ScanOptions};
 use clap::{Parser, Subcommand};
@@ -147,7 +147,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let journal = client.apply(snapshot.session, plan.id, !apply)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&journal)?);
-            } else {
+            }
+            if journal.status == JournalStatus::Failed {
+                return Err(format!(
+                    "apply failed ({} done, {} failed)",
+                    journal.done_count(),
+                    journal.failed_count()
+                )
+                .into());
+            }
+            if !json {
                 println!(
                     "{} {} ({} moves, {} done, dry_run={})",
                     if apply { "Applied" } else { "Previewed" },

@@ -68,18 +68,14 @@ fn archive_group_key(file_name: &str) -> Option<String> {
     if let Some(base) = part_nn_base(&lower) {
         return Some(base);
     }
-    if let Some(base) = numeric_extension_base(&lower) {
+    if let Some(base) = numbered_suffix_on_archive(&lower) {
         return Some(base);
     }
-    if let Some(stem) = split_volume_stem(&lower) {
-        return Some(stem);
+    if let Some(base) = split_volume_key(&lower) {
+        return Some(base);
     }
-    for ext in [".zip", ".rar", ".7z"] {
-        if let Some(stem) = lower.strip_suffix(ext) {
-            if !stem.is_empty() {
-                return Some(stem.to_owned());
-            }
-        }
+    if is_archive_anchor_name(&lower) {
+        return Some(lower);
     }
     None
 }
@@ -101,32 +97,40 @@ fn part_nn_base(lower: &str) -> Option<String> {
     Some(format!("{head}.{ext}"))
 }
 
-fn numeric_extension_base(lower: &str) -> Option<String> {
+fn numbered_suffix_on_archive(lower: &str) -> Option<String> {
     let (stem, ext) = lower.rsplit_once('.')?;
     if ext.len() < 2 || ext.len() > 3 || !ext.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
-    if stem.is_empty() {
-        return None;
-    }
-    Some(stem.to_owned())
-}
-
-fn split_volume_stem(lower: &str) -> Option<String> {
-    let (stem, ext) = lower.rsplit_once('.')?;
-    if stem.is_empty() {
-        return None;
-    }
-    if (ext.starts_with('z') || ext.starts_with('r'))
-        && ext.len() == 3
-        && ext[1..].chars().all(|ch| ch.is_ascii_digit())
-    {
+    if is_archive_anchor_name(stem) {
         return Some(stem.to_owned());
     }
     None
 }
 
+fn split_volume_key(lower: &str) -> Option<String> {
+    let (stem, ext) = lower.rsplit_once('.')?;
+    if stem.is_empty() || ext.len() != 3 {
+        return None;
+    }
+    let digits = &ext[1..];
+    if !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    match ext.as_bytes()[0] {
+        b'z' => Some(format!("{stem}.zip")),
+        b'r' => Some(format!("{stem}.rar")),
+        _ => None,
+    }
+}
+
 fn is_archive_anchor(file_name: &str) -> bool {
-    let lower = file_name.to_ascii_lowercase();
+    is_archive_anchor_name(&file_name.to_ascii_lowercase())
+}
+
+fn is_archive_anchor_name(lower: &str) -> bool {
+    if part_nn_base(lower).is_some() || numbered_suffix_on_archive(lower).is_some() {
+        return false;
+    }
     lower.ends_with(".zip") || lower.ends_with(".rar") || lower.ends_with(".7z")
 }

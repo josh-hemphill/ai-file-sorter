@@ -146,6 +146,54 @@ mod tests {
     }
 
     #[test]
+    fn seven_zip_and_part_zip_volumes_share_the_archive_key() {
+        let mut snapshot = snapshot_with(vec![
+            file("archive.7z", FileFamily::Archive),
+            file("archive.7z.001", FileFamily::Archive),
+            file("name.zip", FileFamily::Archive),
+            file("name.part1.zip", FileFamily::Archive),
+        ]);
+        enrich(&mut snapshot, true);
+        let labels: Vec<_> = snapshot
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.kind == BundleKind::ArchiveParts)
+            .map(|bundle| (bundle.label.clone(), bundle.members.len()))
+            .collect();
+        assert!(
+            labels
+                .iter()
+                .any(|(label, count)| label == "archive.7z" && *count == 2),
+            "expected archive.7z + archive.7z.001 together, got {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(label, count)| label == "name.zip" && *count == 2),
+            "expected name.zip + name.part1.zip together, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_formats_and_numeric_extensions_are_not_archive_parts() {
+        let mut snapshot = snapshot_with(vec![
+            file("foo.zip", FileFamily::Archive),
+            file("foo.rar", FileFamily::Archive),
+            file("chapter.01", FileFamily::Generic),
+            file("chapter.02", FileFamily::Generic),
+        ]);
+        enrich(&mut snapshot, true);
+        assert!(
+            snapshot
+                .bundles
+                .iter()
+                .all(|bundle| bundle.kind != BundleKind::ArchiveParts),
+            "unrelated names must not form archive bundles, got {:?}",
+            snapshot.bundles
+        );
+    }
+
+    #[test]
     fn numbered_photos_form_a_soft_series() {
         let mut snapshot = snapshot_with(vec![
             file("IMG_001.jpg", FileFamily::Image),

@@ -58,6 +58,8 @@ pub enum ScanError {
 
 /// Walks `root` and returns entries, skipped items, and project matches.
 ///
+/// A strong project at the session root is recorded but still walked so the
+/// snapshot contains its files. Nested strong projects skip their children.
 /// Relationship bundles and media evidence are filled in later by the engine.
 pub fn scan(
     root: &Path,
@@ -72,19 +74,7 @@ pub fn scan(
     if let Some(detected) = detect_project(&root) {
         snapshot
             .projects
-            .push(detected.clone().into_match(RelativePath::session_root()));
-        if options.protect_projects && should_skip_traversal(&detected) {
-            skip_immediate_children(
-                &root,
-                &root,
-                SkipReason::ProtectedProject {
-                    rule_id: detected.rule_id,
-                },
-                &mut snapshot,
-            );
-            finalize_snapshot(&mut snapshot);
-            return Ok(snapshot);
-        }
+            .push(detected.into_match(RelativePath::session_root()));
     }
 
     let mut pending = vec![PendingDir {
@@ -406,10 +396,11 @@ fn file_identity(
     kind: EntryKind,
     fingerprint_prefix_bytes: u64,
 ) -> (FileIdentity, LockState) {
+    let is_directory = metadata.is_dir();
     let mut identity = FileIdentity {
         device: None,
         inode: None,
-        size: if kind == EntryKind::File {
+        size: if kind == EntryKind::File && !is_directory {
             metadata.len()
         } else {
             0
@@ -419,7 +410,9 @@ fn file_identity(
     };
     inode_from_metadata(metadata, &mut identity);
 
-    if kind != EntryKind::File || fingerprint_prefix_bytes == 0 {
+    // macOS bundles are classified as files but are directories on disk; hashing them
+    // fails with EISDIR and would otherwise mark a readable package as locked.
+    if kind != EntryKind::File || fingerprint_prefix_bytes == 0 || is_directory {
         return (identity, LockState::Readable);
     }
 
@@ -605,6 +598,59 @@ mod tests {
             .collect();
         assert_eq!(hashes.len(), 2);
         assert_eq!(hashes[0], hashes[1]);
+    }
+
+    #[test]
+    fn session_root_project_is_recorded_and_still_walked() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::create_dir(dir.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("README.md"), b"hello").unwrap_or_else(|e| panic!("{e}"));
+        fs::create_dir_all(dir.path().join("src")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("src/main.rs"), b"fn main() {}")
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        let snapshot = scan_tree(dir.path(), ScanOptions::default());
+        assert!(
+            snapshot
+                .projects
+                .iter()
+                .any(|project| project.rule_id == "git" && project.root.is_session_root()),
+            "expected a git project at the session root, got {:?}",
+            snapshot.projects
+        );
+        let names: Vec<_> = snapshot
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str().to_owned())
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "README.md"),
+            "session-root projects must still include files, got {names:?}"
+        );
+        assert!(names.iter().any(|name| name == "src"));
+        assert!(names.iter().any(|name| name == "src/main.rs"));
+    }
+
+    #[test]
+    fn macos_bundle_directories_are_readable_files() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let bundle = dir.path().join("Notes.app");
+        fs::create_dir_all(bundle.join("Contents")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(bundle.join("Contents/Info.plist"), b"plist").unwrap_or_else(|e| panic!("{e}"));
+
+        let snapshot = scan_tree(dir.path(), ScanOptions::default());
+        let entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "Notes.app")
+            .unwrap_or_else(|| panic!("Notes.app"));
+        assert_eq!(entry.kind, EntryKind::File);
+        assert_eq!(entry.lock, LockState::Readable);
+        assert!(entry.identity.content_fingerprint.is_none());
+        assert!(!snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.path.as_str().starts_with("Notes.app/")));
     }
 
     #[test]

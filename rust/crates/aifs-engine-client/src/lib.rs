@@ -10,10 +10,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const ENGINE_BINARY: &str = if cfg!(windows) {
     "aifs-engine.exe"
 } else {
@@ -359,7 +360,25 @@ impl EngineClient {
 
 impl Drop for EngineClient {
     fn drop(&mut self) {
-        self.stdin.take();
+        if let Some(mut stdin) = self.stdin.take() {
+            if let Ok(line) = encode_line(&Request {
+                id: RequestId("shutdown".to_owned()),
+                command: Command::Shutdown,
+            }) {
+                let _ = writeln!(stdin, "{line}");
+                let _ = stdin.flush();
+            }
+        }
+        let deadline = Instant::now() + GRACEFUL_SHUTDOWN_WAIT;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                _ => break,
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

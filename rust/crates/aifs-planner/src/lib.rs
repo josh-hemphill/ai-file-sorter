@@ -293,6 +293,12 @@ pub fn validate(
     }
 
     let index = snapshot.entry_index();
+    let accepted_by_asset: HashMap<AssetId, &Placement> = accepted
+        .iter()
+        .map(|placement| (placement.asset, *placement))
+        .collect();
+    check_move_together_bundles(snapshot, &accepted_by_asset, &mut issues);
+
     let mut moves: Vec<(AssetId, RelativePath, RelativePath)> = Vec::new();
     for placement in accepted {
         let Some(entry) = index.get(&placement.asset) else {
@@ -306,7 +312,7 @@ pub fn validate(
         if entry.path == placement.destination {
             continue;
         }
-        check_bundle_rules(snapshot, entry, placement, &mut issues);
+        check_protected_member(snapshot, entry, placement, &mut issues);
         moves.push((entry.id, entry.path.clone(), placement.destination.clone()));
     }
 
@@ -363,6 +369,9 @@ pub fn validate(
     let mut created = BTreeSet::new();
     for (_, _, dest) in &ordered {
         if let Some(parent) = dest.parent() {
+            if snapshot_has_directory(snapshot, &parent) {
+                continue;
+            }
             if created.insert(parent.case_fold()) {
                 operations.push(PlannedOperation {
                     seq,
@@ -404,7 +413,63 @@ pub fn validate(
     (Some(plan), issues)
 }
 
-fn check_bundle_rules(
+fn snapshot_has_directory(snapshot: &WorkspaceSnapshot, path: &RelativePath) -> bool {
+    if path.is_session_root() {
+        return true;
+    }
+    snapshot
+        .entries
+        .iter()
+        .any(|entry| entry.path == *path && matches!(entry.kind, EntryKind::Directory))
+}
+
+fn destination_folder(path: &RelativePath) -> String {
+    path.parent()
+        .map(|parent| parent.case_fold())
+        .unwrap_or_default()
+}
+
+fn check_move_together_bundles(
+    snapshot: &WorkspaceSnapshot,
+    accepted: &HashMap<AssetId, &Placement>,
+    issues: &mut Vec<PlanIssue>,
+) {
+    for bundle in &snapshot.bundles {
+        if bundle.constraint != BundleConstraint::MoveTogether {
+            continue;
+        }
+        let mut folders: BTreeMap<String, Vec<AssetId>> = BTreeMap::new();
+        for member in &bundle.members {
+            let Some(entry) = snapshot.entry(*member) else {
+                continue;
+            };
+            if entry.kind != EntryKind::File {
+                continue;
+            }
+            let dest = accepted
+                .get(member)
+                .map(|placement| placement.destination.clone())
+                .unwrap_or_else(|| entry.path.clone());
+            folders
+                .entry(destination_folder(&dest))
+                .or_default()
+                .push(*member);
+        }
+        if folders.len() > 1 {
+            let assets: Vec<AssetId> = folders.into_values().flatten().collect();
+            issues.push(PlanIssue::error(
+                "bundle_split",
+                format!(
+                    "hard bundle '{}' must keep members in the same destination folder",
+                    bundle.label
+                ),
+                assets,
+            ));
+        }
+    }
+}
+
+fn check_protected_member(
     snapshot: &WorkspaceSnapshot,
     entry: &ObservedEntry,
     placement: &Placement,
@@ -413,32 +478,14 @@ fn check_bundle_rules(
     let Some(bundle) = snapshot.hard_bundle_for(entry.id) else {
         return;
     };
-    match &bundle.constraint {
-        BundleConstraint::Protected { reason } => {
-            if placement.destination != entry.path {
-                issues.push(PlanIssue::error(
-                    "protected_member",
-                    reason.clone(),
-                    vec![entry.id],
-                ));
-            }
+    if let BundleConstraint::Protected { reason } = &bundle.constraint {
+        if placement.destination != entry.path {
+            issues.push(PlanIssue::error(
+                "protected_member",
+                reason.clone(),
+                vec![entry.id],
+            ));
         }
-        BundleConstraint::MoveTogether => {
-            let dest_folder = placement.destination.parent().map(|path| path.case_fold());
-            for member in &bundle.members {
-                if let Some(other) = snapshot.entry(*member) {
-                    if other.kind != EntryKind::File {
-                        continue;
-                    }
-                    // Checked globally via destinations; warn if this member's dest folder differs
-                    // once we see another accepted placement in the revision? Skip here; validate
-                    // after all accepted are known.
-                    let _ = dest_folder;
-                    let _ = other;
-                }
-            }
-        }
-        _ => {}
     }
 }
 
@@ -553,5 +600,45 @@ mod tests {
             .all(|issue| issue.severity != PlanIssueSeverity::Error));
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(plan.move_count() == 1);
+    }
+
+    #[test]
+    fn move_together_split_is_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let raw = file("IMG_1.CR2", FileFamily::RawImage);
+        let jpeg = file("IMG_1.jpg", FileFamily::Image);
+        let raw_id = raw.id;
+        let jpeg_id = jpeg.id;
+        snapshot.entries.push(raw);
+        snapshot.entries.push(jpeg);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::SidecarGroup,
+            label: "IMG_1".into(),
+            members: vec![raw_id, jpeg_id],
+            anchor: Some(raw_id),
+            constraint: BundleConstraint::MoveTogether,
+            reason: "sidecar".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let only_raw = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "accept raw only",
+                &[aifs_domain::RevisionPatch::Accept {
+                    assets: vec![raw_id],
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &only_raw);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+
+        let both = accept_all(&revision).unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &both);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(plan.is_some());
     }
 }

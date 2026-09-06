@@ -290,6 +290,7 @@ fn placement_mut(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::RelativePathError;
 
     fn revision_with(asset: AssetId, destination: &str) -> ProposalRevision {
         let mut revision = ProposalRevision::new(SessionId::new(), RevisionAuthor::Engine, "seed");
@@ -367,6 +368,31 @@ mod tests {
             .err(),
             Some(PatchError::UnknownAsset(unknown))
         );
+        let nested = base.with_patches(
+            RevisionAuthor::User,
+            "bad-rename",
+            &[RevisionPatch::Rename {
+                asset,
+                file_name: "folder/track.mp3".into(),
+            }],
+        );
+        assert!(
+            matches!(
+                nested,
+                Err(PatchError::Path(RelativePathError::NotAFileName(_)))
+            ),
+            "rename must reject a multi-segment name, got {nested:?}"
+        );
+        assert!(base
+            .with_patches(
+                RevisionAuthor::User,
+                "dot",
+                &[RevisionPatch::Rename {
+                    asset,
+                    file_name: ".".into(),
+                }],
+            )
+            .is_err());
     }
 
     #[test]

@@ -28,7 +28,23 @@ pub fn apply_plan(
     plan: &OperationPlan,
     dry_run: bool,
 ) -> ApplyJournal {
-    apply_plan_with_prefix(snapshot, plan, dry_run, DEFAULT_FINGERPRINT_PREFIX)
+    apply_plan_with_progress(snapshot, plan, dry_run, |_| {})
+}
+
+/// Applies a plan, invoking `on_progress` after the journal is created and after each op.
+pub fn apply_plan_with_progress(
+    snapshot: &WorkspaceSnapshot,
+    plan: &OperationPlan,
+    dry_run: bool,
+    on_progress: impl FnMut(&ApplyJournal),
+) -> ApplyJournal {
+    apply_plan_with_prefix_and_progress(
+        snapshot,
+        plan,
+        dry_run,
+        DEFAULT_FINGERPRINT_PREFIX,
+        on_progress,
+    )
 }
 
 /// Applies a plan using a specific fingerprint prefix when re-checking identities.
@@ -37,6 +53,17 @@ pub fn apply_plan_with_prefix(
     plan: &OperationPlan,
     dry_run: bool,
     fingerprint_prefix_bytes: u64,
+) -> ApplyJournal {
+    apply_plan_with_prefix_and_progress(snapshot, plan, dry_run, fingerprint_prefix_bytes, |_| {})
+}
+
+/// Applies a plan with a fingerprint prefix and a progress sink.
+pub fn apply_plan_with_prefix_and_progress(
+    snapshot: &WorkspaceSnapshot,
+    plan: &OperationPlan,
+    dry_run: bool,
+    fingerprint_prefix_bytes: u64,
+    mut on_progress: impl FnMut(&ApplyJournal),
 ) -> ApplyJournal {
     let mut journal = ApplyJournal {
         id: JournalId::new(),
@@ -57,38 +84,61 @@ pub fn apply_plan_with_prefix(
             })
             .collect(),
     };
+    on_progress(&journal);
 
     if dry_run {
         journal.status = JournalStatus::Completed;
         journal.finished_at = Some(Timestamp::now());
+        on_progress(&journal);
         return journal;
     }
 
     for index in 0..journal.entries.len() {
         let operation = journal.entries[index].operation.clone();
         match run_operation(&snapshot.root, &operation, fingerprint_prefix_bytes) {
-            Ok(()) => {
+            Ok(RunOutcome::Done) => {
                 journal.entries[index].state = JournalState::Done;
+            }
+            Ok(RunOutcome::Skipped(reason)) => {
+                journal.entries[index].state = JournalState::Skipped { reason };
             }
             Err(message) => {
                 journal.entries[index].state = JournalState::Failed {
                     message: message.clone(),
                 };
+                journal.entries[index].updated_at = Timestamp::now();
                 journal.status = JournalStatus::Failed;
                 journal.finished_at = Some(Timestamp::now());
+                on_progress(&journal);
                 return journal;
             }
         }
         journal.entries[index].updated_at = Timestamp::now();
+        on_progress(&journal);
     }
     journal.status = JournalStatus::Completed;
     journal.finished_at = Some(Timestamp::now());
+    on_progress(&journal);
     journal
 }
 
 /// Reverses a completed (or partially completed) journal.
 pub fn undo_journal(snapshot: &WorkspaceSnapshot, journal: &ApplyJournal) -> ApplyJournal {
-    undo_journal_with_prefix(snapshot, journal, DEFAULT_FINGERPRINT_PREFIX)
+    undo_journal_with_progress(snapshot, journal, |_| {})
+}
+
+/// Undo with a progress sink after each reversed operation.
+pub fn undo_journal_with_progress(
+    snapshot: &WorkspaceSnapshot,
+    journal: &ApplyJournal,
+    on_progress: impl FnMut(&ApplyJournal),
+) -> ApplyJournal {
+    undo_journal_with_prefix_and_progress(
+        snapshot,
+        journal,
+        DEFAULT_FINGERPRINT_PREFIX,
+        on_progress,
+    )
 }
 
 /// Undo using a specific fingerprint prefix.
@@ -97,12 +147,24 @@ pub fn undo_journal_with_prefix(
     journal: &ApplyJournal,
     fingerprint_prefix_bytes: u64,
 ) -> ApplyJournal {
+    undo_journal_with_prefix_and_progress(snapshot, journal, fingerprint_prefix_bytes, |_| {})
+}
+
+/// Undo with a fingerprint prefix and a progress sink.
+pub fn undo_journal_with_prefix_and_progress(
+    snapshot: &WorkspaceSnapshot,
+    journal: &ApplyJournal,
+    fingerprint_prefix_bytes: u64,
+    mut on_progress: impl FnMut(&ApplyJournal),
+) -> ApplyJournal {
     let mut next = journal.clone();
     if journal.dry_run {
         next.status = JournalStatus::Undone;
         next.finished_at = Some(Timestamp::now());
+        on_progress(&next);
         return next;
     }
+    on_progress(&next);
     for index in (0..next.entries.len()).rev() {
         if !matches!(next.entries[index].state, JournalState::Done) {
             continue;
@@ -117,19 +179,32 @@ pub fn undo_journal_with_prefix(
                 next.entries[index].state = JournalState::Failed { message };
                 next.status = JournalStatus::Failed;
                 next.finished_at = Some(Timestamp::now());
+                on_progress(&next);
                 return next;
             }
         }
+        on_progress(&next);
     }
     next.status = JournalStatus::Undone;
     next.finished_at = Some(Timestamp::now());
+    on_progress(&next);
     next
 }
 
-fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<(), String> {
+enum RunOutcome {
+    Done,
+    Skipped(String),
+}
+
+fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<RunOutcome, String> {
     match operation {
         Operation::CreateDirectory { path } => {
-            fs::create_dir_all(path.resolve(root)).map_err(|error| error.to_string())
+            let dir = path.resolve(root);
+            if dir.exists() {
+                return Ok(RunOutcome::Skipped("directory already exists".to_owned()));
+            }
+            fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+            Ok(RunOutcome::Done)
         }
         Operation::Move {
             from, to, expected, ..
@@ -140,13 +215,16 @@ fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<(), 
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
-            move_file(&src, &dest)
+            move_file(&src, &dest)?;
+            Ok(RunOutcome::Done)
         }
         Operation::RemoveEmptyDirectory { path } => {
             let dir = path.resolve(root);
             match fs::remove_dir(&dir) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Ok(()) => Ok(RunOutcome::Done),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(RunOutcome::Skipped("directory already absent".to_owned()))
+                }
                 Err(error) => Err(error.to_string()),
             }
         }
@@ -158,7 +236,9 @@ fn reverse_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<
         Operation::CreateDirectory { path } => {
             let dir = path.resolve(root);
             match fs::remove_dir(&dir) {
-                Ok(()) | Err(_) => Ok(()),
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.to_string()),
             }
         }
         Operation::Move {
@@ -198,6 +278,12 @@ fn identities_compatible(expected: &FileIdentity, current: &FileIdentity) -> boo
 }
 
 fn move_file(src: &Path, dest: &Path) -> Result<(), String> {
+    if src == dest {
+        return Ok(());
+    }
+    if dest.exists() {
+        return Err(format!("destination already exists: {}", dest.display()));
+    }
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(error) if is_cross_device(&error) => copy_verify_delete(src, dest),
@@ -240,8 +326,8 @@ fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
 mod tests {
     use super::*;
     use aifs_domain::{
-        AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, RelativePath,
-        ReviewState, SessionId,
+        AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, Operation,
+        RelativePath, ReviewState, SessionId,
     };
     use aifs_planner::{accept_all, propose, validate};
     use aifs_protocol::ProposalPolicy;
@@ -328,5 +414,70 @@ mod tests {
         assert_eq!(applied.status, JournalStatus::Failed);
         assert!(dir.path().join("note.txt").exists());
         let _ = FileIdentity::default();
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_destination() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), dir.path().to_path_buf());
+        snapshot
+            .entries
+            .push(scan_like(dir.path(), "note.txt", b"hello"));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, _) = validate(&snapshot, &revision);
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        fs::create_dir_all(dir.path().join("Documents")).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("Documents/note.txt"), b"keep-me")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let applied = apply_plan(&snapshot, &plan, false);
+        assert_eq!(applied.status, JournalStatus::Failed);
+        assert_eq!(
+            fs::read(dir.path().join("note.txt")).ok(),
+            Some(b"hello".to_vec())
+        );
+        assert_eq!(
+            fs::read(dir.path().join("Documents/note.txt")).ok(),
+            Some(b"keep-me".to_vec())
+        );
+    }
+
+    #[test]
+    fn undo_does_not_delete_a_preexisting_destination_folder() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::create_dir_all(dir.path().join("Documents")).unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), dir.path().to_path_buf());
+        snapshot.entries.push(ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse("Documents").unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: FileIdentity::default(),
+            is_hidden: false,
+            lock: LockState::Readable,
+        });
+        snapshot
+            .entries
+            .push(scan_like(dir.path(), "note.txt", b"hello"));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, _) = validate(&snapshot, &revision);
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|op| matches!(
+                op.operation,
+                Operation::CreateDirectory { ref path } if path.as_str() == "Documents"
+            )),
+            "planner must not mkdir a folder that already exists in the snapshot"
+        );
+        let applied = apply_plan(&snapshot, &plan, false);
+        assert_eq!(applied.status, JournalStatus::Completed);
+        let undone = undo_journal(&snapshot, &applied);
+        assert_eq!(undone.status, JournalStatus::Undone);
+        assert!(
+            dir.path().join("Documents").is_dir(),
+            "preexisting Documents/ must survive undo"
+        );
+        assert!(dir.path().join("note.txt").exists());
     }
 }

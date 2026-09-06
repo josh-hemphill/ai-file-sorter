@@ -3,9 +3,9 @@
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 //! `undo`, `cancel`, and `shutdown`.
 
-use aifs_apply::{apply_plan, undo_journal};
+use aifs_apply::{apply_plan_with_progress, undo_journal_with_progress};
 use aifs_domain::{JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, WorkspaceSnapshot};
-use aifs_extractors::extract_into;
+use aifs_extractors::extract_into_with_progress;
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
     decode_line, encode_line, Command, Envelope, ErrorCode, Event, ProposalPolicy, Request,
@@ -70,20 +70,29 @@ impl Engine {
         self.shutdown
     }
 
-    /// Handles one already-decoded request.
+    /// Handles one already-decoded request, collecting envelopes until the request ends.
     pub fn handle(&mut self, request: Request) -> Vec<Envelope> {
+        let mut events = Vec::new();
+        self.handle_with(request, &mut |envelope| events.push(envelope));
+        events
+    }
+
+    /// Handles one request, emitting envelopes as they are produced (including progress).
+    pub fn handle_with(&mut self, request: Request, emit: &mut impl FnMut(Envelope)) {
         match request.command {
             Command::Hello {
                 client: _,
                 protocol_version,
-            } => vec![self.handle_hello(&request.id, protocol_version)],
+            } => emit(self.handle_hello(&request.id, protocol_version)),
             Command::Scan {
                 root,
                 options,
                 session,
-            } => self.handle_scan(&request.id, &root, options, session),
+            } => self.handle_scan(&request.id, &root, options, session, emit),
             Command::Propose { session, policy } => {
-                self.handle_propose(&request.id, session, policy)
+                for envelope in self.handle_propose(&request.id, session, policy) {
+                    emit(envelope);
+                }
             }
             Command::Patch {
                 session,
@@ -91,38 +100,55 @@ impl Engine {
                 author,
                 summary,
                 patches,
-            } => self.handle_patch(
-                &request.id,
-                session,
-                base_revision,
-                author,
-                summary,
-                patches,
-            ),
-            Command::Plan { session, revision } => self.handle_plan(&request.id, session, revision),
+            } => {
+                for envelope in self.handle_patch(
+                    &request.id,
+                    session,
+                    base_revision,
+                    author,
+                    summary,
+                    patches,
+                ) {
+                    emit(envelope);
+                }
+            }
+            Command::Plan { session, revision } => {
+                for envelope in self.handle_plan(&request.id, session, revision) {
+                    emit(envelope);
+                }
+            }
             Command::Apply {
                 session,
                 plan,
                 dry_run,
-            } => self.handle_apply(&request.id, session, plan, dry_run),
-            Command::Undo { session, journal } => self.handle_undo(&request.id, session, journal),
+            } => self.handle_apply(&request.id, session, plan, dry_run, emit),
+            Command::Undo { session, journal } => {
+                self.handle_undo(&request.id, session, journal, emit)
+            }
             Command::Shutdown => {
                 self.shutdown = true;
-                vec![Envelope::reply(&request.id, Event::Shutdown)]
+                emit(Envelope::reply(&request.id, Event::Shutdown));
             }
-            Command::Cancel { .. } => vec![Envelope::reply(&request.id, Event::Cancelled)],
+            Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
         }
     }
 
     /// Parses one stdin line and returns the envelopes to write.
     pub fn handle_line(&mut self, line: &str) -> Vec<Envelope> {
+        let mut events = Vec::new();
+        self.handle_line_with(line, &mut |envelope| events.push(envelope));
+        events
+    }
+
+    /// Parses one stdin line and emits envelopes as they are produced.
+    pub fn handle_line_with(&mut self, line: &str, emit: &mut impl FnMut(Envelope)) {
         match decode_line::<Request>(line) {
-            Ok(request) => self.handle(request),
-            Err(error) => vec![Envelope::broadcast(Event::Failed {
+            Ok(request) => self.handle_with(request, emit),
+            Err(error) => emit(Envelope::broadcast(Event::Failed {
                 code: ErrorCode::InvalidRequest,
                 message: error.to_string(),
                 issues: vec![],
-            })],
+            })),
         }
     }
 
@@ -156,21 +182,22 @@ impl Engine {
         root: &Path,
         options: ScanOptions,
         session: Option<SessionId>,
-    ) -> Vec<Envelope> {
+        emit: &mut impl FnMut(Envelope),
+    ) {
         if !self.hello_ok {
-            return vec![Envelope::reply(
+            emit(Envelope::reply(
                 id,
                 Event::Failed {
                     code: ErrorCode::InvalidRequest,
                     message: "send hello before scan".to_owned(),
                     issues: vec![],
                 },
-            )];
+            ));
+            return;
         }
 
         let session = session.unwrap_or_default();
-        let mut events = Vec::new();
-        events.push(Envelope::reply(
+        emit(Envelope::reply(
             id,
             Event::Progress {
                 stage: "scan".to_owned(),
@@ -182,7 +209,7 @@ impl Engine {
 
         let mut snapshot = match scan(root, &options, session, |current, message| {
             if current == 1 || current % 50 == 0 {
-                events.push(Envelope::reply(
+                emit(Envelope::reply(
                     id,
                     Event::Progress {
                         stage: "scan".to_owned(),
@@ -195,11 +222,12 @@ impl Engine {
         }) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                return vec![scan_error_event(id, error)];
+                emit(scan_error_event(id, error));
+                return;
             }
         };
 
-        events.push(Envelope::reply(
+        emit(Envelope::reply(
             id,
             Event::Progress {
                 stage: "relationships".to_owned(),
@@ -211,23 +239,26 @@ impl Engine {
         enrich(&mut snapshot, options.protect_projects);
 
         if options.extract_metadata {
-            events.push(Envelope::reply(
-                id,
-                Event::Progress {
-                    stage: "extract".to_owned(),
-                    current: 0,
-                    total: Some(snapshot.entries.len() as u64),
-                    message: "reading media tags".to_owned(),
-                },
-            ));
-            extract_into(&mut snapshot);
+            extract_into_with_progress(&mut snapshot, |current, total| {
+                if current == 1 || current % 50 == 0 || current == total {
+                    emit(Envelope::reply(
+                        id,
+                        Event::Progress {
+                            stage: "extract".to_owned(),
+                            current,
+                            total: Some(total),
+                            message: "reading media tags".to_owned(),
+                        },
+                    ));
+                }
+            });
         }
 
         if let Err(error) = self.store.put_snapshot(&snapshot) {
-            return vec![store_failed(id, error)];
+            emit(store_failed(id, error));
+            return;
         }
-        events.push(Envelope::reply(id, Event::ScanCompleted { snapshot }));
-        events
+        emit(Envelope::reply(id, Event::ScanCompleted { snapshot }));
     }
 
     fn handle_propose(
@@ -333,25 +364,54 @@ impl Engine {
         session: SessionId,
         plan: PlanId,
         dry_run: bool,
-    ) -> Vec<Envelope> {
+        emit: &mut impl FnMut(Envelope),
+    ) {
         if let Some(failed) = self.require_hello(id) {
-            return vec![failed];
+            emit(failed);
+            return;
         }
         let snapshot = match self.store.get_snapshot(session) {
             Ok(Some(snapshot)) => snapshot,
-            Ok(None) => return vec![not_found(id, "session snapshot")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "session snapshot"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
         let plan = match self.store.get_plan(plan) {
             Ok(Some(plan)) => plan,
-            Ok(None) => return vec![not_found(id, "plan")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "plan"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
-        let journal = apply_plan(&snapshot, &plan, dry_run);
+        let stage = if dry_run { "apply-dry-run" } else { "apply" };
+        let journal = apply_plan_with_progress(&snapshot, &plan, dry_run, |journal| {
+            let _ = self.store.put_journal(session, journal);
+            emit(Envelope::reply(
+                id,
+                Event::Progress {
+                    stage: stage.to_owned(),
+                    current: (journal.done_count()
+                        + journal.skipped_count()
+                        + journal.failed_count()) as u64,
+                    total: Some(journal.entries.len() as u64),
+                    message: format!("journal {}", journal.id),
+                },
+            ));
+        });
         if let Err(error) = self.store.put_journal(session, &journal) {
-            return vec![store_failed(id, error)];
+            emit(store_failed(id, error));
+            return;
         }
-        vec![Envelope::reply(id, Event::Journal { journal })]
+        emit(Envelope::reply(id, Event::Journal { journal }));
     }
 
     fn handle_undo(
@@ -359,25 +419,61 @@ impl Engine {
         id: &RequestId,
         session: SessionId,
         journal: JournalId,
-    ) -> Vec<Envelope> {
+        emit: &mut impl FnMut(Envelope),
+    ) {
         if let Some(failed) = self.require_hello(id) {
-            return vec![failed];
+            emit(failed);
+            return;
         }
         let snapshot = match self.store.get_snapshot(session) {
             Ok(Some(snapshot)) => snapshot,
-            Ok(None) => return vec![not_found(id, "session snapshot")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "session snapshot"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
         let journal = match self.store.get_journal(journal) {
             Ok(Some(journal)) => journal,
-            Ok(None) => return vec![not_found(id, "journal")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "journal"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
-        let journal = undo_journal(&snapshot, &journal);
+        let journal = undo_journal_with_progress(&snapshot, &journal, |journal| {
+            let _ = self.store.put_journal(session, journal);
+            emit(Envelope::reply(
+                id,
+                Event::Progress {
+                    stage: "undo".to_owned(),
+                    current: journal
+                        .entries
+                        .iter()
+                        .filter(|entry| {
+                            matches!(
+                                entry.state,
+                                aifs_domain::JournalState::RolledBack
+                                    | aifs_domain::JournalState::Failed { .. }
+                            )
+                        })
+                        .count() as u64,
+                    total: Some(journal.entries.len() as u64),
+                    message: format!("journal {}", journal.id),
+                },
+            ));
+        });
         if let Err(error) = self.store.put_journal(session, &journal) {
-            return vec![store_failed(id, error)];
+            emit(store_failed(id, error));
+            return;
         }
-        vec![Envelope::reply(id, Event::Journal { journal })]
+        emit(Envelope::reply(id, Event::Journal { journal }));
     }
 
     fn require_hello(&self, id: &RequestId) -> Option<Envelope> {
@@ -450,11 +546,24 @@ pub fn run_stdio() -> io::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        for envelope in engine.handle_line(&line) {
-            let encoded = encode_line(&envelope)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            writeln!(stdout, "{encoded}")?;
-            stdout.flush()?;
+        let mut write_error = None;
+        engine.handle_line_with(&line, &mut |envelope| {
+            if write_error.is_some() {
+                return;
+            }
+            match encode_line(&envelope)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+            {
+                Ok(encoded) => {
+                    if let Err(error) = writeln!(stdout, "{encoded}").and_then(|_| stdout.flush()) {
+                        write_error = Some(error);
+                    }
+                }
+                Err(error) => write_error = Some(error),
+            }
+        });
+        if let Some(error) = write_error {
+            return Err(error);
         }
         if engine.should_exit() {
             return Ok(());
@@ -510,6 +619,12 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path.as_str() == "note.txt"));
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Progress { .. })),
+            "scan should emit progress before completing"
+        );
     }
 
     fn terminal(events: Vec<Envelope>) -> Event {
