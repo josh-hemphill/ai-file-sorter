@@ -6,7 +6,10 @@ use aifs_domain::{
     RevisionId, RevisionPatch, SessionId, WorkspaceSnapshot,
 };
 use aifs_engine_client::{discover_engine_binary, EngineClient};
-use aifs_protocol::{AppSettings, Event, FolderStyle, LogLevel, ProposalPolicy, ScanOptions};
+use aifs_protocol::{
+    AppSettings, Event, FolderStyle, LogLevel, ModelBackend, ModelInventory, ProposalPolicy,
+    ScanOptions,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -344,6 +347,45 @@ fn put_settings(state: State<EngineState>, settings: AppSettings) -> Result<AppS
     })
 }
 
+#[tauri::command]
+fn get_models(state: State<EngineState>) -> Result<ModelInventory, String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        client.get_models().map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn put_models(
+    state: State<EngineState>,
+    inventory: ModelInventory,
+) -> Result<ModelInventory, String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        client
+            .put_models(inventory)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeArgs {
+    #[serde(flatten)]
+    backend: ModelBackend,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+#[tauri::command]
+fn probe_endpoint(state: State<EngineState>, args: ProbeArgs) -> Result<(bool, String), String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        client
+            .probe_endpoint(args.backend, args.api_key)
+            .map_err(|error| error.to_string())
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -363,7 +405,10 @@ pub fn run() {
             undo_journal,
             chat_revision,
             get_settings,
-            put_settings
+            put_settings,
+            get_models,
+            put_models,
+            probe_endpoint
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

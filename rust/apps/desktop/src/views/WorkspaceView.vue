@@ -17,6 +17,7 @@ import {
   proposeSession,
   scanRoot,
   undoJournal,
+  getModels,
 } from "../engine";
 import { destinationTree } from "../tree";
 import type {
@@ -32,6 +33,7 @@ import type {
   ProposalRevision,
   WorkspaceSnapshot,
 } from "../types";
+import { inventorySummary } from "../models";
 import {
   INTENT_PRESETS,
   acceptedCount,
@@ -58,6 +60,11 @@ const STAGE_ORDER = [
 
 const emit = defineEmits<{
   "open-settings": [];
+  "open-setup": [];
+}>();
+
+const props = defineProps<{
+  active?: boolean;
 }>();
 
 const engineReady = ref(false);
@@ -82,6 +89,7 @@ const logLines = ref<LogEvent[]>([]);
 const stageProgress = ref<Record<string, { current: number; total: number | null; message: string }>>(
   {},
 );
+const modelSummary = ref("All analysis slots off");
 
 const tree = computed(() => destinationTree(revision.value));
 const files = computed(
@@ -141,6 +149,22 @@ const analysisStages = computed(() =>
 );
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
+watch(
+  () => props.active,
+  (active) => {
+    if (active) {
+      void refreshModels();
+    }
+  },
+);
+
+async function refreshModels() {
+  try {
+    modelSummary.value = inventorySummary(await getModels());
+  } catch {
+    // Setup is optional; the workspace still scans with heuristics.
+  }
+}
 
 function placementFor(asset: string) {
   return revision.value?.placements[asset];
@@ -393,6 +417,7 @@ onMounted(async () => {
   try {
     await connectEngine();
     engineReady.value = true;
+    await refreshModels();
   } catch (error) {
     engineError.value = String(error);
   }
@@ -414,6 +439,9 @@ function familyOf(entry: ObservedEntry): string {
         <strong>Workspace</strong>
         <span class="muted">{{ engineReady ? "engine ready" : "engine offline" }}</span>
       </header>
+      <button type="button" class="status-chip" @click="emit('open-setup')">
+        {{ modelSummary }}
+      </button>
       <p class="muted safety">Nothing is moved until you Apply.</p>
       <label class="field">
         Source

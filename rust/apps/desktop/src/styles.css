@@ -90,6 +90,12 @@ body,
   margin: 0;
 }
 
+.status-chip {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .muted {
   color: var(--muted);
   font-size: 12px;

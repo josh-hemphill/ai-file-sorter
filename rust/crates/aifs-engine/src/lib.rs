@@ -1,7 +1,8 @@
 //! Isolated workspace engine used by the `aifs-engine` stdio binary.
 //!
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-//! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, and `shutdown`.
+//! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
+//! `put_models`, `probe_endpoint`, and `shutdown`.
 
 mod extract;
 
@@ -14,7 +15,7 @@ use aifs_domain::{
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
     decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, LogLevel,
-    ProposalPolicy, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
+    ModelBackend, ModelInventory, ProposalPolicy, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{scan, ScanError};
@@ -26,6 +27,7 @@ use std::time::{Duration, Instant};
 const SCAN_LOG_CAP: usize = 400;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SETTINGS_META_KEY: &str = "app_settings";
+const MODELS_META_KEY: &str = "model_inventory";
 
 /// Engine crate version reported on `hello`.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -41,6 +43,7 @@ pub fn capabilities() -> Vec<String> {
         "undo".to_owned(),
         "chat".to_owned(),
         "settings".to_owned(),
+        "models".to_owned(),
     ];
     caps.extend(extract::worker_capabilities());
     caps
@@ -155,6 +158,11 @@ impl Engine {
             Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
             Command::GetSettings => emit(self.handle_get_settings(&request.id)),
             Command::PutSettings { settings } => emit(self.handle_put_settings(&request.id, settings)),
+            Command::GetModels => emit(self.handle_get_models(&request.id)),
+            Command::PutModels { inventory } => emit(self.handle_put_models(&request.id, inventory)),
+            Command::ProbeEndpoint { backend, api_key } => {
+                emit(self.handle_probe_endpoint(&request.id, backend, api_key))
+            }
         }
     }
 
@@ -231,6 +239,52 @@ impl Engine {
         }
     }
 
+    fn handle_get_models(&self, id: &RequestId) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        match load_models(&self.store) {
+            Ok(inventory) => Envelope::reply(
+                id,
+                Event::Models {
+                    inventory: inventory.redacted(),
+                },
+            ),
+            Err(error) => store_failed(id, error),
+        }
+    }
+
+    fn handle_put_models(&self, id: &RequestId, inventory: ModelInventory) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        let previous = load_models(&self.store).unwrap_or_default();
+        let merged = inventory.merge_secrets(&previous);
+        match save_models(&self.store, &merged) {
+            Ok(()) => Envelope::reply(
+                id,
+                Event::Models {
+                    inventory: merged.redacted(),
+                },
+            ),
+            Err(error) => store_failed(id, error),
+        }
+    }
+
+    fn handle_probe_endpoint(
+        &self,
+        id: &RequestId,
+        backend: ModelBackend,
+        api_key: Option<String>,
+    ) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        let _ = api_key;
+        let (ok, message) = aifs_protocol::probe_backend(&backend);
+        Envelope::reply(id, Event::EndpointProbed { ok, message })
+    }
+
     fn handle_scan(
         &mut self,
         id: &RequestId,
@@ -252,6 +306,7 @@ impl Engine {
         }
 
         let session = session.unwrap_or_default();
+        emit_model_runtime_notices(&self.store, id, emit);
         emit(Envelope::reply(
             id,
             Event::Progress {
@@ -717,6 +772,73 @@ fn save_settings(
 ) -> Result<(), aifs_store::StoreError> {
     let json = serde_json::to_string(settings)?;
     store.put_meta(SETTINGS_META_KEY, &json)
+}
+
+fn load_models(
+    store: &aifs_store::WorkspaceStore,
+) -> Result<ModelInventory, aifs_store::StoreError> {
+    match store.get_meta(MODELS_META_KEY)? {
+        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        None => Ok(ModelInventory::default()),
+    }
+}
+
+fn save_models(
+    store: &aifs_store::WorkspaceStore,
+    inventory: &ModelInventory,
+) -> Result<(), aifs_store::StoreError> {
+    let json = serde_json::to_string(inventory)?;
+    store.put_meta(MODELS_META_KEY, &json)
+}
+
+fn emit_model_runtime_notices(
+    store: &aifs_store::WorkspaceStore,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
+) {
+    let settings = load_settings(store).unwrap_or_default();
+    let models = load_models(store).unwrap_or_default();
+    let slot_off = |id: &str| {
+        models
+            .slots
+            .iter()
+            .find(|slot| slot.id == id)
+            .is_none_or(|slot| matches!(slot.backend, ModelBackend::Off))
+    };
+    if settings.analyze_images {
+        if slot_off("vision") {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                "Image analysis is enabled but the vision slot is off — set up a model.",
+            );
+        } else {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                "Vision slot assigned; model runtime is not connected yet.",
+            );
+        }
+    }
+    if settings.analyze_documents {
+        if slot_off("document") {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                "Document analysis is enabled but the document slot is off — set up a model.",
+            );
+        } else {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                "Document slot assigned; model runtime is not connected yet.",
+            );
+        }
+    }
 }
 
 fn default_store_path() -> Option<std::path::PathBuf> {
@@ -1387,6 +1509,60 @@ mod tests {
             command: Command::PutSettings { settings },
         })) {
             Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_redact_keys_and_probe_rejects_bad_urls() {
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::OpenAi {
+            model: "gpt-4.1-mini".into(),
+        };
+        inventory.slots[0].api_key = Some("sk-secret".into());
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels {
+                inventory: inventory.clone(),
+            },
+        })) {
+            Event::Models { inventory: stored } => {
+                assert!(stored.slots[0].api_key.is_none());
+                assert!(stored.slots[0].api_key_set);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::GetModels,
+        })) {
+            Event::Models { inventory: stored } => {
+                assert!(stored.slots[0].api_key.is_none());
+                assert!(stored.slots[0].api_key_set);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::ProbeEndpoint {
+                backend: ModelBackend::CustomEndpoint {
+                    base_url: "not-a-url".into(),
+                    model: "x".into(),
+                },
+                api_key: Some("sk-never-log".into()),
+            },
+        })) {
+            Event::EndpointProbed { ok, message } => {
+                assert!(!ok, "{message}");
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

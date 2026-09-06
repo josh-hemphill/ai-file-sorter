@@ -2,8 +2,8 @@
 
 use aifs_domain::WorkspaceSnapshot;
 use aifs_protocol::{
-    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, Request, RequestId,
-    ScanOptions, PROTOCOL_VERSION,
+    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, ModelBackend,
+    ModelInventory, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -337,6 +337,66 @@ impl EngineClient {
         }
         Err(ClientError::Unexpected(
             "request ended without settings".to_owned(),
+        ))
+    }
+
+    /// Loads redacted model slot assignments.
+    pub fn get_models(&mut self) -> Result<ModelInventory, ClientError> {
+        self.expect_models(Command::GetModels)
+    }
+
+    /// Replaces model slot assignments.
+    pub fn put_models(
+        &mut self,
+        inventory: ModelInventory,
+    ) -> Result<ModelInventory, ClientError> {
+        self.expect_models(Command::PutModels { inventory })
+    }
+
+    /// Validates a backend without scanning.
+    pub fn probe_endpoint(
+        &mut self,
+        backend: ModelBackend,
+        api_key: Option<String>,
+    ) -> Result<(bool, String), ClientError> {
+        let envelopes = self.request(Command::ProbeEndpoint { backend, api_key })?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::EndpointProbed { ok, message } => return Ok((ok, message)),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected probe event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "request ended without endpoint_probed".to_owned(),
+        ))
+    }
+
+    fn expect_models(&mut self, command: Command) -> Result<ModelInventory, ClientError> {
+        let envelopes = self.request(command)?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Models { inventory } => return Ok(inventory),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected models event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "request ended without models".to_owned(),
         ))
     }
 

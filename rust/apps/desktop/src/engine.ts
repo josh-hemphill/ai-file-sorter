@@ -11,6 +11,8 @@ import type {
   ProposalRevision,
   WorkspaceSnapshot,
   AppSettings,
+  ModelBackend,
+  ModelInventory,
 } from "./types";
 
 export async function connectEngine(): Promise<void> {
@@ -95,4 +97,19 @@ export async function getSettings(): Promise<AppSettings> {
 
 export async function putSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke("put_settings", { settings });
+}
+
+export async function getModels(): Promise<ModelInventory> {
+  return invoke("get_models");
+}
+
+export async function putModels(inventory: ModelInventory): Promise<ModelInventory> {
+  return invoke("put_models", { inventory });
+}
+
+export async function probeEndpoint(
+  backend: ModelBackend,
+  apiKey?: string,
+): Promise<[boolean, string]> {
+  return invoke("probe_endpoint", { args: { ...backend, api_key: apiKey } });
 }

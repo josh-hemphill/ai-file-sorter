@@ -165,6 +165,32 @@ export interface AppSettings {
   analyze_documents: boolean;
 }
 
+export type ModelBackend =
+  | { kind: "off" }
+  | { kind: "catalog"; catalog_id: string }
+  | { kind: "local_gguf"; path: string; mmproj?: string }
+  | { kind: "open_ai"; model: string }
+  | { kind: "gemini"; model: string }
+  | { kind: "custom_endpoint"; base_url: string; model: string };
+
+export interface ModelSlot {
+  id: string;
+  kind: ModelBackend["kind"];
+  catalog_id?: string;
+  path?: string;
+  mmproj?: string;
+  model?: string;
+  base_url?: string;
+  api_key?: string;
+  api_key_set?: boolean;
+}
+
+export interface ModelInventory {
+  storage_dir: string;
+  gpu_preference: string;
+  slots: ModelSlot[];
+}
+
 export interface ChatReply {
   message: string;
   revision: ProposalRevision | null;

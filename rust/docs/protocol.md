@@ -28,6 +28,9 @@ diagnostic only.
 | `shutdown` | — | `shutdown` |
 | `get_settings` | — | `settings { settings }` |
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
+| `get_models` | — | `models { inventory }` (API keys omitted) |
+| `put_models` | `inventory: ModelInventory` | `models { inventory }` |
+| `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
 Every request has an `id` chosen by the client. Events echo that `id`; unsolicited events
 (e.g. `shutdown` because stdin closed) omit it.
@@ -38,7 +41,7 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 - `log { level, message }` — never terminal. Scan uses this for projects, skips, and
   bundles so the UI can show a live identification stream.
 - `ready`, `scan_completed`, `revision`, `planned`, `journal`, `chat_reply`,
-  `settings`, `cancelled`, `failed`, `shutdown` — terminal for their request.
+  `settings`, `models`, `endpoint_probed`, `cancelled`, `failed`, `shutdown` — terminal for their request.
 
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
 
@@ -58,7 +61,8 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 ```
 
 This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-`undo`, `chat`, `cancel`, `get_settings`, `put_settings`, and `shutdown`. `chat` interprets the utterance into
+`undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
+`put_models`, `probe_endpoint`, and `shutdown`. `chat` interprets the utterance into
 deterministic tools (`search`, `inspect`, `structure`, `group`, `rename`,
 `validate`) and, when those tools emit patches, stores a child revision authored
 by the mock assistant. The assistant never receives SQL or raw filesystem

@@ -9,10 +9,14 @@
 //! changes bump [`PROTOCOL_VERSION`]; additive changes must keep old fields working.
 
 pub mod codec;
+pub mod models;
 pub mod options;
 pub mod worker;
 
 pub use codec::{decode_line, encode_line, CodecError};
+pub use models::{
+    probe_backend, ModelBackend, ModelInventory, ModelSlot, BUILTIN_CATALOG, MODEL_SLOT_IDS,
+};
 pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 
 use aifs_domain::{
@@ -132,6 +136,22 @@ pub enum Command {
     PutSettings {
         /// Settings blob owned by the engine store.
         settings: AppSettings,
+    },
+    /// Load redacted model slot assignments.
+    GetModels,
+    /// Replace model slot assignments. Omitted API keys keep the stored secret.
+    PutModels {
+        /// Inventory owned by the engine store.
+        inventory: ModelInventory,
+    },
+    /// Validate a backend without scanning.
+    ProbeEndpoint {
+        /// Backend to probe.
+        #[serde(flatten)]
+        backend: ModelBackend,
+        /// Optional key used only for this probe; never logged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
     },
 }
 
@@ -267,6 +287,18 @@ pub enum Event {
         /// Persisted classification settings.
         settings: AppSettings,
     },
+    /// `get_models` / `put_models` result. API keys are never present.
+    Models {
+        /// Redacted inventory.
+        inventory: ModelInventory,
+    },
+    /// `probe_endpoint` result.
+    EndpointProbed {
+        /// True when the path exists or the URL looks usable.
+        ok: bool,
+        /// Human message.
+        message: String,
+    },
 }
 
 /// An event with the id of the request it answers. `id` is `None` for unsolicited
@@ -309,6 +341,8 @@ impl Envelope {
                 | Event::Failed { .. }
                 | Event::Shutdown
                 | Event::Settings { .. }
+                | Event::Models { .. }
+                | Event::EndpointProbed { .. }
         )
     }
 }
