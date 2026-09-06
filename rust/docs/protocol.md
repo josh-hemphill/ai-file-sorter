@@ -53,6 +53,6 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 {"id":"2","type":"scan_completed","snapshot":{...}}
 ```
 
-This slice implements `hello`, `scan`, `cancel`, and `shutdown`. `propose`,
-`patch`, `plan`, `apply`, and `undo` return `failed { code: internal }` until
-the store/planner/apply crates land.
+This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
+`undo`, `cancel`, and `shutdown`. `plan` requires accepted placements (the CLI
+`organize` command accepts all heuristic placements, then dry-runs by default).

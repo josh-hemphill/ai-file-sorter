@@ -41,13 +41,12 @@ Rules:
 | `aifs-scanner` | Walk a root, assign asset ids, identity, project protection | domain, protocol, relationships |
 | `aifs-relationships` | Sidecar / series / archive-part / project bundle detectors | domain |
 | `aifs-extractors` | Media tags (ID3, FLAC, Ogg, MP4) → evidence | domain |
-| `aifs-engine` | In-memory sessions + request dispatch (`hello`, `scan`) | scanner, relationships, extractors, protocol |
-| `aifs-engine-client` | Spawn the engine binary and speak JSONL | protocol |
-| `aifs-store` (later) | SQLite workspace store with migrations | domain |
-| `aifs-planner` (later) | Heuristic proposals, revision patches, plan validation | domain, protocol |
-| `aifs-apply` (later) | Journaled apply, rollback, undo | domain |
+| `aifs-store` | SQLite WAL store for snapshots, revisions, plans, journals | domain |
+| `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
+| `aifs-apply` | Journaled local apply + undo | domain, scanner |
+| `aifs-engine` | Request dispatch (`hello` … `undo`) | all of the above |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
-| `bins/aifs-cli` (`aifs`) | `aifs scan <folder>` via the engine process | engine-client |
+| `bins/aifs-cli` (`aifs`) | `aifs scan` / `aifs organize` via the engine process | engine-client |
 
 ## Data flow
 

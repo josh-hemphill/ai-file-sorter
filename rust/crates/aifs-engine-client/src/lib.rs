@@ -15,6 +15,7 @@ use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+const MUTATING_SHUTDOWN_WAIT: Duration = Duration::from_secs(30 * 60);
 const ENGINE_BINARY: &str = if cfg!(windows) {
     "aifs-engine.exe"
 } else {
@@ -59,6 +60,7 @@ pub struct EngineClient {
     rx: Receiver<Result<Envelope, ClientError>>,
     next_id: u64,
     buffered: Vec<Envelope>,
+    mutating: bool,
 }
 
 impl EngineClient {
@@ -118,6 +120,7 @@ impl EngineClient {
             rx,
             next_id: 1,
             buffered: Vec::new(),
+            mutating: false,
         })
     }
 
@@ -188,8 +191,136 @@ impl EngineClient {
         Ok(())
     }
 
+    /// Builds a heuristic proposal for a session.
+    pub fn propose(
+        &mut self,
+        session: aifs_domain::SessionId,
+        policy: aifs_protocol::ProposalPolicy,
+    ) -> Result<aifs_domain::ProposalRevision, ClientError> {
+        self.expect_revision(Command::Propose { session, policy })
+    }
+
+    /// Applies patches, producing a child revision.
+    pub fn patch(
+        &mut self,
+        session: aifs_domain::SessionId,
+        base_revision: aifs_domain::RevisionId,
+        author: aifs_domain::RevisionAuthor,
+        summary: impl Into<String>,
+        patches: Vec<aifs_domain::RevisionPatch>,
+    ) -> Result<aifs_domain::ProposalRevision, ClientError> {
+        self.expect_revision(Command::Patch {
+            session,
+            base_revision,
+            author,
+            summary: summary.into(),
+            patches,
+        })
+    }
+
+    /// Validates a revision into an operation plan.
+    pub fn plan(
+        &mut self,
+        session: aifs_domain::SessionId,
+        revision: aifs_domain::RevisionId,
+    ) -> Result<(aifs_domain::OperationPlan, Vec<aifs_domain::PlanIssue>), ClientError> {
+        let envelopes = self.request(Command::Plan { session, revision })?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Planned { plan, issues } => return Ok((plan, issues)),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected plan event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "plan ended without planned".to_owned(),
+        ))
+    }
+
+    /// Applies a plan (or dry-runs it).
+    pub fn apply(
+        &mut self,
+        session: aifs_domain::SessionId,
+        plan: aifs_domain::PlanId,
+        dry_run: bool,
+    ) -> Result<aifs_domain::ApplyJournal, ClientError> {
+        self.expect_journal(Command::Apply {
+            session,
+            plan,
+            dry_run,
+        })
+    }
+
+    /// Undoes a journal.
+    pub fn undo(
+        &mut self,
+        session: aifs_domain::SessionId,
+        journal: aifs_domain::JournalId,
+    ) -> Result<aifs_domain::ApplyJournal, ClientError> {
+        self.expect_journal(Command::Undo { session, journal })
+    }
+
+    fn expect_revision(
+        &mut self,
+        command: Command,
+    ) -> Result<aifs_domain::ProposalRevision, ClientError> {
+        let envelopes = self.request(command)?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Revision { revision } => return Ok(revision),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected revision event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "request ended without revision".to_owned(),
+        ))
+    }
+
+    fn expect_journal(
+        &mut self,
+        command: Command,
+    ) -> Result<aifs_domain::ApplyJournal, ClientError> {
+        let envelopes = self.request(command)?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Journal { journal } => return Ok(journal),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected journal event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "request ended without journal".to_owned(),
+        ))
+    }
+
     /// Sends a command and collects events until a terminal one for that id.
     pub fn request(&mut self, command: Command) -> Result<Vec<Envelope>, ClientError> {
+        let mutating = command_mutates_disk(&command);
+        if mutating {
+            self.mutating = true;
+        }
         let id = RequestId(self.next_id.to_string());
         self.next_id += 1;
         let request = Request {
@@ -217,6 +348,9 @@ impl EngineClient {
             let terminal = envelope.is_terminal();
             collected.push(envelope);
             if terminal {
+                if mutating {
+                    self.mutating = false;
+                }
                 return Ok(collected);
             }
         }
@@ -245,7 +379,12 @@ impl Drop for EngineClient {
                 let _ = stdin.flush();
             }
         }
-        let deadline = Instant::now() + GRACEFUL_SHUTDOWN_WAIT;
+        let wait = if self.mutating {
+            MUTATING_SHUTDOWN_WAIT
+        } else {
+            GRACEFUL_SHUTDOWN_WAIT
+        };
+        let deadline = Instant::now() + wait;
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
@@ -258,6 +397,13 @@ impl Drop for EngineClient {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn command_mutates_disk(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Apply { dry_run: false, .. } | Command::Undo { .. }
+    )
 }
 
 /// Resolves the engine binary from `AIFS_ENGINE`, then a sibling of the current
