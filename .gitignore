@@ -198,3 +198,8 @@ api-key-encryption/
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# Rust rewrite (rust/)
+rust/target/
+rust/**/node_modules/
+rust/apps/desktop/src-tauri/gen/

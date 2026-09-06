@@ -1,0 +1,23 @@
+[package]
+name = "aifs-engine-bin"
+description = "Stdio JSONL server binary for the AI File Sorter engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aifs-engine"
+path = "src/main.rs"
+
+[dependencies]
+aifs-engine = { workspace = true }
+
+[dev-dependencies]
+aifs-engine-client = { workspace = true }
+aifs-protocol = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
