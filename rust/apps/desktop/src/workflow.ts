@@ -6,6 +6,7 @@ import type {
   ObservedEntry,
   OperationPlan,
   PlanIssue,
+  PlannedOperation,
   ProposalRevision,
   SkippedEntry,
   WorkflowStep,
@@ -193,4 +194,167 @@ export function roleKindLabel(kind: string): string {
     default:
       return kind.replace(/_/g, " ");
   }
+}
+
+export type PreviewKind = "create" | "move" | "remove";
+
+export interface PreviewRow {
+  seq: number;
+  kind: PreviewKind;
+  label: string;
+  from?: string;
+  to?: string;
+  state?: string;
+  detail?: string;
+}
+
+export interface PlanCounts {
+  moves: number;
+  creates: number;
+  removes: number;
+}
+
+function journalStateBySeq(
+  journal: ApplyJournal | null,
+): Map<number, { state: string; message?: string; reason?: string }> {
+  const map = new Map<number, { state: string; message?: string; reason?: string }>();
+  if (!journal) {
+    return map;
+  }
+  for (const entry of journal.entries) {
+    map.set(entry.seq, entry.state);
+  }
+  return map;
+}
+
+function previewKind(operation: PlannedOperation): PreviewKind {
+  switch (operation.op) {
+    case "create_directory":
+      return "create";
+    case "remove_empty_directory":
+      return "remove";
+    default:
+      return "move";
+  }
+}
+
+function previewLabel(operation: PlannedOperation): string {
+  switch (operation.op) {
+    case "create_directory":
+      return `Create ${operation.path}`;
+    case "remove_empty_directory":
+      return `Remove empty ${operation.path}`;
+    case "move":
+      return `${operation.from} → ${operation.to}`;
+    default:
+      return "Change";
+  }
+}
+
+/** Counts plan operations by kind. */
+export function planCounts(plan: OperationPlan | null): PlanCounts {
+  const counts: PlanCounts = { moves: 0, creates: 0, removes: 0 };
+  if (!plan) {
+    return counts;
+  }
+  for (const planned of plan.operations) {
+    switch (planned.operation.op) {
+      case "create_directory":
+        counts.creates += 1;
+        break;
+      case "remove_empty_directory":
+        counts.removes += 1;
+        break;
+      default:
+        counts.moves += 1;
+        break;
+    }
+  }
+  return counts;
+}
+
+/** Builds from→to preview rows, overlaying dry-run or apply journal states. */
+export function previewRows(
+  plan: OperationPlan | null,
+  journal: ApplyJournal | null,
+): PreviewRow[] {
+  const states = journalStateBySeq(journal);
+  const operations = plan?.operations ?? [];
+  if (operations.length > 0) {
+    return operations.map((planned) => {
+      const state = states.get(planned.seq);
+      return {
+        seq: planned.seq,
+        kind: previewKind(planned.operation),
+        label: previewLabel(planned.operation),
+        from: planned.operation.op === "move" ? planned.operation.from : undefined,
+        to:
+          planned.operation.op === "move"
+            ? planned.operation.to
+            : planned.operation.op === "create_directory" ||
+                planned.operation.op === "remove_empty_directory"
+              ? planned.operation.path
+              : undefined,
+        state: state?.state,
+        detail: state?.message ?? state?.reason,
+      };
+    });
+  }
+  if (!journal) {
+    return [];
+  }
+  return journal.entries.map((entry) => {
+    const operation = entry.operation;
+    if (!operation) {
+      return {
+        seq: entry.seq,
+        kind: "move" as const,
+        label: `Operation ${entry.seq}`,
+        state: entry.state.state,
+        detail: entry.state.message ?? entry.state.reason,
+      };
+    }
+    return {
+      seq: entry.seq,
+      kind: previewKind(operation),
+      label: previewLabel(operation),
+      from: operation.op === "move" ? operation.from : undefined,
+      to:
+        operation.op === "move"
+          ? operation.to
+          : operation.op === "create_directory" || operation.op === "remove_empty_directory"
+            ? operation.path
+            : undefined,
+      state: entry.state.state,
+      detail: entry.state.message ?? entry.state.reason,
+    };
+  });
+}
+
+/** Actionable copy for a plan issue code. */
+export function issueLabel(issue: PlanIssue): string {
+  switch (issue.code) {
+    case "nothing_accepted":
+      return "Approve at least one proposed change before Validate. Nothing is moved until you Apply.";
+    case "bundle_split":
+      return `Keep this bundle together: ${issue.message}`;
+    case "destination_occupied":
+      return `A file already exists at that destination: ${issue.message}`;
+    case "destination_collision":
+      return `Two files would land on the same path: ${issue.message}`;
+    case "protected_member":
+      return `This file is inside a protected project: ${issue.message}`;
+    default:
+      return issue.message;
+  }
+}
+
+/** One-line apply confirmation summary. */
+export function applyConfirmCopy(root: string, counts: PlanCounts): string {
+  const parts = [
+    `${counts.moves} move${counts.moves === 1 ? "" : "s"}`,
+    `${counts.creates} folder${counts.creates === 1 ? "" : "s"} created`,
+    `${counts.removes} empty folder${counts.removes === 1 ? "" : "s"} removed`,
+  ];
+  return `${root} · ${parts.join(" · ")}`;
 }

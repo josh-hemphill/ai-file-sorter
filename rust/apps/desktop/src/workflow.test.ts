@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   acceptedCount,
+  applyConfirmCopy,
   constraintLabel,
   currentWorkflowStep,
+  issueLabel,
   itemRows,
+  planCounts,
+  previewRows,
   rememberRoot,
   skippedReasonLabel,
 } from "./workflow.ts";
@@ -194,4 +198,58 @@ test("itemRows collapses hard bundles", () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0]?.type, "group");
   assert.equal(rows[1]?.type, "file");
+});
+
+test("previewRows maps plan operations to from→to rows", () => {
+  const plan = {
+    id: "p",
+    operations: [
+      { seq: 0, operation: { op: "create_directory" as const, path: "Documents" } },
+      {
+        seq: 1,
+        operation: {
+          op: "move" as const,
+          asset: "a",
+          from: "dump/a.txt",
+          to: "Documents/a.txt",
+        },
+      },
+      { seq: 2, operation: { op: "remove_empty_directory" as const, path: "dump" } },
+    ],
+  };
+  const rows = previewRows(plan, {
+    id: "j",
+    status: "completed",
+    dry_run: true,
+    entries: [
+      { seq: 0, state: { state: "intended" } },
+      { seq: 1, state: { state: "intended" } },
+      { seq: 2, state: { state: "intended" } },
+    ],
+  });
+  assert.equal(rows.length, 3);
+  assert.equal(rows[1]?.from, "dump/a.txt");
+  assert.equal(rows[1]?.to, "Documents/a.txt");
+  assert.equal(rows[2]?.kind, "remove");
+  assert.equal(rows[0]?.state, "intended");
+  assert.deepEqual(planCounts(plan), { moves: 1, creates: 1, removes: 1 });
+});
+
+test("issueLabel explains approve-before-validate", () => {
+  assert.equal(
+    issueLabel({
+      severity: "error",
+      code: "nothing_accepted",
+      message: "no placements",
+      assets: [],
+    }).includes("Approve at least one"),
+    true,
+  );
+});
+
+test("applyConfirmCopy names the source and counts", () => {
+  assert.equal(
+    applyConfirmCopy("/tmp/inbox", { moves: 1, creates: 1, removes: 1 }),
+    "/tmp/inbox · 1 move · 1 folder created · 1 empty folder removed",
+  );
 });

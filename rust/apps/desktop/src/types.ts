@@ -91,14 +91,16 @@ export interface PlanIssue {
   assets: Id[];
 }
 
+export type PlannedOperation =
+  | { op: "create_directory"; path: string }
+  | { op: "move"; asset: Id; from: string; to: string; expected?: { size: number } }
+  | { op: "remove_empty_directory"; path: string };
+
 export interface OperationPlan {
   id: Id;
   operations: Array<{
     seq: number;
-    operation:
-      | { op: "create_directory"; path: string }
-      | { op: "move"; asset: Id; from: string; to: string }
-      | { op: "remove_empty_directory"; path: string };
+    operation: PlannedOperation;
   }>;
 }
 
@@ -106,7 +108,11 @@ export interface ApplyJournal {
   id: Id;
   status: string;
   dry_run: boolean;
-  entries: Array<{ seq: number; state: { state: string; message?: string; reason?: string } }>;
+  entries: Array<{
+    seq: number;
+    operation?: PlannedOperation;
+    state: { state: string; message?: string; reason?: string };
+  }>;
 }
 
 export interface ProgressEvent {

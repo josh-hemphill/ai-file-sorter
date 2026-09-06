@@ -212,16 +212,35 @@ fn plan_revision(
     session: SessionId,
     revision: RevisionId,
 ) -> Result<PlanResult, String> {
-    with_client(&state, |client| match client.plan(session, revision) {
-        Ok((plan, issues)) => Ok(PlanResult {
-            plan: Some(plan),
-            issues,
-        }),
-        Err(aifs_engine_client::ClientError::Engine { message, .. }) => Ok(PlanResult {
-            plan: None,
-            issues: vec![PlanIssue::error("plan_rejected", message, Vec::new())],
-        }),
-        Err(error) => Err(error.to_string()),
+    with_client(&state, |client| {
+        let envelopes = client
+            .request_with_events(
+                aifs_protocol::Command::Plan { session, revision },
+                |_| {},
+            )
+            .map_err(|error| error.to_string())?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Planned { plan, issues } => {
+                    return Ok(PlanResult {
+                        plan: Some(plan),
+                        issues,
+                    });
+                }
+                Event::Failed { message, issues, .. } => {
+                    return Ok(PlanResult {
+                        plan: None,
+                        issues: if issues.is_empty() {
+                            vec![PlanIssue::error("plan_rejected", message, Vec::new())]
+                        } else {
+                            issues
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+        Err("plan ended without a result".to_owned())
     })
 }
 

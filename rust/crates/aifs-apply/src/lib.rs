@@ -682,4 +682,47 @@ mod tests {
         assert!(dir.path().join("note.txt").exists());
         assert!(!dir.path().join("Documents/note.txt").exists());
     }
+
+    #[test]
+    fn apply_removes_emptied_source_directory_and_undo_restores_it() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), dir.path().to_path_buf());
+        snapshot.entries.push(ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse("dump").unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: FileIdentity::default(),
+            is_hidden: false,
+            lock: LockState::Readable,
+        });
+        snapshot
+            .entries
+            .push(scan_like(dir.path(), "dump/note.txt", b"hello"));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, _) = validate(&snapshot, &revision);
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            plan.operations.iter().any(|op| matches!(
+                op.operation,
+                Operation::RemoveEmptyDirectory { ref path } if path.as_str() == "dump"
+            )),
+            "planner should emit remove_empty_directory for dump"
+        );
+        let applied = apply_plan(&snapshot, &plan, false);
+        assert_eq!(applied.status, JournalStatus::Completed);
+        assert!(!dir.path().join("dump").exists());
+        assert_eq!(
+            fs::read(dir.path().join("Documents/note.txt")).ok(),
+            Some(b"hello".to_vec())
+        );
+        let undone = undo_journal(&snapshot, &applied);
+        assert_eq!(undone.status, JournalStatus::Undone);
+        assert!(dir.path().join("dump").is_dir());
+        assert_eq!(
+            fs::read(dir.path().join("dump/note.txt")).ok(),
+            Some(b"hello".to_vec())
+        );
+    }
 }
