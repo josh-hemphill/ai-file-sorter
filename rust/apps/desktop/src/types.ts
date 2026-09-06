@@ -109,6 +109,11 @@ export interface ProgressEvent {
   message: string;
 }
 
+export interface LogEvent {
+  level: string;
+  message: string;
+}
+
 export type CenterView = "structure" | "items" | "relationships" | "activity";
 export type IntentPreset = "inbox" | "archive" | "media" | "custom";
 export type WorkflowStep = "scan" | "review" | "resolve" | "preview" | "apply";

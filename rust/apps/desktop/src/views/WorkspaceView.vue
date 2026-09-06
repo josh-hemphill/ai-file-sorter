@@ -2,10 +2,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import TabBar from "../components/TabBar.vue";
 import WorkflowStepper from "../components/WorkflowStepper.vue";
+import AnalysisStream from "../components/AnalysisStream.vue";
 import {
   applyPlan,
   chatRevision,
   connectEngine,
+  onEngineLog,
   onEngineProgress,
   patchRevision,
   pickFolder,
@@ -20,6 +22,7 @@ import type {
   CenterView,
   ChatLine,
   IntentPreset,
+  LogEvent,
   ObservedEntry,
   OperationPlan,
   PlanIssue,
@@ -35,7 +38,15 @@ import {
   loadRecentRoots,
   persistRecentRoots,
   rememberRoot,
+  skippedReasonLabel,
 } from "../workflow";
+
+const STREAM_CAP = 1000;
+const STAGE_ORDER = [
+  { id: "scan", label: "Walk" },
+  { id: "relationships", label: "Relationships" },
+  { id: "extract", label: "Metadata" },
+];
 
 const emit = defineEmits<{
   "open-settings": [];
@@ -58,6 +69,10 @@ const selectedAsset = ref<string | null>(null);
 const query = ref("");
 const draft = ref("");
 const chatLog = ref<ChatLine[]>([]);
+const logLines = ref<LogEvent[]>([]);
+const stageProgress = ref<Record<string, { current: number; total: number | null; message: string }>>(
+  {},
+);
 
 const tree = computed(() => destinationTree(revision.value));
 const files = computed(
@@ -101,8 +116,14 @@ const approved = computed(() => acceptedCount(revision.value));
 const tabCounts = computed(() => ({
   items: files.value.length,
   relationships: snapshot.value?.bundles.length ?? 0,
-  activity: issues.value.length,
+  activity: logLines.value.length + issues.value.length,
 }));
+const analysisStages = computed(() =>
+  STAGE_ORDER.filter((stage) => stageProgress.value[stage.id]).map((stage) => ({
+    ...stage,
+    ...stageProgress.value[stage.id],
+  })),
+);
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
 
@@ -139,6 +160,9 @@ async function runScan() {
   plan.value = null;
   journal.value = null;
   issues.value = [];
+  logLines.value = [];
+  stageProgress.value = {};
+  view.value = "activity";
   try {
     await connectEngine();
     engineReady.value = true;
@@ -298,9 +322,22 @@ function renderTree(node: ReturnType<typeof destinationTree>, depth = 0): string
 }
 
 let stopProgress: (() => void) | undefined;
+let stopLog: (() => void) | undefined;
 onMounted(async () => {
   stopProgress = await onEngineProgress((event) => {
     progress.value = event;
+    stageProgress.value = {
+      ...stageProgress.value,
+      [event.stage]: {
+        current: event.current,
+        total: event.total,
+        message: event.message,
+      },
+    };
+  });
+  stopLog = await onEngineLog((event) => {
+    const next = logLines.value.concat(event);
+    logLines.value = next.length > STREAM_CAP ? next.slice(next.length - STREAM_CAP) : next;
   });
   try {
     await connectEngine();
@@ -311,6 +348,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   stopProgress?.();
+  stopLog?.();
 });
 
 function familyOf(entry: ObservedEntry): string {
@@ -382,6 +420,18 @@ function familyOf(entry: ObservedEntry): string {
       >
         <pre v-if="revision">{{ renderTree(tree) || "(empty proposal)" }}</pre>
         <p v-else class="muted">Scan a source to see the proposed folder tree.</p>
+        <section v-if="snapshot?.skipped.length" class="skipped">
+          <h2>Skipped</h2>
+          <p class="muted">
+            {{ snapshot.skipped.length }} entries were not proposed (hidden, junk, symlinks,
+            or inside protected projects).
+          </p>
+          <ul>
+            <li v-for="entry in snapshot.skipped" :key="entry.path">
+              {{ entry.path }} · {{ skippedReasonLabel(entry) }}
+            </li>
+          </ul>
+        </section>
       </div>
 
       <div
@@ -458,11 +508,7 @@ function familyOf(entry: ObservedEntry): string {
         role="tabpanel"
         aria-labelledby="tab-activity"
       >
-        <p v-if="progress">
-          {{ progress.stage }} {{ progress.current
-          }}<template v-if="progress.total">/{{ progress.total }}</template>
-          — {{ progress.message }}
-        </p>
+        <AnalysisStream :stages="analysisStages" :lines="logLines" :progress="progress" />
         <ul>
           <li v-for="(issue, index) in issues" :key="index">
             <strong>{{ issue.severity }}</strong> {{ issue.code }}: {{ issue.message }}
@@ -471,7 +517,7 @@ function familyOf(entry: ObservedEntry): string {
         <p v-if="journal">
           Journal {{ journal.id }} · {{ journal.status }} · dry_run={{ journal.dry_run }}
         </p>
-        <p v-if="!issues.length && !journal && !progress" class="muted">
+        <p v-if="!issues.length && !journal && !logLines.length && !progress" class="muted">
           Scan progress, validation, and apply results show up here.
         </p>
       </div>
@@ -479,11 +525,18 @@ function familyOf(entry: ObservedEntry): string {
       <footer class="status">
         <div class="status-copy">
           <WorkflowStepper :current="step" />
-          <span v-if="busy">Working…</span>
+          <span v-if="busy">
+            Working…
+            <template v-if="progress">
+              {{ progress.stage }} {{ progress.current
+              }}<template v-if="progress.total">/{{ progress.total }}</template>
+              — {{ progress.message }}
+            </template>
+          </span>
           <span v-else-if="engineError" class="error">{{ engineError }}</span>
           <span v-else-if="snapshot">
             {{ files.length }} files · {{ snapshot.bundles.length }} bundles ·
-            {{ snapshot.projects.length }} projects
+            {{ snapshot.projects.length }} projects · {{ snapshot.skipped.length }} skipped
             <template v-if="revision"> · {{ approved }} accepted</template>
           </span>
           <span v-else class="muted">Add a source, pick an intent, then scan.</span>
