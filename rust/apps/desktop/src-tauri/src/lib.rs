@@ -385,6 +385,33 @@ fn probe_endpoint(state: State<EngineState>, args: ProbeArgs) -> Result<(bool, S
     })
 }
 
+#[tauri::command]
+fn download_model(
+    app: AppHandle,
+    state: State<EngineState>,
+    catalog_id: String,
+) -> Result<ModelInventory, String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        let envelopes = client
+            .request_with_events(
+                aifs_protocol::Command::DownloadModel { catalog_id },
+                |envelope| {
+                    forward_engine_event(&app, &envelope.event);
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Models { inventory } => return Ok(inventory),
+                Event::Failed { message, .. } => return Err(message),
+                _ => {}
+            }
+        }
+        Err("download ended without models".to_owned())
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -407,6 +434,7 @@ pub fn run() {
             put_settings,
             get_models,
             put_models,
+            download_model,
             probe_endpoint
         ])
         .run(tauri::generate_context!())

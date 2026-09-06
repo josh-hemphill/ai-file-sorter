@@ -2,8 +2,9 @@
 //!
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 //! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
-//! `put_models`, `probe_endpoint`, and `shutdown`.
+//! `put_models`, `download_model`, `probe_endpoint`, and `shutdown`.
 
+mod download;
 mod extract;
 
 use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
@@ -21,7 +22,7 @@ use aifs_relationships::enrich;
 use aifs_scanner::{ScanError, scan};
 use aifs_store::WorkspaceStore;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const SCAN_LOG_CAP: usize = 400;
@@ -44,6 +45,7 @@ pub fn capabilities() -> Vec<String> {
         "chat".to_owned(),
         "settings".to_owned(),
         "models".to_owned(),
+        "download_model".to_owned(),
     ];
     caps.extend(extract::worker_capabilities());
     caps
@@ -167,6 +169,9 @@ impl Engine {
             Command::ProbeEndpoint { backend, api_key } => {
                 emit(self.handle_probe_endpoint(&request.id, backend, api_key))
             }
+            Command::DownloadModel { catalog_id } => {
+                self.handle_download_model(&request.id, &catalog_id, emit)
+            }
         }
     }
 
@@ -251,7 +256,7 @@ impl Engine {
             Ok(inventory) => Envelope::reply(
                 id,
                 Event::Models {
-                    inventory: inventory.redacted(),
+                    inventory: present_models(inventory),
                 },
             ),
             Err(error) => store_failed(id, error),
@@ -271,7 +276,7 @@ impl Engine {
             Ok(()) => Envelope::reply(
                 id,
                 Event::Models {
-                    inventory: merged.redacted(),
+                    inventory: present_models(merged),
                 },
             ),
             Err(error) => store_failed(id, error),
@@ -288,8 +293,62 @@ impl Engine {
             return failed;
         }
         let _ = api_key;
-        let (ok, message) = aifs_protocol::probe_backend(&backend);
+        let storage = load_models(&self.store)
+            .ok()
+            .map(|inventory| resolved_models_dir(&inventory.storage_dir));
+        let (ok, message) = aifs_protocol::probe_backend_at(&backend, storage.as_deref());
         Envelope::reply(id, Event::EndpointProbed { ok, message })
+    }
+
+    fn handle_download_model(
+        &self,
+        id: &RequestId,
+        catalog_id: &str,
+        emit: &mut impl FnMut(Envelope),
+    ) {
+        if let Some(failed) = self.require_hello(id) {
+            emit(failed);
+            return;
+        }
+        let mut inventory = match load_models(&self.store) {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
+        };
+        let dir = resolved_models_dir(&inventory.storage_dir);
+        if inventory.storage_dir.trim().is_empty() {
+            inventory.storage_dir = dir.display().to_string();
+            if let Err(error) = save_models(&self.store, &inventory) {
+                emit(store_failed(id, error));
+                return;
+            }
+        }
+        match download::download_catalog(&dir, catalog_id, id, emit) {
+            Ok(()) => emit(Envelope::reply(
+                id,
+                Event::Models {
+                    inventory: present_models(inventory),
+                },
+            )),
+            Err(download::DownloadError::UnknownCatalog { catalog_id }) => emit(Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::InvalidRequest,
+                    message: format!("Unknown catalog id {catalog_id}"),
+                    issues: vec![],
+                },
+            )),
+            Err(error) => emit(Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::Io,
+                    message: error.to_string(),
+                    issues: vec![],
+                },
+            )),
+        }
     }
 
     fn handle_scan(
@@ -803,8 +862,39 @@ fn save_models(
     store: &aifs_store::WorkspaceStore,
     inventory: &ModelInventory,
 ) -> Result<(), aifs_store::StoreError> {
-    let json = serde_json::to_string(inventory)?;
+    let mut stored = inventory.clone();
+    stored.artifacts.clear();
+    let json = serde_json::to_string(&stored)?;
     store.put_meta(MODELS_META_KEY, &json)
+}
+
+fn present_models(inventory: ModelInventory) -> ModelInventory {
+    let dir = resolved_models_dir(&inventory.storage_dir);
+    let mut next = inventory.redacted();
+    if next.storage_dir.trim().is_empty() {
+        next.storage_dir = dir.display().to_string();
+    }
+    next.with_disk_status(&dir)
+}
+
+fn resolved_models_dir(storage_dir: &str) -> PathBuf {
+    let trimmed = storage_dir.trim();
+    if trimmed.is_empty() {
+        default_models_dir()
+    } else {
+        PathBuf::from(trimmed)
+    }
+}
+
+fn default_models_dir() -> PathBuf {
+    durable_store_base(
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )
+    .map(|base| base.join("aifs").join("models"))
+    .unwrap_or_else(|| PathBuf::from("aifs-models"))
 }
 
 fn emit_model_runtime_notices(
@@ -834,7 +924,7 @@ fn emit_model_runtime_notices(
                 emit,
                 id,
                 LogLevel::Info,
-                "Vision slot assigned; model runtime is not connected yet.",
+                "Vision slot assigned; scan still uses heuristics until analysis workers exist.",
             );
         }
     }
@@ -851,7 +941,7 @@ fn emit_model_runtime_notices(
                 emit,
                 id,
                 LogLevel::Info,
-                "Document slot assigned; model runtime is not connected yet.",
+                "Document slot assigned; scan still uses heuristics until analysis workers exist.",
             );
         }
     }
@@ -1690,5 +1780,204 @@ mod tests {
             from_profile.is_some(),
             "USERPROFILE must yield a store base"
         );
+    }
+
+    #[test]
+    fn download_model_skips_shared_gguf_already_on_disk() {
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let files = [
+            (
+                aifs_protocol::GEMMA_TEXT_FILENAME,
+                b"text-weights".as_slice(),
+            ),
+            (aifs_protocol::GEMMA_MMPROJ_FILENAME, b"mmproj".as_slice()),
+        ];
+        let (base, hits) = spawn_catalog_http(&files);
+        let _guard = CatalogBaseGuard::set(&base);
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        let inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels { inventory },
+        }));
+
+        let first = engine.handle(Request {
+            id: "dl1".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+        });
+        match terminal(first) {
+            Event::Models { inventory: stored } => {
+                assert!(
+                    stored
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.id == "gemma-text-q4" && artifact.present),
+                    "{stored:?}"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 1);
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_MMPROJ_FILENAME), 0);
+
+        let second = engine.handle(Request {
+            id: "dl2".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it-mmproj".into(),
+            },
+        });
+        match terminal(second) {
+            Event::Models { inventory: stored } => {
+                assert!(stored.artifacts.iter().all(|artifact| artifact.present));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 1);
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_MMPROJ_FILENAME), 1);
+
+        let third = engine.handle(Request {
+            id: "dl3".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+        });
+        assert!(matches!(terminal(third), Event::Models { .. }));
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 1);
+
+        match terminal(engine.handle(Request {
+            id: "probe".into(),
+            command: Command::ProbeEndpoint {
+                backend: ModelBackend::Catalog {
+                    catalog_id: "gemma-3-4b-it".into(),
+                },
+                api_key: None,
+            },
+        })) {
+            Event::EndpointProbed { ok, message } => {
+                assert!(ok, "{message}");
+                assert!(message.contains("already downloaded"), "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn download_model_rejects_unknown_catalog() {
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        match terminal(engine.handle(Request {
+            id: "bad".into(),
+            command: Command::DownloadModel {
+                catalog_id: "not-a-model".into(),
+            },
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn hello_ok(engine: &mut Engine) {
+        engine.handle(Request {
+            id: "hello".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+    }
+
+    fn hit_count(
+        hits: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
+        name: &str,
+    ) -> u32 {
+        hits.lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .get(name)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn spawn_catalog_http(
+        files: &[(&str, &[u8])],
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
+    ) {
+        use std::collections::HashMap;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let bodies: HashMap<String, Vec<u8>> = files
+            .iter()
+            .map(|(name, body)| ((*name).to_owned(), body.to_vec()))
+            .collect();
+        let hits = Arc::new(Mutex::new(HashMap::new()));
+        let hits_for_thread = hits.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"));
+        thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else {
+                    continue;
+                };
+                let mut buf = [0_u8; 4096];
+                let Ok(read) = stream.read(&mut buf) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buf[..read]);
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .trim_start_matches('/');
+                let filename = path.split('?').next().unwrap_or(path);
+                if let Some(body) = bodies.get(filename) {
+                    {
+                        let mut counts = hits_for_thread
+                            .lock()
+                            .unwrap_or_else(|error| panic!("{error}"));
+                        *counts.entry(filename.to_owned()).or_insert(0) += 1;
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(body);
+                } else {
+                    let header =
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(header.as_bytes());
+                }
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    struct CatalogBaseGuard {
+        previous: Option<String>,
+    }
+
+    impl CatalogBaseGuard {
+        fn set(base: &str) -> Self {
+            let previous = aifs_protocol::set_catalog_base_override(Some(base.to_owned()));
+            Self { previous }
+        }
+    }
+
+    impl Drop for CatalogBaseGuard {
+        fn drop(&mut self) {
+            let _ = aifs_protocol::set_catalog_base_override(self.previous.take());
+        }
     }
 }

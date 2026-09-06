@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inventorySummary, slotBackend, withSlotKind } from "./models.ts";
+import {
+  catalogIsDownloaded,
+  formatBytes,
+  inventorySummary,
+  slotBackend,
+  withSlotKind,
+} from "./models.ts";
 
 test("inventorySummary treats off slots as unused", () => {
   assert.equal(
@@ -25,7 +31,7 @@ test("inventorySummary treats off slots as unused", () => {
         { id: "vision", kind: "off" },
       ],
     }),
-    "1 slot assigned · model runtime not connected",
+    "1 slot assigned · scan still uses heuristics",
   );
 });
 
@@ -48,4 +54,39 @@ test("withSlotKind round-trip to hosted omits a blank key", () => {
   );
   const hosted = withSlotKind(off, "open_ai");
   assert.equal(hosted.api_key, undefined);
+});
+
+test("catalogIsDownloaded is true only when every shared file is present", () => {
+  const artifacts = [
+    {
+      id: "gemma-text-q4",
+      filename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+      path: "/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+      expected_bytes: 2_490_000_000,
+      bytes_on_disk: 2_490_000_000,
+      present: true,
+      used_by: ["gemma-3-4b-it", "gemma-3-4b-it-mmproj"],
+    },
+    {
+      id: "gemma-mmproj-f16",
+      filename: "mmproj-google_gemma-3-4b-it-f16.gguf",
+      path: "/models/mmproj-google_gemma-3-4b-it-f16.gguf",
+      expected_bytes: 851_000_000,
+      bytes_on_disk: 0,
+      present: false,
+      used_by: ["gemma-3-4b-it-mmproj"],
+    },
+  ];
+  assert.equal(
+    catalogIsDownloaded({ storage_dir: "/models", gpu_preference: "auto", slots: [], artifacts }, "gemma-3-4b-it"),
+    true,
+  );
+  assert.equal(
+    catalogIsDownloaded(
+      { storage_dir: "/models", gpu_preference: "auto", slots: [], artifacts },
+      "gemma-3-4b-it-mmproj",
+    ),
+    false,
+  );
+  assert.equal(formatBytes(2_490_000_000), "2.49 GB");
 });
