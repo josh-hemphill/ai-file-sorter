@@ -91,4 +91,9 @@ Filesystem and SQLite cannot be one transaction, so apply is a journaled saga:
 ```
 
 Intent presets (Tidy inbox, Build archive, Media library, Custom) set scan and proposal
-options; advanced analysis controls belong in a workspace settings drawer.
+options; advanced analysis controls belong in a workspace settings drawer. Setup (model
+download, local/remote endpoints per analysis slot) is a separate first-run surface.
+
+The implementation sequence for that workspace — live scan/analysis stream, mixed-tree
+folder roles, review-by-unit, preview diff, settings, and setup — is
+[`golden-path-execution-plan.md`](golden-path-execution-plan.md).
