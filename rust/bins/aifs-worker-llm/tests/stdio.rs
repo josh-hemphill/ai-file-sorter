@@ -29,6 +29,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
     assert!(client.capabilities().iter().any(|cap| cap == "stub"));
     assert!(client.capabilities().iter().any(|cap| cap == "load"));
+    assert!(client.capabilities().iter().any(|cap| cap == "unload"));
     let loaded = client
         .load(
             ModelBackend::Catalog {

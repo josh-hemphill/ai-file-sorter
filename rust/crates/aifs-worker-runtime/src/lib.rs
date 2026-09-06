@@ -29,9 +29,9 @@ pub trait WorkerHandler {
         Err("load is not supported".to_owned())
     }
 
-    /// Drop a loaded backend.
+    /// Drop a loaded backend. Default: unsupported.
     fn unload(&mut self) -> Result<(), String> {
-        Ok(())
+        Err("unload is not supported".to_owned())
     }
 
     /// Categorize a file. Default: unsupported.
@@ -66,7 +66,7 @@ pub trait WorkerHandler {
 /// Result of a successful [`WorkerHandler::load`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedModel {
-    /// Device actually used (`cpu`, `cuda`, `vulkan`, `metal`, `stub`).
+    /// Device actually used (`cpu`, `cuda`, `vulkan`, `metal`).
     pub device: String,
     /// Model id or filename.
     pub model: String,

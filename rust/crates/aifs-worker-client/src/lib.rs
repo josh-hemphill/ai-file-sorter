@@ -169,8 +169,17 @@ impl WorkerClient {
                 code: *code,
                 message: message.clone(),
             }),
-            other => Err(WorkerClientError::Unexpected(format!(
-                "expected ready, got {other:?}"
+            Some(
+                WorkerEvent::Extracted { .. }
+                | WorkerEvent::Loaded { .. }
+                | WorkerEvent::Unloaded
+                | WorkerEvent::Inferred { .. }
+                | WorkerEvent::ChatCompleted { .. }
+                | WorkerEvent::Shutdown,
+            )
+            | None => Err(WorkerClientError::Unexpected(format!(
+                "expected ready, got {:?}",
+                envelopes.last().map(|envelope| &envelope.event)
             ))),
         }
     }

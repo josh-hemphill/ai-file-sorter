@@ -183,7 +183,7 @@ pub enum WorkerEvent {
     },
     /// `load` finished.
     Loaded {
-        /// Device actually used (`cpu`, `cuda`, `vulkan`, `metal`, `stub`).
+        /// Device actually used (`cpu`, `cuda`, `vulkan`, `metal`).
         device: String,
         /// Model id or GGUF filename.
         model: String,
