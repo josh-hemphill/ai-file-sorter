@@ -126,9 +126,19 @@ test("currentWorkflowStep follows scan → review → resolve → preview → ap
       revision,
       plan: { id: "p", operations: [] },
       issues: [],
-      journal: { id: "j", status: "completed", dry_run: false, entries: [] },
+      journal: { id: "j", plan: "p", status: "completed", dry_run: false, entries: [] },
     }),
     "apply",
+  );
+  assert.equal(
+    currentWorkflowStep({
+      snapshot,
+      revision,
+      plan: { id: "p2", operations: [] },
+      issues: [],
+      journal: { id: "j", plan: "p1", status: "completed", dry_run: false, entries: [] },
+    }),
+    "preview",
   );
   assert.equal(
     currentWorkflowStep({
@@ -318,6 +328,24 @@ test("previewRows ignores a journal with no plan id", () => {
     entries: [{ seq: 0, state: { state: "done" } }],
   });
   assert.equal(rows[0]?.state, undefined);
+});
+
+test("previewRows ignores a foreign journal when the plan has no operations", () => {
+  const plan = { id: "p2", operations: [] };
+  const rows = previewRows(plan, {
+    id: "j",
+    plan: "p1",
+    status: "completed",
+    dry_run: false,
+    entries: [
+      {
+        seq: 0,
+        operation: { op: "move" as const, asset: "a", from: "old.txt", to: "Documents/old.txt" },
+        state: { state: "done" },
+      },
+    ],
+  });
+  assert.equal(rows.length, 0);
 });
 
 test("issueLabel explains approve-before-validate", () => {

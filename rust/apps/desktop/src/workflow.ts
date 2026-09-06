@@ -86,13 +86,26 @@ export function currentWorkflowStep(state: WorkflowState): WorkflowStep {
   if (hasErrors) {
     return "resolve";
   }
-  if (state.journal && !state.journal.dry_run && state.journal.status !== "undone" && state.plan) {
+  if (
+    journalBelongsToPlan(state.journal, state.plan?.id) &&
+    state.journal &&
+    !state.journal.dry_run &&
+    state.journal.status !== "undone"
+  ) {
     return "apply";
   }
   if (state.plan) {
     return "preview";
   }
   return "review";
+}
+
+/** True when the journal was produced for this plan. */
+export function journalBelongsToPlan(
+  journal: ApplyJournal | null,
+  planId: string | undefined,
+): boolean {
+  return Boolean(journal?.plan && planId && journal.plan === planId);
 }
 
 /** Human label for a bundle constraint (engine tagged JSON, not the raw object). */
@@ -221,10 +234,7 @@ function journalStateBySeq(
   planId: string | undefined,
 ): Map<number, { state: string; message?: string; reason?: string }> {
   const map = new Map<number, { state: string; message?: string; reason?: string }>();
-  if (!journal) {
-    return map;
-  }
-  if (!journal.plan || !planId || journal.plan !== planId) {
+  if (!journal || !journalBelongsToPlan(journal, planId)) {
     return map;
   }
   for (const entry of journal.entries) {
@@ -307,6 +317,9 @@ export function previewRows(
     });
   }
   if (!journal) {
+    return [];
+  }
+  if (plan && !journalBelongsToPlan(journal, plan.id)) {
     return [];
   }
   return journal.entries.map((entry) => {

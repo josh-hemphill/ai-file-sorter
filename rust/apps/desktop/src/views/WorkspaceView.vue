@@ -49,6 +49,7 @@ import {
   rememberRoot,
   roleKindLabel,
   skippedReasonLabel,
+  journalBelongsToPlan,
 } from "../workflow";
 
 const STREAM_CAP = 1000;
@@ -133,6 +134,11 @@ const step = computed(() =>
 const approved = computed(() => acceptedCount(revision.value));
 const counts = computed(() => planCounts(plan.value));
 const diffs = computed(() => previewRows(plan.value, journal.value));
+const journalForPlan = computed(() =>
+  (journalBelongsToPlan(journal.value, plan.value?.id) || !plan.value)
+    ? journal.value
+    : null,
+);
 const confirmSummary = computed(() =>
   applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
 );
@@ -637,15 +643,15 @@ function familyOf(entry: ObservedEntry): string {
           </li>
         </ul>
         <PreviewDiff
-          v-if="plan || journal"
+          v-if="plan || journalForPlan"
           :rows="diffs"
           :counts="counts"
-          :journal-status="journal?.status"
-          :dry-run="journal?.dry_run"
+          :journal-status="journalForPlan?.status"
+          :dry-run="journalForPlan?.dry_run"
         />
-        <p v-if="journal" class="muted">
-          {{ journal.dry_run ? "Preview journal" : "Apply journal" }}
-          {{ journal.status }} · {{ journal.entries.length }} operations
+        <p v-if="journalForPlan" class="muted">
+          {{ journalForPlan.dry_run ? "Preview journal" : "Apply journal" }}
+          {{ journalForPlan.status }} · {{ journalForPlan.entries.length }} operations
         </p>
         <p v-if="!issues.length && !plan && !journal && !logLines.length && !progress" class="muted">
           Scan progress, validation, and apply results show up here.

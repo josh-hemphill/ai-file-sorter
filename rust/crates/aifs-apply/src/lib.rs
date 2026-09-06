@@ -292,6 +292,9 @@ fn run_operation(
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     Ok(RunOutcome::Skipped("directory already absent".to_owned()))
                 }
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                    Ok(RunOutcome::Skipped("directory is not empty".to_owned()))
+                }
                 Err(error) => Err(error.to_string()),
             }
         }
@@ -473,7 +476,8 @@ mod tests {
     use super::*;
     use aifs_domain::{
         AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, Operation,
-        RelativePath, ReviewState, SessionId,
+        OperationPlan, PlanId, PlannedOperation, RelativePath, ReviewState, RevisionId, SessionId,
+        Timestamp,
     };
     use aifs_planner::{accept_all, propose, validate};
     use aifs_protocol::ProposalPolicy;
@@ -724,5 +728,35 @@ mod tests {
             fs::read(dir.path().join("dump/note.txt")).ok(),
             Some(b"hello".to_vec())
         );
+    }
+
+    #[test]
+    fn leftover_dotfile_skips_empty_dir_remove_instead_of_failing() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dump = dir.path().join("dump");
+        fs::create_dir_all(&dump).unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dump.join(".DS_Store"), b"junk").unwrap_or_else(|e| panic!("{e}"));
+        let snapshot = WorkspaceSnapshot::new(SessionId::new(), dir.path().to_path_buf());
+        let plan = OperationPlan {
+            id: PlanId::new(),
+            revision: RevisionId::new(),
+            root: dir.path().to_path_buf(),
+            created_at: Timestamp::now(),
+            operations: vec![PlannedOperation {
+                seq: 0,
+                operation: Operation::RemoveEmptyDirectory {
+                    path: RelativePath::parse("dump").unwrap_or_else(|e| panic!("{e}")),
+                },
+            }],
+            warnings: vec![],
+        };
+        let applied = apply_plan(&snapshot, &plan, false);
+        assert_eq!(applied.status, JournalStatus::Completed);
+        assert!(
+            matches!(applied.entries[0].state, JournalState::Skipped { .. }),
+            "leftover .DS_Store must skip remove, not fail the journal: {:?}",
+            applied.entries[0].state
+        );
+        assert!(dump.is_dir(), "occupied dump/ must remain");
     }
 }

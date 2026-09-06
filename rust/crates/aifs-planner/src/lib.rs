@@ -650,6 +650,8 @@ fn empty_directories_to_remove(
             entry.kind != EntryKind::Directory
                 && entry.path.starts_with(dir)
                 && !moving.contains(&entry.path.case_fold())
+        }) || snapshot.skipped.iter().any(|entry| {
+            entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold())
         })
     };
     let removable_roots: BTreeSet<RelativePath> = emptied_roots
@@ -693,7 +695,7 @@ mod tests {
     use super::*;
     use aifs_domain::{
         AssetId, Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, FileIdentity,
-        LockState, ObservedEntry, SessionId,
+        LockState, ObservedEntry, SessionId, SkipReason, SkippedEntry,
     };
     use std::path::PathBuf;
 
@@ -917,6 +919,33 @@ mod tests {
             .unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "clip.mp3");
         assert_eq!(placement.origin, SuggestionOrigin::Unchanged);
+    }
+
+    #[test]
+    fn skipped_junk_in_source_folder_is_not_removed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot
+            .entries
+            .push(file("dump/a.txt", FileFamily::Document));
+        snapshot.skipped.push(SkippedEntry {
+            path: RelativePath::parse("dump/.DS_Store").unwrap_or_else(|e| panic!("{e}")),
+            reason: SkipReason::Junk,
+        });
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &revision);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|planned| matches!(
+                planned.operation,
+                Operation::RemoveEmptyDirectory { ref path } if path.as_str() == "dump"
+            )),
+            "skipped junk still occupies dump, so it must not be removed"
+        );
     }
 
     #[test]
