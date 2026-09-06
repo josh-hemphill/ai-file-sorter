@@ -1,4 +1,4 @@
-//! Bounded readers for embedded audio/video tags and document text.
+//! Bounded readers for media tags, documents, and image EXIF.
 //!
 //! Media: ID3v1/v2, FLAC Vorbis comments, Ogg Vorbis/Opus comments, and MP4/M4A
 //! `ilst` atoms. Documents: PDF strings, Office/EPUB zip members, and plain text.
@@ -14,10 +14,12 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 mod document;
+mod image;
 
 pub use document::{
     extract_document_entry, write_docx_fixture, write_pdf_fixture, write_plain_text_fixture,
 };
+pub use image::{extract_image_entry, write_jpeg_exif_fixture};
 
 const MAX_ID3_TAG_BYTES: u32 = 2 * 1024 * 1024;
 const MAX_BLOCK_BYTES: u32 = 2 * 1024 * 1024;

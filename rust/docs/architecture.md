@@ -15,7 +15,7 @@ bins/aifs-engine
     └── supervises workers
           ├── `aifs-worker-media` (Rust tag readers; later ffprobe)
           ├── `aifs-worker-document` (PDF/Office/text)
-          ├── `aifs-worker-vision` (EXIF/OCR stub)
+          ├── `aifs-worker-vision` (EXIF; describe is LLM)
           └── `aifs-worker-llm` (session-lived; stub infer, llama.cpp later)
 ```
 
@@ -40,7 +40,7 @@ Rules:
 | `aifs-protocol` | JSONL request/event types and request options | domain |
 | `aifs-scanner` | Walk a root, assign asset ids, identity, project protection | domain, protocol, relationships |
 | `aifs-relationships` | Sidecar / series / archive-part / project bundle detectors | domain |
-| `aifs-extractors` | Media tags and document text → evidence | domain |
+| `aifs-extractors` | Media tags, document text, and image EXIF → evidence | domain |
 | `aifs-store` | SQLite WAL store for snapshots, revisions, plans, journals | domain |
 | `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
 | `aifs-apply` | Journaled local apply + undo | domain, scanner |

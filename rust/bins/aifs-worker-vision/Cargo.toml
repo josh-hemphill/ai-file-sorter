@@ -1,6 +1,6 @@
 [package]
 name = "aifs-worker-vision"
-description = "Isolated image/vision worker stub (evidence only)"
+description = "Isolated image EXIF worker (evidence only)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,9 +12,14 @@ name = "aifs-worker-vision"
 path = "src/main.rs"
 
 [dependencies]
-aifs-domain = { workspace = true }
+aifs-extractors = { workspace = true }
 aifs-protocol = { workspace = true }
 aifs-worker-runtime = { workspace = true }
+
+[dev-dependencies]
+aifs-domain = { workspace = true }
+aifs-worker-client = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
