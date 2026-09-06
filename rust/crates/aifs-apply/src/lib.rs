@@ -8,11 +8,20 @@ use aifs_domain::{
 use aifs_scanner::read_identity;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use thiserror::Error;
 
 const DEFAULT_FINGERPRINT_PREFIX: u64 = 64 * 1024;
+const HEARTBEAT_BYTES: u64 = 256 * 1024;
+
+/// Callback events while a plan is applied or undone.
+pub enum ApplyHook<'a> {
+    /// Journal state changed (created, op finished, or run ended). Return `false` to stop.
+    Progress(&'a ApplyJournal),
+    /// Long I/O is still running; used to keep the client timeout from firing.
+    Heartbeat,
+}
 
 /// Apply failures that abort the remaining operations.
 #[derive(Debug, Error)]
@@ -36,15 +45,27 @@ pub fn apply_plan_with_progress(
     snapshot: &WorkspaceSnapshot,
     plan: &OperationPlan,
     dry_run: bool,
-    on_progress: impl FnMut(&ApplyJournal),
+    mut on_progress: impl FnMut(&ApplyJournal),
 ) -> ApplyJournal {
-    apply_plan_with_prefix_and_progress(
-        snapshot,
-        plan,
-        dry_run,
-        DEFAULT_FINGERPRINT_PREFIX,
-        on_progress,
-    )
+    apply_plan_with_hooks(snapshot, plan, dry_run, |hook| {
+        if let ApplyHook::Progress(journal) = hook {
+            on_progress(journal);
+        }
+        true
+    })
+}
+
+/// Applies a plan with a continue/abort progress sink and a heartbeat during long I/O.
+///
+/// [`ApplyHook::Progress`] returning `false` stops remaining operations. Heartbeats
+/// are emitted while hashing or copying so a client silence timeout does not fire mid-file.
+pub fn apply_plan_with_hooks(
+    snapshot: &WorkspaceSnapshot,
+    plan: &OperationPlan,
+    dry_run: bool,
+    on_hook: impl FnMut(ApplyHook<'_>) -> bool,
+) -> ApplyJournal {
+    apply_plan_with_prefix_and_hooks(snapshot, plan, dry_run, DEFAULT_FINGERPRINT_PREFIX, on_hook)
 }
 
 /// Applies a plan using a specific fingerprint prefix when re-checking identities.
@@ -54,16 +75,15 @@ pub fn apply_plan_with_prefix(
     dry_run: bool,
     fingerprint_prefix_bytes: u64,
 ) -> ApplyJournal {
-    apply_plan_with_prefix_and_progress(snapshot, plan, dry_run, fingerprint_prefix_bytes, |_| {})
+    apply_plan_with_prefix_and_hooks(snapshot, plan, dry_run, fingerprint_prefix_bytes, |_| true)
 }
 
-/// Applies a plan with a fingerprint prefix and a progress sink.
-pub fn apply_plan_with_prefix_and_progress(
+fn apply_plan_with_prefix_and_hooks(
     snapshot: &WorkspaceSnapshot,
     plan: &OperationPlan,
     dry_run: bool,
     fingerprint_prefix_bytes: u64,
-    mut on_progress: impl FnMut(&ApplyJournal),
+    mut on_hook: impl FnMut(ApplyHook<'_>) -> bool,
 ) -> ApplyJournal {
     let mut journal = ApplyJournal {
         id: JournalId::new(),
@@ -84,18 +104,27 @@ pub fn apply_plan_with_prefix_and_progress(
             })
             .collect(),
     };
-    on_progress(&journal);
+    if !on_hook(ApplyHook::Progress(&journal)) {
+        return abort_before_mutations(journal);
+    }
 
     if dry_run {
         journal.status = JournalStatus::Completed;
         journal.finished_at = Some(Timestamp::now());
-        on_progress(&journal);
+        let _ = on_hook(ApplyHook::Progress(&journal));
         return journal;
     }
 
     for index in 0..journal.entries.len() {
         let operation = journal.entries[index].operation.clone();
-        match run_operation(&snapshot.root, &operation, fingerprint_prefix_bytes) {
+        match run_operation(
+            &snapshot.root,
+            &operation,
+            fingerprint_prefix_bytes,
+            &mut || {
+                let _ = on_hook(ApplyHook::Heartbeat);
+            },
+        ) {
             Ok(RunOutcome::Done) => {
                 journal.entries[index].state = JournalState::Done;
             }
@@ -109,16 +138,26 @@ pub fn apply_plan_with_prefix_and_progress(
                 journal.entries[index].updated_at = Timestamp::now();
                 journal.status = JournalStatus::Failed;
                 journal.finished_at = Some(Timestamp::now());
-                on_progress(&journal);
+                let _ = on_hook(ApplyHook::Progress(&journal));
                 return journal;
             }
         }
         journal.entries[index].updated_at = Timestamp::now();
-        on_progress(&journal);
+        if !on_hook(ApplyHook::Progress(&journal)) {
+            journal.status = JournalStatus::Failed;
+            journal.finished_at = Some(Timestamp::now());
+            return journal;
+        }
     }
     journal.status = JournalStatus::Completed;
     journal.finished_at = Some(Timestamp::now());
-    on_progress(&journal);
+    let _ = on_hook(ApplyHook::Progress(&journal));
+    journal
+}
+
+fn abort_before_mutations(mut journal: ApplyJournal) -> ApplyJournal {
+    journal.status = JournalStatus::Failed;
+    journal.finished_at = Some(Timestamp::now());
     journal
 }
 
@@ -131,14 +170,23 @@ pub fn undo_journal(snapshot: &WorkspaceSnapshot, journal: &ApplyJournal) -> App
 pub fn undo_journal_with_progress(
     snapshot: &WorkspaceSnapshot,
     journal: &ApplyJournal,
-    on_progress: impl FnMut(&ApplyJournal),
+    mut on_progress: impl FnMut(&ApplyJournal),
 ) -> ApplyJournal {
-    undo_journal_with_prefix_and_progress(
-        snapshot,
-        journal,
-        DEFAULT_FINGERPRINT_PREFIX,
-        on_progress,
-    )
+    undo_journal_with_hooks(snapshot, journal, |hook| {
+        if let ApplyHook::Progress(next) = hook {
+            on_progress(next);
+        }
+        true
+    })
+}
+
+/// Undo with continue/abort progress and a heartbeat during long I/O.
+pub fn undo_journal_with_hooks(
+    snapshot: &WorkspaceSnapshot,
+    journal: &ApplyJournal,
+    on_hook: impl FnMut(ApplyHook<'_>) -> bool,
+) -> ApplyJournal {
+    undo_journal_with_prefix_and_hooks(snapshot, journal, DEFAULT_FINGERPRINT_PREFIX, on_hook)
 }
 
 /// Undo using a specific fingerprint prefix.
@@ -147,30 +195,40 @@ pub fn undo_journal_with_prefix(
     journal: &ApplyJournal,
     fingerprint_prefix_bytes: u64,
 ) -> ApplyJournal {
-    undo_journal_with_prefix_and_progress(snapshot, journal, fingerprint_prefix_bytes, |_| {})
+    undo_journal_with_prefix_and_hooks(snapshot, journal, fingerprint_prefix_bytes, |_| true)
 }
 
-/// Undo with a fingerprint prefix and a progress sink.
-pub fn undo_journal_with_prefix_and_progress(
+fn undo_journal_with_prefix_and_hooks(
     snapshot: &WorkspaceSnapshot,
     journal: &ApplyJournal,
     fingerprint_prefix_bytes: u64,
-    mut on_progress: impl FnMut(&ApplyJournal),
+    mut on_hook: impl FnMut(ApplyHook<'_>) -> bool,
 ) -> ApplyJournal {
     let mut next = journal.clone();
     if journal.dry_run {
         next.status = JournalStatus::Undone;
         next.finished_at = Some(Timestamp::now());
-        on_progress(&next);
+        let _ = on_hook(ApplyHook::Progress(&next));
         return next;
     }
-    on_progress(&next);
+    if !on_hook(ApplyHook::Progress(&next)) {
+        next.status = JournalStatus::Failed;
+        next.finished_at = Some(Timestamp::now());
+        return next;
+    }
     for index in (0..next.entries.len()).rev() {
         if !matches!(next.entries[index].state, JournalState::Done) {
             continue;
         }
         let operation = next.entries[index].operation.clone();
-        match reverse_operation(&snapshot.root, &operation, fingerprint_prefix_bytes) {
+        match reverse_operation(
+            &snapshot.root,
+            &operation,
+            fingerprint_prefix_bytes,
+            &mut || {
+                let _ = on_hook(ApplyHook::Heartbeat);
+            },
+        ) {
             Ok(()) => {
                 next.entries[index].state = JournalState::RolledBack;
                 next.entries[index].updated_at = Timestamp::now();
@@ -179,15 +237,19 @@ pub fn undo_journal_with_prefix_and_progress(
                 next.entries[index].state = JournalState::Failed { message };
                 next.status = JournalStatus::Failed;
                 next.finished_at = Some(Timestamp::now());
-                on_progress(&next);
+                let _ = on_hook(ApplyHook::Progress(&next));
                 return next;
             }
         }
-        on_progress(&next);
+        if !on_hook(ApplyHook::Progress(&next)) {
+            next.status = JournalStatus::Failed;
+            next.finished_at = Some(Timestamp::now());
+            return next;
+        }
     }
     next.status = JournalStatus::Undone;
     next.finished_at = Some(Timestamp::now());
-    on_progress(&next);
+    let _ = on_hook(ApplyHook::Progress(&next));
     next
 }
 
@@ -196,7 +258,12 @@ enum RunOutcome {
     Skipped(String),
 }
 
-fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<RunOutcome, String> {
+fn run_operation(
+    root: &Path,
+    operation: &Operation,
+    prefix: u64,
+    on_heartbeat: &mut impl FnMut(),
+) -> Result<RunOutcome, String> {
     match operation {
         Operation::CreateDirectory { path } => {
             let dir = path.resolve(root);
@@ -215,7 +282,7 @@ fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<RunO
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
-            move_file(&src, &dest)?;
+            move_file(&src, &dest, on_heartbeat)?;
             Ok(RunOutcome::Done)
         }
         Operation::RemoveEmptyDirectory { path } => {
@@ -231,7 +298,12 @@ fn run_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<RunO
     }
 }
 
-fn reverse_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<(), String> {
+fn reverse_operation(
+    root: &Path,
+    operation: &Operation,
+    prefix: u64,
+    on_heartbeat: &mut impl FnMut(),
+) -> Result<(), String> {
     match operation {
         Operation::CreateDirectory { path } => {
             let dir = path.resolve(root);
@@ -256,7 +328,7 @@ fn reverse_operation(root: &Path, operation: &Operation, prefix: u64) -> Result<
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
-            move_file(&src, &dest)
+            move_file(&src, &dest, on_heartbeat)
         }
         Operation::RemoveEmptyDirectory { path } => {
             fs::create_dir_all(path.resolve(root)).map_err(|error| error.to_string())
@@ -277,8 +349,11 @@ fn identities_compatible(expected: &FileIdentity, current: &FileIdentity) -> boo
     expected.matches(current)
 }
 
-fn move_file(src: &Path, dest: &Path) -> Result<(), String> {
-    if src == dest {
+fn move_file(src: &Path, dest: &Path, on_heartbeat: &mut impl FnMut()) -> Result<(), String> {
+    if src == dest || is_same_file(src, dest) {
+        if src != dest {
+            fs::rename(src, dest).map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
     if dest.exists() {
@@ -286,19 +361,61 @@ fn move_file(src: &Path, dest: &Path) -> Result<(), String> {
     }
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(error) if is_cross_device(&error) => copy_verify_delete(src, dest),
+        Err(error) if is_cross_device(&error) => copy_verify_delete(src, dest, on_heartbeat),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn is_same_file(src: &Path, dest: &Path) -> bool {
+    let Ok(src_meta) = fs::symlink_metadata(src) else {
+        return false;
+    };
+    let Ok(dest_meta) = fs::symlink_metadata(dest) else {
+        return false;
+    };
+    same_file_identity(&src_meta, &dest_meta)
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index().is_some()
+        && left.file_index() == right.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    false
 }
 
 fn is_cross_device(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::CrossesDevices || error.raw_os_error() == Some(18)
 }
 
-fn copy_verify_delete(src: &Path, dest: &Path) -> Result<(), String> {
-    let source_hash = hash_file(src).map_err(|error| error.to_string())?;
-    fs::copy(src, dest).map_err(|error| error.to_string())?;
-    let dest_hash = hash_file(dest).map_err(|error| error.to_string())?;
+fn copy_verify_delete(
+    src: &Path,
+    dest: &Path,
+    on_heartbeat: &mut impl FnMut(),
+) -> Result<(), String> {
+    let source_hash = hash_file(src, on_heartbeat).map_err(|error| error.to_string())?;
+    if let Err(error) = copy_exclusive(src, dest, on_heartbeat) {
+        let _ = fs::remove_file(dest);
+        return Err(error);
+    }
+    let dest_hash = match hash_file(dest, on_heartbeat) {
+        Ok(hash) => hash,
+        Err(error) => {
+            let _ = fs::remove_file(dest);
+            return Err(error.to_string());
+        }
+    };
     if source_hash != dest_hash {
         let _ = fs::remove_file(dest);
         return Err(format!("copy of {} failed verification", src.display()));
@@ -306,16 +423,47 @@ fn copy_verify_delete(src: &Path, dest: &Path) -> Result<(), String> {
     fs::remove_file(src).map_err(|error| error.to_string())
 }
 
-fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
+fn copy_exclusive(src: &Path, dest: &Path, on_heartbeat: &mut impl FnMut()) -> Result<(), String> {
+    let mut from = File::open(src).map_err(|error| error.to_string())?;
+    let mut to = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(|error| error.to_string())?;
+    let mut buffer = [0u8; 8192];
+    let mut since_heartbeat = 0u64;
+    loop {
+        let read = from.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        to.write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        since_heartbeat += read as u64;
+        if since_heartbeat >= HEARTBEAT_BYTES {
+            on_heartbeat();
+            since_heartbeat = 0;
+        }
+    }
+    to.sync_all().map_err(|error| error.to_string())
+}
+
+fn hash_file(path: &Path, on_heartbeat: &mut impl FnMut()) -> io::Result<[u8; 32]> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
+    let mut since_heartbeat = 0u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
+        since_heartbeat += read as u64;
+        if since_heartbeat >= HEARTBEAT_BYTES {
+            on_heartbeat();
+            since_heartbeat = 0;
+        }
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&hasher.finalize());
@@ -479,5 +627,53 @@ mod tests {
             "preexisting Documents/ must survive undo"
         );
         assert!(dir.path().join("note.txt").exists());
+    }
+
+    #[test]
+    fn same_inode_destination_is_treated_as_the_source() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let src = dir.path().join("Photo.JPG");
+        let dest = dir.path().join("Photo.jpg");
+        fs::write(&src, b"img").unwrap_or_else(|e| panic!("{e}"));
+        #[cfg(unix)]
+        {
+            fs::hard_link(&src, &dest).unwrap_or_else(|e| panic!("{e}"));
+            assert!(is_same_file(&src, &dest));
+            move_file(&src, &dest, &mut || {}).unwrap_or_else(|e| panic!("{e}"));
+            assert!(dest.exists());
+            assert_eq!(fs::read(&dest).ok(), Some(b"img".to_vec()));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (src, dest);
+        }
+    }
+
+    #[test]
+    fn copy_exclusive_does_not_clobber_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let src = dir.path().join("a.bin");
+        let dest = dir.path().join("b.bin");
+        fs::write(&src, b"src").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(&dest, b"keep").unwrap_or_else(|e| panic!("{e}"));
+        assert!(copy_exclusive(&src, &dest, &mut || {}).is_err());
+        assert_eq!(fs::read(&dest).ok(), Some(b"keep".to_vec()));
+    }
+
+    #[test]
+    fn aborting_progress_leaves_files_in_place() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), dir.path().to_path_buf());
+        snapshot
+            .entries
+            .push(scan_like(dir.path(), "note.txt", b"hello"));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, _) = validate(&snapshot, &revision);
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        let journal = apply_plan_with_hooks(&snapshot, &plan, false, |_| false);
+        assert_eq!(journal.status, JournalStatus::Failed);
+        assert!(dir.path().join("note.txt").exists());
+        assert!(!dir.path().join("Documents/note.txt").exists());
     }
 }

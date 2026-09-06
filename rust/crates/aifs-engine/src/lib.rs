@@ -3,7 +3,7 @@
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 //! `undo`, `cancel`, and `shutdown`.
 
-use aifs_apply::{apply_plan_with_progress, undo_journal_with_progress};
+use aifs_apply::{apply_plan_with_hooks, undo_journal_with_hooks, ApplyHook};
 use aifs_domain::{JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, WorkspaceSnapshot};
 use aifs_extractors::extract_into_with_progress;
 use aifs_planner::{propose, validate};
@@ -393,25 +393,32 @@ impl Engine {
             }
         };
         let stage = if dry_run { "apply-dry-run" } else { "apply" };
-        let journal = apply_plan_with_progress(&snapshot, &plan, dry_run, |journal| {
-            let _ = self.store.put_journal(session, journal);
-            emit(Envelope::reply(
-                id,
-                Event::Progress {
-                    stage: stage.to_owned(),
-                    current: (journal.done_count()
-                        + journal.skipped_count()
-                        + journal.failed_count()) as u64,
-                    total: Some(journal.entries.len() as u64),
-                    message: format!("journal {}", journal.id),
-                },
-            ));
+        let mut persist_error: Option<aifs_store::StoreError> = None;
+        let journal = apply_plan_with_hooks(&snapshot, &plan, dry_run, |hook| match hook {
+            ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
+                Ok(()) => {
+                    emit_apply_progress(emit, id, stage, journal);
+                    true
+                }
+                Err(error) => {
+                    persist_error = Some(error);
+                    false
+                }
+            },
+            ApplyHook::Heartbeat => {
+                emit(Envelope::reply(
+                    id,
+                    Event::Progress {
+                        stage: stage.to_owned(),
+                        current: 0,
+                        total: None,
+                        message: "working".to_owned(),
+                    },
+                ));
+                true
+            }
         });
-        if let Err(error) = self.store.put_journal(session, &journal) {
-            emit(store_failed(id, error));
-            return;
-        }
-        emit(Envelope::reply(id, Event::Journal { journal }));
+        emit_journal_outcome(emit, id, session, &self.store, journal, persist_error);
     }
 
     fn handle_undo(
@@ -447,33 +454,50 @@ impl Engine {
                 return;
             }
         };
-        let journal = undo_journal_with_progress(&snapshot, &journal, |journal| {
-            let _ = self.store.put_journal(session, journal);
-            emit(Envelope::reply(
-                id,
-                Event::Progress {
-                    stage: "undo".to_owned(),
-                    current: journal
-                        .entries
-                        .iter()
-                        .filter(|entry| {
-                            matches!(
-                                entry.state,
-                                aifs_domain::JournalState::RolledBack
-                                    | aifs_domain::JournalState::Failed { .. }
-                            )
-                        })
-                        .count() as u64,
-                    total: Some(journal.entries.len() as u64),
-                    message: format!("journal {}", journal.id),
-                },
-            ));
+        let mut persist_error: Option<aifs_store::StoreError> = None;
+        let journal = undo_journal_with_hooks(&snapshot, &journal, |hook| match hook {
+            ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
+                Ok(()) => {
+                    emit(Envelope::reply(
+                        id,
+                        Event::Progress {
+                            stage: "undo".to_owned(),
+                            current: journal
+                                .entries
+                                .iter()
+                                .filter(|entry| {
+                                    matches!(
+                                        entry.state,
+                                        aifs_domain::JournalState::RolledBack
+                                            | aifs_domain::JournalState::Failed { .. }
+                                    )
+                                })
+                                .count() as u64,
+                            total: Some(journal.entries.len() as u64),
+                            message: format!("journal {}", journal.id),
+                        },
+                    ));
+                    true
+                }
+                Err(error) => {
+                    persist_error = Some(error);
+                    false
+                }
+            },
+            ApplyHook::Heartbeat => {
+                emit(Envelope::reply(
+                    id,
+                    Event::Progress {
+                        stage: "undo".to_owned(),
+                        current: 0,
+                        total: None,
+                        message: "working".to_owned(),
+                    },
+                ));
+                true
+            }
         });
-        if let Err(error) = self.store.put_journal(session, &journal) {
-            emit(store_failed(id, error));
-            return;
-        }
-        emit(Envelope::reply(id, Event::Journal { journal }));
+        emit_journal_outcome(emit, id, session, &self.store, journal, persist_error);
     }
 
     fn require_hello(&self, id: &RequestId) -> Option<Envelope> {
@@ -534,6 +558,55 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
             issues: vec![],
         },
     )
+}
+
+fn emit_apply_progress(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    stage: &str,
+    journal: &aifs_domain::ApplyJournal,
+) {
+    emit(Envelope::reply(
+        id,
+        Event::Progress {
+            stage: stage.to_owned(),
+            current: (journal.done_count() + journal.skipped_count() + journal.failed_count())
+                as u64,
+            total: Some(journal.entries.len() as u64),
+            message: format!("journal {}", journal.id),
+        },
+    ));
+}
+
+fn journal_has_mutations(journal: &aifs_domain::ApplyJournal) -> bool {
+    journal
+        .entries
+        .iter()
+        .any(|entry| !matches!(entry.state, aifs_domain::JournalState::Intended))
+}
+
+fn emit_journal_outcome(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    session: SessionId,
+    store: &aifs_store::WorkspaceStore,
+    journal: aifs_domain::ApplyJournal,
+    persist_error: Option<aifs_store::StoreError>,
+) {
+    let mutated = journal_has_mutations(&journal);
+    if let Some(error) = persist_error {
+        if !mutated {
+            emit(store_failed(id, error));
+            return;
+        }
+    }
+    if let Err(error) = store.put_journal(session, &journal) {
+        if !mutated {
+            emit(store_failed(id, error));
+            return;
+        }
+    }
+    emit(Envelope::reply(id, Event::Journal { journal }));
 }
 
 /// Reads JSONL requests from `stdin` and writes envelopes to `stdout` until shutdown.

@@ -15,6 +15,7 @@ use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+const MUTATING_SHUTDOWN_WAIT: Duration = Duration::from_secs(30 * 60);
 const ENGINE_BINARY: &str = if cfg!(windows) {
     "aifs-engine.exe"
 } else {
@@ -59,6 +60,7 @@ pub struct EngineClient {
     rx: Receiver<Result<Envelope, ClientError>>,
     next_id: u64,
     buffered: Vec<Envelope>,
+    mutating: bool,
 }
 
 impl EngineClient {
@@ -118,6 +120,7 @@ impl EngineClient {
             rx,
             next_id: 1,
             buffered: Vec::new(),
+            mutating: false,
         })
     }
 
@@ -314,6 +317,10 @@ impl EngineClient {
 
     /// Sends a command and collects events until a terminal one for that id.
     pub fn request(&mut self, command: Command) -> Result<Vec<Envelope>, ClientError> {
+        let mutating = command_mutates_disk(&command);
+        if mutating {
+            self.mutating = true;
+        }
         let id = RequestId(self.next_id.to_string());
         self.next_id += 1;
         let request = Request {
@@ -341,6 +348,9 @@ impl EngineClient {
             let terminal = envelope.is_terminal();
             collected.push(envelope);
             if terminal {
+                if mutating {
+                    self.mutating = false;
+                }
                 return Ok(collected);
             }
         }
@@ -369,7 +379,12 @@ impl Drop for EngineClient {
                 let _ = stdin.flush();
             }
         }
-        let deadline = Instant::now() + GRACEFUL_SHUTDOWN_WAIT;
+        let wait = if self.mutating {
+            MUTATING_SHUTDOWN_WAIT
+        } else {
+            GRACEFUL_SHUTDOWN_WAIT
+        };
+        let deadline = Instant::now() + wait;
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
@@ -382,6 +397,13 @@ impl Drop for EngineClient {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn command_mutates_disk(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Apply { dry_run: false, .. } | Command::Undo { .. }
+    )
 }
 
 /// Resolves the engine binary from `AIFS_ENGINE`, then a sibling of the current
