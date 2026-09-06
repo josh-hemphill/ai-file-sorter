@@ -317,6 +317,16 @@ impl EngineClient {
 
     /// Sends a command and collects events until a terminal one for that id.
     pub fn request(&mut self, command: Command) -> Result<Vec<Envelope>, ClientError> {
+        self.request_with_events(command, |_| {})
+    }
+
+    /// Like [`Self::request`], invoking `on_event` for every matching envelope
+    /// (including progress) as it arrives.
+    pub fn request_with_events(
+        &mut self,
+        command: Command,
+        mut on_event: impl FnMut(&Envelope),
+    ) -> Result<Vec<Envelope>, ClientError> {
         let mutating = command_mutates_disk(&command);
         if mutating {
             self.mutating = true;
@@ -345,6 +355,7 @@ impl EngineClient {
                 self.buffered.push(envelope);
                 continue;
             }
+            on_event(&envelope);
             let terminal = envelope.is_terminal();
             collected.push(envelope);
             if terminal {

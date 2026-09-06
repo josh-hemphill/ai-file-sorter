@@ -47,6 +47,7 @@ Rules:
 | `aifs-engine` | Request dispatch (`hello` … `undo`) | all of the above |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
 | `bins/aifs-cli` (`aifs`) | `aifs scan` / `aifs organize` via the engine process | engine-client |
+| `apps/desktop` | Tauri 2 shell + Vue 3 workspace; JSONL to the engine | engine-client, protocol |
 
 ## Data flow
 
