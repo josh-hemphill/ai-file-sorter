@@ -38,7 +38,9 @@ const surface = ref<AppSurface>("workspace");
     </header>
     <WorkspaceView
       v-show="surface === 'workspace'"
+      :active="surface === 'workspace'"
       @open-settings="surface = 'settings'"
+      @open-setup="surface = 'setup'"
     />
     <SettingsView
       v-if="surface === 'settings'"

@@ -86,13 +86,41 @@ export function currentWorkflowStep(state: WorkflowState): WorkflowStep {
   if (hasErrors) {
     return "resolve";
   }
-  if (state.journal && !state.journal.dry_run && state.journal.status !== "undone") {
+  if (
+    journalBelongsToPlan(state.journal, state.plan?.id) &&
+    state.journal &&
+    !state.journal.dry_run &&
+    state.journal.status !== "undone"
+  ) {
     return "apply";
   }
   if (state.plan) {
     return "preview";
   }
   return "review";
+}
+
+/** True when the journal was produced for this plan. */
+export function journalBelongsToPlan(
+  journal: ApplyJournal | null,
+  planId: string | undefined,
+): boolean {
+  return Boolean(journal?.plan && planId && journal.plan === planId);
+}
+
+/** True when this plan already ran a mutating apply. */
+export function planAlreadyApplied(
+  journal: ApplyJournal | null,
+  planId: string | undefined,
+): boolean {
+  return (
+    journalBelongsToPlan(journal, planId) &&
+    Boolean(
+      journal &&
+        !journal.dry_run &&
+        (journal.status === "completed" || journal.status === "failed"),
+    )
+  );
 }
 
 /** Human label for a bundle constraint (engine tagged JSON, not the raw object). */
@@ -171,7 +199,9 @@ export function itemRows(
       rows.push({ type: "file", entry });
       continue;
     }
-    const members = files.filter((file) => bundle.members.includes(file.id));
+    const members = snapshot.entries.filter(
+      (file) => file.kind === "file" && bundle.members.includes(file.id),
+    );
     for (const member of members) {
       used.add(member.id);
     }
@@ -216,9 +246,10 @@ export interface PlanCounts {
 
 function journalStateBySeq(
   journal: ApplyJournal | null,
+  planId: string | undefined,
 ): Map<number, { state: string; message?: string; reason?: string }> {
   const map = new Map<number, { state: string; message?: string; reason?: string }>();
-  if (!journal) {
+  if (!journal || !journalBelongsToPlan(journal, planId)) {
     return map;
   }
   for (const entry of journal.entries) {
@@ -278,7 +309,7 @@ export function previewRows(
   plan: OperationPlan | null,
   journal: ApplyJournal | null,
 ): PreviewRow[] {
-  const states = journalStateBySeq(journal);
+  const states = journalStateBySeq(journal, plan?.id);
   const operations = plan?.operations ?? [];
   if (operations.length > 0) {
     return operations.map((planned) => {
@@ -301,6 +332,9 @@ export function previewRows(
     });
   }
   if (!journal) {
+    return [];
+  }
+  if (plan && !journalBelongsToPlan(journal, plan.id)) {
     return [];
   }
   return journal.entries.map((entry) => {

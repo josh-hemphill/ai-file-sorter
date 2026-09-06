@@ -7,6 +7,7 @@ import {
   currentWorkflowStep,
   issueLabel,
   itemRows,
+  planAlreadyApplied,
   planCounts,
   previewRows,
   rememberRoot,
@@ -126,9 +127,53 @@ test("currentWorkflowStep follows scan → review → resolve → preview → ap
       revision,
       plan: { id: "p", operations: [] },
       issues: [],
-      journal: { id: "j", status: "completed", dry_run: false, entries: [] },
+      journal: { id: "j", plan: "p", status: "completed", dry_run: false, entries: [] },
     }),
     "apply",
+  );
+  assert.equal(
+    currentWorkflowStep({
+      snapshot,
+      revision,
+      plan: { id: "p2", operations: [] },
+      issues: [],
+      journal: { id: "j", plan: "p1", status: "completed", dry_run: false, entries: [] },
+    }),
+    "preview",
+  );
+  assert.equal(
+    currentWorkflowStep({
+      snapshot,
+      revision,
+      plan: null,
+      issues: [],
+      journal: { id: "j", status: "completed", dry_run: false, entries: [] },
+    }),
+    "review",
+  );
+});
+
+test("planAlreadyApplied requires a matching mutating journal", () => {
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p", status: "completed", dry_run: false, entries: [] },
+      "p",
+    ),
+    true,
+  );
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p", status: "completed", dry_run: true, entries: [] },
+      "p",
+    ),
+    false,
+  );
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p1", status: "completed", dry_run: false, entries: [] },
+      "p2",
+    ),
+    false,
   );
 });
 
@@ -200,6 +245,47 @@ test("itemRows collapses hard bundles", () => {
   assert.equal(rows[1]?.type, "file");
 });
 
+test("itemRows keeps hidden hard-bundle members", () => {
+  const photo = {
+    id: "1",
+    path: "photo.jpg",
+    kind: "file" as const,
+    family: "image",
+    identity: { size: 1 },
+  };
+  const xmp = {
+    id: "2",
+    path: "photo.xmp",
+    kind: "file" as const,
+    family: "sidecar",
+    identity: { size: 1 },
+  };
+  const snapshot = {
+    session: "s",
+    root: "/tmp",
+    entries: [photo, xmp],
+    skipped: [],
+    projects: [],
+    bundles: [
+      {
+        id: "b",
+        kind: "sidecar_group",
+        constraint: { kind: "move_together" as const },
+        members: ["1", "2"],
+        label: "photo",
+      },
+    ],
+    relationships: [],
+    evidence: [],
+  };
+  const rows = itemRows([photo], snapshot);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.type, "group");
+  if (rows[0]?.type === "group") {
+    assert.equal(rows[0].members.length, 2);
+  }
+});
+
 test("previewRows maps plan operations to from→to rows", () => {
   const plan = {
     id: "p",
@@ -219,6 +305,7 @@ test("previewRows maps plan operations to from→to rows", () => {
   };
   const rows = previewRows(plan, {
     id: "j",
+    plan: "p",
     status: "completed",
     dry_run: true,
     entries: [
@@ -233,6 +320,57 @@ test("previewRows maps plan operations to from→to rows", () => {
   assert.equal(rows[2]?.kind, "remove");
   assert.equal(rows[0]?.state, "intended");
   assert.deepEqual(planCounts(plan), { moves: 1, creates: 1, removes: 1 });
+});
+
+test("previewRows ignores a journal from a different plan", () => {
+  const plan = {
+    id: "p2",
+    operations: [
+      { seq: 0, operation: { op: "move" as const, asset: "a", from: "a.txt", to: "Documents/a.txt" } },
+    ],
+  };
+  const rows = previewRows(plan, {
+    id: "j",
+    plan: "p1",
+    status: "completed",
+    dry_run: false,
+    entries: [{ seq: 0, state: { state: "done" } }],
+  });
+  assert.equal(rows[0]?.state, undefined);
+});
+
+test("previewRows ignores a journal with no plan id", () => {
+  const plan = {
+    id: "p",
+    operations: [
+      { seq: 0, operation: { op: "move" as const, asset: "a", from: "a.txt", to: "Documents/a.txt" } },
+    ],
+  };
+  const rows = previewRows(plan, {
+    id: "j",
+    status: "completed",
+    dry_run: false,
+    entries: [{ seq: 0, state: { state: "done" } }],
+  });
+  assert.equal(rows[0]?.state, undefined);
+});
+
+test("previewRows ignores a foreign journal when the plan has no operations", () => {
+  const plan = { id: "p2", operations: [] };
+  const rows = previewRows(plan, {
+    id: "j",
+    plan: "p1",
+    status: "completed",
+    dry_run: false,
+    entries: [
+      {
+        seq: 0,
+        operation: { op: "move" as const, asset: "a", from: "old.txt", to: "Documents/old.txt" },
+        state: { state: "done" },
+      },
+    ],
+  });
+  assert.equal(rows.length, 0);
 });
 
 test("issueLabel explains approve-before-validate", () => {

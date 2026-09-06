@@ -17,6 +17,7 @@ import {
   proposeSession,
   scanRoot,
   undoJournal,
+  getModels,
 } from "../engine";
 import { destinationTree } from "../tree";
 import type {
@@ -32,6 +33,7 @@ import type {
   ProposalRevision,
   WorkspaceSnapshot,
 } from "../types";
+import { inventorySummary } from "../models";
 import {
   INTENT_PRESETS,
   acceptedCount,
@@ -47,6 +49,8 @@ import {
   rememberRoot,
   roleKindLabel,
   skippedReasonLabel,
+  journalBelongsToPlan,
+  planAlreadyApplied,
 } from "../workflow";
 
 const STREAM_CAP = 1000;
@@ -58,6 +62,11 @@ const STAGE_ORDER = [
 
 const emit = defineEmits<{
   "open-settings": [];
+  "open-setup": [];
+}>();
+
+const props = defineProps<{
+  active?: boolean;
 }>();
 
 const engineReady = ref(false);
@@ -82,6 +91,7 @@ const logLines = ref<LogEvent[]>([]);
 const stageProgress = ref<Record<string, { current: number; total: number | null; message: string }>>(
   {},
 );
+const modelSummary = ref("All analysis slots off");
 
 const tree = computed(() => destinationTree(revision.value));
 const files = computed(
@@ -125,6 +135,14 @@ const step = computed(() =>
 const approved = computed(() => acceptedCount(revision.value));
 const counts = computed(() => planCounts(plan.value));
 const diffs = computed(() => previewRows(plan.value, journal.value));
+const journalForPlan = computed(() =>
+  (journalBelongsToPlan(journal.value, plan.value?.id) || !plan.value)
+    ? journal.value
+    : null,
+);
+const applyLocked = computed(() =>
+  planAlreadyApplied(journal.value, plan.value?.id),
+);
 const confirmSummary = computed(() =>
   applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
 );
@@ -141,6 +159,22 @@ const analysisStages = computed(() =>
 );
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
+watch(
+  () => props.active,
+  (active) => {
+    if (active) {
+      void refreshModels();
+    }
+  },
+);
+
+async function refreshModels() {
+  try {
+    modelSummary.value = inventorySummary(await getModels());
+  } catch {
+    // Setup is optional; the workspace still scans with heuristics.
+  }
+}
 
 function placementFor(asset: string) {
   return revision.value?.placements[asset];
@@ -393,6 +427,7 @@ onMounted(async () => {
   try {
     await connectEngine();
     engineReady.value = true;
+    await refreshModels();
   } catch (error) {
     engineError.value = String(error);
   }
@@ -414,6 +449,9 @@ function familyOf(entry: ObservedEntry): string {
         <strong>Workspace</strong>
         <span class="muted">{{ engineReady ? "engine ready" : "engine offline" }}</span>
       </header>
+      <button type="button" class="status-chip" @click="emit('open-setup')">
+        {{ modelSummary }}
+      </button>
       <p class="muted safety">Nothing is moved until you Apply.</p>
       <label class="field">
         Source
@@ -609,15 +647,15 @@ function familyOf(entry: ObservedEntry): string {
           </li>
         </ul>
         <PreviewDiff
-          v-if="plan || journal"
+          v-if="plan || journalForPlan"
           :rows="diffs"
           :counts="counts"
-          :journal-status="journal?.status"
-          :dry-run="journal?.dry_run"
+          :journal-status="journalForPlan?.status"
+          :dry-run="journalForPlan?.dry_run"
         />
-        <p v-if="journal" class="muted">
-          {{ journal.dry_run ? "Preview journal" : "Apply journal" }}
-          {{ journal.status }} · {{ journal.entries.length }} operations
+        <p v-if="journalForPlan" class="muted">
+          {{ journalForPlan.dry_run ? "Preview journal" : "Apply journal" }}
+          {{ journalForPlan.status }} · {{ journalForPlan.entries.length }} operations
         </p>
         <p v-if="!issues.length && !plan && !journal && !logLines.length && !progress" class="muted">
           Scan progress, validation, and apply results show up here.
@@ -650,20 +688,20 @@ function familyOf(entry: ObservedEntry): string {
           <button type="button" :disabled="busy || !revision" @click="validatePlan">
             Validate
           </button>
-          <button type="button" :disabled="busy || !plan" @click="runApply(true)">
+          <button type="button" :disabled="busy || !plan || applyLocked" @click="runApply(true)">
             Preview
           </button>
           <button
             type="button"
             class="primary"
-            :disabled="busy || !plan || errorIssues.length > 0"
+            :disabled="busy || !plan || errorIssues.length > 0 || applyLocked"
             @click="requestApply"
           >
             Apply
           </button>
           <button
             type="button"
-            :disabled="busy || !journal || journal.dry_run || journal.status === 'undone'"
+            :disabled="busy || !journalForPlan || journalForPlan.dry_run || journalForPlan.status === 'undone'"
             @click="runUndo"
           >
             Undo

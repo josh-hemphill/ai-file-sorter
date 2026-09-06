@@ -1,7 +1,8 @@
 //! Isolated workspace engine used by the `aifs-engine` stdio binary.
 //!
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-//! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, and `shutdown`.
+//! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
+//! `put_models`, `probe_endpoint`, and `shutdown`.
 
 mod extract;
 
@@ -14,7 +15,8 @@ use aifs_domain::{
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
     decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, LogLevel,
-    ProposalPolicy, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
+    ModelBackend, ModelInventory, ProposalPolicy, Request, RequestId, ScanOptions,
+    PROTOCOL_VERSION,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{scan, ScanError};
@@ -26,6 +28,7 @@ use std::time::{Duration, Instant};
 const SCAN_LOG_CAP: usize = 400;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SETTINGS_META_KEY: &str = "app_settings";
+const MODELS_META_KEY: &str = "model_inventory";
 
 /// Engine crate version reported on `hello`.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -41,6 +44,7 @@ pub fn capabilities() -> Vec<String> {
         "undo".to_owned(),
         "chat".to_owned(),
         "settings".to_owned(),
+        "models".to_owned(),
     ];
     caps.extend(extract::worker_capabilities());
     caps
@@ -154,7 +158,16 @@ impl Engine {
             }
             Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
             Command::GetSettings => emit(self.handle_get_settings(&request.id)),
-            Command::PutSettings { settings } => emit(self.handle_put_settings(&request.id, settings)),
+            Command::PutSettings { settings } => {
+                emit(self.handle_put_settings(&request.id, settings))
+            }
+            Command::GetModels => emit(self.handle_get_models(&request.id)),
+            Command::PutModels { inventory } => {
+                emit(self.handle_put_models(&request.id, inventory))
+            }
+            Command::ProbeEndpoint { backend, api_key } => {
+                emit(self.handle_probe_endpoint(&request.id, backend, api_key))
+            }
         }
     }
 
@@ -231,6 +244,55 @@ impl Engine {
         }
     }
 
+    fn handle_get_models(&self, id: &RequestId) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        match load_models(&self.store) {
+            Ok(inventory) => Envelope::reply(
+                id,
+                Event::Models {
+                    inventory: inventory.redacted(),
+                },
+            ),
+            Err(error) => store_failed(id, error),
+        }
+    }
+
+    fn handle_put_models(&self, id: &RequestId, inventory: ModelInventory) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        let previous = match load_models(&self.store) {
+            Ok(inventory) => inventory,
+            Err(error) => return store_failed(id, error),
+        };
+        let merged = inventory.merge_secrets(&previous);
+        match save_models(&self.store, &merged) {
+            Ok(()) => Envelope::reply(
+                id,
+                Event::Models {
+                    inventory: merged.redacted(),
+                },
+            ),
+            Err(error) => store_failed(id, error),
+        }
+    }
+
+    fn handle_probe_endpoint(
+        &self,
+        id: &RequestId,
+        backend: ModelBackend,
+        api_key: Option<String>,
+    ) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        let _ = api_key;
+        let (ok, message) = aifs_protocol::probe_backend(&backend);
+        Envelope::reply(id, Event::EndpointProbed { ok, message })
+    }
+
     fn handle_scan(
         &mut self,
         id: &RequestId,
@@ -252,6 +314,14 @@ impl Engine {
         }
 
         let session = session.unwrap_or_default();
+        if let Err(error) = emit_model_runtime_notices(&self.store, id, emit) {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                format!("Could not read settings or models ({error}); scan continues."),
+            );
+        }
         emit(Envelope::reply(
             id,
             Event::Progress {
@@ -281,8 +351,8 @@ impl Engine {
             emit,
             id,
             "scan",
-            snapshot.entries.len() as u64,
-            Some(snapshot.entries.len() as u64),
+            (snapshot.entries.len() + snapshot.skipped.len()) as u64,
+            Some((snapshot.entries.len() + snapshot.skipped.len()) as u64),
             "walk complete",
         );
         emit_scan_logs(emit, id, &snapshot);
@@ -704,9 +774,11 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
     )
 }
 
-fn load_settings(store: &aifs_store::WorkspaceStore) -> Result<AppSettings, aifs_store::StoreError> {
+fn load_settings(
+    store: &aifs_store::WorkspaceStore,
+) -> Result<AppSettings, aifs_store::StoreError> {
     match store.get_meta(SETTINGS_META_KEY)? {
-        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        Some(json) => Ok(serde_json::from_str(&json)?),
         None => Ok(AppSettings::default()),
     }
 }
@@ -719,21 +791,106 @@ fn save_settings(
     store.put_meta(SETTINGS_META_KEY, &json)
 }
 
-fn default_store_path() -> Option<std::path::PathBuf> {
-    if let Ok(explicit) = std::env::var("AIFS_STORE") {
-        return Some(explicit.into());
+fn load_models(
+    store: &aifs_store::WorkspaceStore,
+) -> Result<ModelInventory, aifs_store::StoreError> {
+    match store.get_meta(MODELS_META_KEY)? {
+        Some(json) => Ok(serde_json::from_str(&json)?),
+        None => Ok(ModelInventory::default()),
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| {
-                let mut path = std::path::PathBuf::from(home);
-                path.push(".local");
-                path.push("share");
-                path
-            })
-        })?;
-    Some(base.join("aifs").join("engine.sqlite"))
+}
+
+fn save_models(
+    store: &aifs_store::WorkspaceStore,
+    inventory: &ModelInventory,
+) -> Result<(), aifs_store::StoreError> {
+    let json = serde_json::to_string(inventory)?;
+    store.put_meta(MODELS_META_KEY, &json)
+}
+
+fn emit_model_runtime_notices(
+    store: &aifs_store::WorkspaceStore,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
+) -> Result<(), aifs_store::StoreError> {
+    let settings = load_settings(store)?;
+    let models = load_models(store)?;
+    let slot_off = |id: &str| {
+        models
+            .slots
+            .iter()
+            .find(|slot| slot.id == id)
+            .is_none_or(|slot| matches!(slot.backend, ModelBackend::Off))
+    };
+    if settings.analyze_images {
+        if slot_off("vision") {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                "Image analysis is enabled but the vision slot is off — set up a model.",
+            );
+        } else {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                "Vision slot assigned; model runtime is not connected yet.",
+            );
+        }
+    }
+    if settings.analyze_documents {
+        if slot_off("document") {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                "Document analysis is enabled but the document slot is off — set up a model.",
+            );
+        } else {
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                "Document slot assigned; model runtime is not connected yet.",
+            );
+        }
+    }
+    Ok(())
+}
+
+fn default_store_path() -> Option<std::path::PathBuf> {
+    durable_store_base(
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )
+    .map(|base| base.join("aifs").join("engine.sqlite"))
+}
+
+fn durable_store_base(
+    xdg_data_home: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    user_profile: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    if let Some(xdg) = xdg_data_home {
+        return Some(std::path::PathBuf::from(xdg));
+    }
+    if let Some(local) = local_app_data {
+        return Some(std::path::PathBuf::from(local));
+    }
+    let home = home.or(user_profile)?;
+    let mut path = std::path::PathBuf::from(home);
+    if cfg!(windows) {
+        path.push("AppData");
+        path.push("Local");
+    } else {
+        path.push(".local");
+        path.push("share");
+    }
+    Some(path)
 }
 
 fn emit_progress(
@@ -795,11 +952,7 @@ fn skip_log_line(path: &str, reason: &SkipReason) -> String {
     }
 }
 
-fn emit_scan_logs(
-    emit: &mut impl FnMut(Envelope),
-    id: &RequestId,
-    snapshot: &WorkspaceSnapshot,
-) {
+fn emit_scan_logs(emit: &mut impl FnMut(Envelope), id: &RequestId, snapshot: &WorkspaceSnapshot) {
     let mut remaining = SCAN_LOG_CAP;
     for project in &snapshot.projects {
         if remaining == 0 {
@@ -818,17 +971,17 @@ fn emit_scan_logs(
         );
         remaining -= 1;
     }
-    for skipped in &snapshot.skipped {
+    for (skip_logged, skipped) in snapshot.skipped.iter().enumerate() {
         if remaining == 0 {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Warn,
-                format!(
-                    "{} more skipped entries omitted from the stream",
-                    snapshot.skipped.len().saturating_sub(SCAN_LOG_CAP)
-                ),
-            );
+            let omitted = snapshot.skipped.len().saturating_sub(skip_logged);
+            if omitted > 0 {
+                emit_log(
+                    emit,
+                    id,
+                    LogLevel::Warn,
+                    format!("{omitted} more skipped entries omitted from the stream"),
+                );
+            }
             break;
         }
         let level = match skipped.reason {
@@ -925,12 +1078,18 @@ fn emit_journal_outcome(
 pub fn run_stdio() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut engine = match default_store_path() {
-        Some(path) => Engine::with_store_path(&path).unwrap_or_else(|error| {
-            eprintln!("aifs-engine: opening {path:?} failed ({error}); using memory store");
-            Engine::new()
-        }),
-        None => Engine::new(),
+    let mut engine = if let Some(explicit) = std::env::var_os("AIFS_STORE") {
+        let path = std::path::PathBuf::from(&explicit);
+        Engine::with_store_path(&path).map_err(|error| {
+            io::Error::other(format!("opening AIFS_STORE {}: {error}", path.display()))
+        })?
+    } else {
+        match default_store_path() {
+            Some(path) => Engine::with_store_path(&path).map_err(|error| {
+                io::Error::other(format!("opening {}: {error}", path.display()))
+            })?,
+            None => Engine::new(),
+        }
     };
     for line in stdin.lock().lines() {
         let line = line?;
@@ -1020,8 +1179,8 @@ mod tests {
 
     #[test]
     fn scan_stream_includes_projects_skips_and_bundles() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/inbox-mixed");
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/inbox-mixed");
         let mut engine = Engine::new();
         engine.handle(Request {
             id: "1".into(),
@@ -1071,8 +1230,8 @@ mod tests {
 
     #[test]
     fn junk_drawer_keeps_library_and_archive_paths() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/junk-drawer");
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/junk-drawer");
         let mut engine = Engine::new();
         engine.handle(Request {
             id: "1".into(),
@@ -1373,7 +1532,7 @@ mod tests {
             id: "4".into(),
             command: Command::GetSettings,
         })) {
-            Event::Settings { settings: stored } => assert_eq!(stored.scan.include_hidden, true),
+            Event::Settings { settings: stored } => assert!(stored.scan.include_hidden),
             other => panic!("unexpected {other:?}"),
         }
         settings.policy.whitelist.global_subcategories = vec!["Reports".into()];
@@ -1389,5 +1548,144 @@ mod tests {
             Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn models_redact_keys_and_probe_rejects_bad_urls() {
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::OpenAi {
+            model: "gpt-4.1-mini".into(),
+        };
+        inventory.slots[0].api_key = Some("sk-secret".into());
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels {
+                inventory: inventory.clone(),
+            },
+        })) {
+            Event::Models { inventory: stored } => {
+                assert!(stored.slots[0].api_key.is_none());
+                assert!(stored.slots[0].api_key_set);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::GetModels,
+        })) {
+            Event::Models { inventory: stored } => {
+                assert!(stored.slots[0].api_key.is_none());
+                assert!(stored.slots[0].api_key_set);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::ProbeEndpoint {
+                backend: ModelBackend::CustomEndpoint {
+                    base_url: "not-a-url".into(),
+                    model: "x".into(),
+                },
+                api_key: Some("sk-never-log".into()),
+            },
+        })) {
+            Event::EndpointProbed { ok, message } => {
+                assert!(!ok, "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_settings_json_is_a_storage_error() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_meta("app_settings", "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::GetSettings,
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_settings_json_does_not_abort_scan() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_meta("app_settings", "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => {
+                assert!(snapshot
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path.as_str() == "note.txt"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn durable_store_base_uses_windows_app_data_and_unix_home() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            durable_store_base(
+                None,
+                Some(OsStr::new("/win/local")),
+                Some(OsStr::new("/home")),
+                None
+            ),
+            Some(std::path::PathBuf::from("/win/local"))
+        );
+        let from_profile = durable_store_base(None, None, None, Some(OsStr::new("/Users/me")));
+        assert!(
+            from_profile.is_some(),
+            "USERPROFILE must yield a store base"
+        );
     }
 }

@@ -87,7 +87,13 @@ fn destination_for(
         }
     }
 
-    let folder = folder_for(snapshot, entry, policy);
+    let Some(folder) = folder_for(snapshot, entry, policy) else {
+        return (
+            entry.path.clone(),
+            SuggestionOrigin::Unchanged,
+            Some("no allowed category for this file".to_owned()),
+        );
+    };
     let file_name = file_name_for(snapshot, entry, policy);
     let destination = match folder.join(&file_name) {
         Ok(path) => path,
@@ -114,14 +120,21 @@ fn covering_role<'a>(
         .directory_roles
         .iter()
         .filter(|role| path.starts_with(&role.root))
-        .max_by_key(|role| role.root.as_str().len())
+        .max_by_key(|role| {
+            let preserve = matches!(
+                role.kind,
+                aifs_domain::DirectoryRoleKind::Library
+                    | aifs_domain::DirectoryRoleKind::WeakArchive
+            );
+            (preserve, role.root.as_str().len())
+        })
 }
 
 fn folder_for(
     snapshot: &WorkspaceSnapshot,
     entry: &ObservedEntry,
     policy: &ProposalPolicy,
-) -> RelativePath {
+) -> Option<RelativePath> {
     let mut folder = entry.family.default_folder().to_owned();
     if policy.style == FolderStyle::Refined {
         if entry.family == FileFamily::Audio
@@ -148,9 +161,17 @@ fn folder_for(
         }
     }
     folder = apply_category_whitelist(folder, entry.family, &policy.whitelist);
-    RelativePath::parse(&folder).unwrap_or_else(|_| {
-        RelativePath::parse(entry.family.default_folder()).unwrap_or_else(|_| entry.path.clone())
-    })
+    if folder.is_empty() {
+        return None;
+    }
+    match RelativePath::parse(&folder) {
+        Ok(path) => Some(path),
+        Err(_) => folder
+            .split('/')
+            .next()
+            .filter(|top| !top.is_empty())
+            .and_then(|top| RelativePath::parse(top).ok()),
+    }
 }
 
 fn apply_category_whitelist(
@@ -168,38 +189,37 @@ fn apply_category_whitelist(
     }
     if !whitelist.allows_top(&parts[0]) {
         let fallback = family.default_folder();
-        parts[0] = if whitelist.allows_top(fallback) {
-            fallback.to_owned()
+        if whitelist.allows_top(fallback) {
+            parts[0] = fallback.to_owned();
         } else {
-            whitelist
-                .main
-                .first()
-                .cloned()
-                .unwrap_or_else(|| fallback.to_owned())
-        };
+            return String::new();
+        }
     }
     if parts.len() > 1 {
         let top = parts[0].clone();
         let sub = parts[1].clone();
         let allowed_subs = if !whitelist.global_subcategories.is_empty() {
             Some(whitelist.global_subcategories.as_slice())
-        } else if let Some(children) = whitelist.branching.get(&top).or_else(|| {
-            whitelist
-                .branching
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(&top))
-                .map(|(_, value)| value)
-        }) {
-            Some(children.as_slice())
+        } else if !whitelist.branching.is_empty() {
+            Some(
+                whitelist
+                    .branching
+                    .get(&top)
+                    .or_else(|| {
+                        whitelist
+                            .branching
+                            .iter()
+                            .find(|(key, _)| key.eq_ignore_ascii_case(&top))
+                            .map(|(_, value)| value)
+                    })
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )
         } else {
             None
         };
         if let Some(allowed) = allowed_subs {
-            if allowed.is_empty()
-                || !allowed
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&sub))
-            {
+            if allowed.is_empty() || !allowed.iter().any(|name| name.eq_ignore_ascii_case(&sub)) {
                 parts.truncate(1);
             }
         }
@@ -626,12 +646,26 @@ fn empty_directories_to_remove(
             parent = dir.parent();
         }
     }
-    let mut candidates = emptied_roots.clone();
+    let remaining_occupant = |dir: &RelativePath| {
+        snapshot.entries.iter().any(|entry| {
+            entry.kind != EntryKind::Directory
+                && entry.path.starts_with(dir)
+                && !moving.contains(&entry.path.case_fold())
+        }) || snapshot
+            .skipped
+            .iter()
+            .any(|entry| entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold()))
+    };
+    let removable_roots: BTreeSet<RelativePath> = emptied_roots
+        .into_iter()
+        .filter(|dir| !occupied.contains(&dir.case_fold()) && !remaining_occupant(dir))
+        .collect();
+    let mut candidates = removable_roots.clone();
     for entry in &snapshot.entries {
         if entry.kind != EntryKind::Directory || entry.path.is_session_root() {
             continue;
         }
-        if emptied_roots
+        if removable_roots
             .iter()
             .any(|root| entry.path.starts_with(root))
         {
@@ -640,16 +674,7 @@ fn empty_directories_to_remove(
     }
     let mut removable: Vec<RelativePath> = candidates
         .into_iter()
-        .filter(|dir| {
-            if occupied.contains(&dir.case_fold()) {
-                return false;
-            }
-            !snapshot.entries.iter().any(|entry| {
-                entry.kind == EntryKind::File
-                    && entry.path.starts_with(dir)
-                    && !moving.contains(&entry.path.case_fold())
-            })
-        })
+        .filter(|dir| !occupied.contains(&dir.case_fold()) && !remaining_occupant(dir))
         .collect();
     removable.sort_by_key(|path| std::cmp::Reverse(path.as_str().len()));
     removable
@@ -672,7 +697,7 @@ mod tests {
     use super::*;
     use aifs_domain::{
         AssetId, Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, FileIdentity,
-        LockState, ObservedEntry, SessionId,
+        LockState, ObservedEntry, SessionId, SkipReason, SkippedEntry,
     };
     use std::path::PathBuf;
 
@@ -705,6 +730,31 @@ mod tests {
             .unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "Documents/note.txt");
         assert_eq!(placement.review, ReviewState::Proposed);
+    }
+
+    #[test]
+    fn nested_inbox_name_does_not_flatten_a_library() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("Music/tmp/clip.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.entries.push(entry);
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "library".into(),
+            });
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Music/tmp").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::BroadInbox,
+                reason: "dump".into(),
+            });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Music/tmp/clip.mp3");
     }
 
     #[test]
@@ -849,15 +899,18 @@ mod tests {
     #[test]
     fn whitelist_rewrites_disallowed_top_level_and_drops_unknown_subs() {
         let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
-        snapshot
-            .entries
-            .push(file("clip.mp3", FileFamily::Audio));
-        let mut policy = ProposalPolicy::default();
-        policy.style = FolderStyle::Refined;
-        policy.use_subfolders = true;
-        policy.rename_media = false;
-        policy.whitelist.main = vec!["Documents".into(), "Pictures".into()];
-        policy.whitelist.global_subcategories = vec!["Reports".into()];
+        snapshot.entries.push(file("clip.mp3", FileFamily::Audio));
+        let policy = ProposalPolicy {
+            style: FolderStyle::Refined,
+            use_subfolders: true,
+            rename_media: false,
+            whitelist: CategoryWhitelist {
+                main: vec!["Documents".into(), "Pictures".into()],
+                global_subcategories: vec!["Reports".into()],
+                ..CategoryWhitelist::default()
+            },
+            ..ProposalPolicy::default()
+        };
         snapshot.evidence.push(
             Evidence::new(
                 snapshot.entries[0].id,
@@ -873,7 +926,106 @@ mod tests {
             .values()
             .next()
             .unwrap_or_else(|| panic!("p"));
-        assert_eq!(placement.destination.as_str(), "Documents/clip.mp3");
+        assert_eq!(placement.destination.as_str(), "clip.mp3");
+        assert_eq!(placement.origin, SuggestionOrigin::Unchanged);
+    }
+
+    #[test]
+    fn invalid_subfolder_does_not_escape_whitelist() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("show.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(id, EvidenceSource::MediaTags, Confidence::CERTAIN)
+                .with_fact(keys::MEDIA_TITLE, "Night")
+                .with_fact(keys::MEDIA_ARTIST, "AUX")
+                .with_fact(keys::MEDIA_GENRE, "Podcast"),
+        );
+        snapshot.entries.push(entry);
+        let policy = ProposalPolicy {
+            style: FolderStyle::Refined,
+            use_subfolders: true,
+            rename_media: false,
+            whitelist: CategoryWhitelist {
+                main: vec!["Podcasts".into()],
+                ..CategoryWhitelist::default()
+            },
+            ..ProposalPolicy::default()
+        };
+        let revision = propose(&snapshot, &policy);
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert!(
+            placement.destination.as_str().starts_with("Podcasts/"),
+            "must stay under the allowed top, got {}",
+            placement.destination.as_str()
+        );
+        assert!(
+            !placement.destination.as_str().starts_with("Music/"),
+            "must not fall back to the family default outside the whitelist"
+        );
+    }
+
+    #[test]
+    fn skipped_junk_in_source_folder_is_not_removed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot
+            .entries
+            .push(file("dump/a.txt", FileFamily::Document));
+        snapshot.skipped.push(SkippedEntry {
+            path: RelativePath::parse("dump/.DS_Store").unwrap_or_else(|e| panic!("{e}")),
+            reason: SkipReason::Junk,
+        });
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &revision);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|planned| matches!(
+                planned.operation,
+                Operation::RemoveEmptyDirectory { ref path } if path.as_str() == "dump"
+            )),
+            "skipped junk still occupies dump, so it must not be removed"
+        );
+    }
+
+    #[test]
+    fn leftover_empty_sibling_is_not_removed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot.entries.push(directory("dump/keep-empty"));
+        snapshot
+            .entries
+            .push(file("dump/a.txt", FileFamily::Document));
+        snapshot
+            .entries
+            .push(file("dump/keep.bin", FileFamily::Generic));
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let only_text = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "accept dump text only",
+                &[aifs_domain::RevisionPatch::Accept {
+                    assets: vec![snapshot.entries[2].id],
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &only_text);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|planned| matches!(
+                planned.operation,
+                Operation::RemoveEmptyDirectory { ref path }
+                    if path.as_str() == "dump/keep-empty" || path.as_str() == "dump"
+            )),
+            "must not delete unrelated empty folders while dump still has files"
+        );
     }
 
     #[test]
