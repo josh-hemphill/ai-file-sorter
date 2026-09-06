@@ -7,20 +7,19 @@
 mod download;
 mod extract;
 
-use aifs_ai_tools::{execute, interpret, MOCK_ASSISTANT_MODEL};
-use aifs_apply::{apply_plan_with_hooks, undo_journal_with_hooks, ApplyHook};
+use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
+use aifs_apply::{ApplyHook, apply_plan_with_hooks, undo_journal_with_hooks};
 use aifs_domain::{
     BundleConstraint, JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, SkipReason,
     WorkspaceSnapshot,
 };
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
-    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, LogLevel,
-    ModelBackend, ModelInventory, ProposalPolicy, Request, RequestId, ScanOptions,
-    PROTOCOL_VERSION,
+    AppSettings, Command, Envelope, ErrorCode, Event, LogLevel, ModelBackend, ModelInventory,
+    PROTOCOL_VERSION, ProposalPolicy, Request, RequestId, ScanOptions, decode_line, encode_line,
 };
 use aifs_relationships::enrich;
-use aifs_scanner::{scan, ScanError};
+use aifs_scanner::{ScanError, scan};
 use aifs_store::WorkspaceStore;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -1149,17 +1148,17 @@ fn emit_journal_outcome(
     persist_error: Option<aifs_store::StoreError>,
 ) {
     let mutated = journal_has_mutations(&journal);
-    if let Some(error) = persist_error {
-        if !mutated {
-            emit(store_failed(id, error));
-            return;
-        }
+    if let Some(error) = persist_error
+        && !mutated
+    {
+        emit(store_failed(id, error));
+        return;
     }
-    if let Err(error) = store.put_journal(session, &journal) {
-        if !mutated {
-            emit(store_failed(id, error));
-            return;
-        }
+    if let Err(error) = store.put_journal(session, &journal)
+        && !mutated
+    {
+        emit(store_failed(id, error));
+        return;
     }
     emit(Envelope::reply(id, Event::Journal { journal }));
 }
@@ -1255,10 +1254,12 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("scan_completed"));
-        assert!(completed
-            .entries
-            .iter()
-            .any(|entry| entry.path.as_str() == "note.txt"));
+        assert!(
+            completed
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt")
+        );
         assert!(
             events
                 .iter()
@@ -1751,10 +1752,12 @@ mod tests {
             },
         })) {
             Event::ScanCompleted { snapshot } => {
-                assert!(snapshot
-                    .entries
-                    .iter()
-                    .any(|entry| entry.path.as_str() == "note.txt"));
+                assert!(
+                    snapshot
+                        .entries
+                        .iter()
+                        .any(|entry| entry.path.as_str() == "note.txt")
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1967,18 +1970,14 @@ mod tests {
 
     impl CatalogBaseGuard {
         fn set(base: &str) -> Self {
-            let previous = std::env::var(aifs_protocol::CATALOG_BASE_ENV).ok();
-            std::env::set_var(aifs_protocol::CATALOG_BASE_ENV, base);
+            let previous = aifs_protocol::set_catalog_base_override(Some(base.to_owned()));
             Self { previous }
         }
     }
 
     impl Drop for CatalogBaseGuard {
         fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var(aifs_protocol::CATALOG_BASE_ENV, value),
-                None => std::env::remove_var(aifs_protocol::CATALOG_BASE_ENV),
-            }
+            let _ = aifs_protocol::set_catalog_base_override(self.previous.take());
         }
     }
 }

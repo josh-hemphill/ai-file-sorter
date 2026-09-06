@@ -134,10 +134,10 @@ impl FileIdentity {
         if let (Some(a), Some(b)) = (&self.content_fingerprint, &other.content_fingerprint) {
             return a == b;
         }
-        if let (Some(a), Some(b)) = (self.inode, other.inode) {
-            if a != b {
-                return false;
-            }
+        if let (Some(a), Some(b)) = (self.inode, other.inode)
+            && a != b
+        {
+            return false;
         }
         match (self.modified, other.modified) {
             (Some(a), Some(b)) => a == b,

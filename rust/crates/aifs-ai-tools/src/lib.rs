@@ -1,8 +1,8 @@
 //! Deterministic AI tools that emit proposal patches, never SQL or filesystem ops.
 
 use aifs_domain::{
-    evidence::keys, AssetId, Bundle, BundleConstraint, BundleKind, EntryKind, Evidence, FileFamily,
-    ObservedEntry, Placement, ProposalRevision, RelativePath, RevisionPatch, WorkspaceSnapshot,
+    AssetId, Bundle, BundleConstraint, BundleKind, EntryKind, Evidence, FileFamily, ObservedEntry,
+    Placement, ProposalRevision, RelativePath, RevisionPatch, WorkspaceSnapshot, evidence::keys,
 };
 use aifs_planner::validate;
 use std::collections::BTreeSet;
@@ -186,10 +186,10 @@ fn looks_like_group(lower: &str) -> bool {
 }
 
 fn extract_quoted_or_rest(utterance: &str, verbs: &[&str]) -> String {
-    if let Some(start) = utterance.find('"') {
-        if let Some(end) = utterance[start + 1..].find('"') {
-            return utterance[start + 1..start + 1 + end].to_string();
-        }
+    if let Some(start) = utterance.find('"')
+        && let Some(end) = utterance[start + 1..].find('"')
+    {
+        return utterance[start + 1..start + 1 + end].to_string();
     }
     let lower = utterance.to_ascii_lowercase();
     for verb in verbs {

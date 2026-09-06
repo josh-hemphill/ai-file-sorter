@@ -5,7 +5,7 @@ use aifs_domain::{
     SessionId, SkipReason, SkippedEntry, Timestamp, WorkspaceSnapshot,
 };
 use aifs_protocol::ScanOptions;
-use aifs_relationships::{detect_project, should_skip_traversal, DetectedProject};
+use aifs_relationships::{DetectedProject, detect_project, should_skip_traversal};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirEntry, Metadata};
 use std::io::{self, Read};
@@ -248,15 +248,14 @@ fn classify_child(root: &Path, child: &DirEntry, options: &ScanOptions) -> Child
     let mut project = None;
     if kind == EntryKind::Directory {
         project = detect_project(&path);
-        if options.protect_projects {
-            if let Some(detected) = &project {
-                if should_skip_traversal(detected) {
-                    enqueue_dir = false;
-                    skip_children = Some(SkipReason::ProtectedProject {
-                        rule_id: detected.rule_id.clone(),
-                    });
-                }
-            }
+        if options.protect_projects
+            && let Some(detected) = &project
+            && should_skip_traversal(detected)
+        {
+            enqueue_dir = false;
+            skip_children = Some(SkipReason::ProtectedProject {
+                rule_id: detected.rule_id.clone(),
+            });
         }
     }
 
@@ -510,23 +509,29 @@ mod tests {
             .map(|entry| entry.path.as_str().to_owned())
             .collect();
         assert_eq!(names, vec!["keep.txt"]);
-        assert!(snapshot
-            .skipped
-            .iter()
-            .any(|skipped| skipped.path.as_str() == "Thumbs.db"
-                && matches!(skipped.reason, SkipReason::Junk)));
-        assert!(snapshot
-            .skipped
-            .iter()
-            .any(|skipped| skipped.path.as_str() == ".secret"
-                && matches!(skipped.reason, SkipReason::Hidden)));
-        #[cfg(unix)]
-        {
-            assert!(snapshot
+        assert!(
+            snapshot
                 .skipped
                 .iter()
-                .any(|skipped| skipped.path.as_str() == "alias"
-                    && matches!(skipped.reason, SkipReason::Symlink)));
+                .any(|skipped| skipped.path.as_str() == "Thumbs.db"
+                    && matches!(skipped.reason, SkipReason::Junk))
+        );
+        assert!(
+            snapshot
+                .skipped
+                .iter()
+                .any(|skipped| skipped.path.as_str() == ".secret"
+                    && matches!(skipped.reason, SkipReason::Hidden))
+        );
+        #[cfg(unix)]
+        {
+            assert!(
+                snapshot
+                    .skipped
+                    .iter()
+                    .any(|skipped| skipped.path.as_str() == "alias"
+                        && matches!(skipped.reason, SkipReason::Symlink))
+            );
         }
         let keep = snapshot
             .entries
@@ -550,18 +555,24 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
 
         let snapshot = scan_tree(dir.path(), ScanOptions::default());
-        assert!(snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.path.as_str() == "loose.txt"));
-        assert!(snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.path.as_str() == "Game" && entry.kind == EntryKind::Directory));
-        assert!(!snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.path.as_str().starts_with("Game/")));
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "loose.txt")
+        );
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "Game" && entry.kind == EntryKind::Directory)
+        );
+        assert!(
+            !snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str().starts_with("Game/"))
+        );
         let project = snapshot
             .projects
             .iter()
@@ -640,10 +651,12 @@ mod tests {
         assert_eq!(entry.kind, EntryKind::File);
         assert_eq!(entry.lock, LockState::Readable);
         assert!(entry.identity.content_fingerprint.is_none());
-        assert!(!snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.path.as_str().starts_with("Notes.app/")));
+        assert!(
+            !snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str().starts_with("Notes.app/"))
+        );
     }
 
     #[test]

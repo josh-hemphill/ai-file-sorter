@@ -107,10 +107,10 @@ impl RelativePath {
                 Component::ParentDir => {
                     return Err(RelativePathError::ParentTraversal(
                         path.display().to_string(),
-                    ))
+                    ));
                 }
                 Component::RootDir | Component::Prefix(_) => {
-                    return Err(RelativePathError::Absolute(path.display().to_string()))
+                    return Err(RelativePathError::Absolute(path.display().to_string()));
                 }
             }
         }

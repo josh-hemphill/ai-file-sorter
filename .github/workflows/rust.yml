@@ -21,7 +21,7 @@ jobs:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux WebKit GTK (Tauri)
         if: runner.os == 'Linux'
@@ -54,15 +54,13 @@ jobs:
       run:
         working-directory: rust/apps/desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v2
         with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
+          version: 12.3.4
+          runtime: node@24
+          package-json-file: rust/apps/desktop/package.json
+          cache: true
           cache-dependency-path: rust/apps/desktop/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm exec vue-tsc --noEmit

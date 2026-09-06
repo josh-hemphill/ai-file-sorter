@@ -2,9 +2,9 @@
 
 use aifs_domain::{Evidence, ObservedEntry};
 use aifs_protocol::worker::{
-    WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest, WORKER_PROTOCOL_VERSION,
+    WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
-use aifs_protocol::{decode_line, encode_line, ErrorCode, RequestId};
+use aifs_protocol::{ErrorCode, RequestId, decode_line, encode_line};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -174,7 +174,7 @@ impl WorkerClient {
             match envelope.event {
                 WorkerEvent::Extracted { evidence } => return Ok(evidence),
                 WorkerEvent::Failed { code, message } => {
-                    return Err(WorkerClientError::Worker { code, message })
+                    return Err(WorkerClientError::Worker { code, message });
                 }
                 WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
             }
@@ -236,14 +236,14 @@ impl WorkerClient {
 
 impl Drop for WorkerClient {
     fn drop(&mut self) {
-        if let Some(mut stdin) = self.stdin.take() {
-            if let Ok(line) = encode_line(&WorkerRequest {
+        if let Some(mut stdin) = self.stdin.take()
+            && let Ok(line) = encode_line(&WorkerRequest {
                 id: RequestId("shutdown".to_owned()),
                 command: WorkerCommand::Shutdown,
-            }) {
-                let _ = writeln!(stdin, "{line}");
-                let _ = stdin.flush();
-            }
+            })
+        {
+            let _ = writeln!(stdin, "{line}");
+            let _ = stdin.flush();
         }
         let deadline = Instant::now() + SHUTDOWN_WAIT;
         loop {
@@ -271,12 +271,12 @@ pub fn discover_worker_binary(kind: WorkerKind) -> Result<PathBuf, WorkerClientE
         }
         return Err(WorkerClientError::NotFound(path.display().to_string()));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(&name);
-            if sibling.exists() {
-                return Ok(sibling);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(&name);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {

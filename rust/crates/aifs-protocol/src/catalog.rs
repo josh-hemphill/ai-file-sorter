@@ -1,6 +1,9 @@
 //! Shared GGUF catalog: several slots can point at one downloaded file.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+static CATALOG_BASE_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Hugging Face resolve URL used when `AIFS_CATALOG_BASE` is unset.
 pub const DEFAULT_CATALOG_BASE: &str =
@@ -99,10 +102,28 @@ pub fn catalog_ids_for_artifact(artifact_id: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Override the catalog origin for this process without mutating the environment.
+///
+/// Edition 2024 makes `std::env::set_var` unsafe, and this workspace forbids `unsafe`.
+pub fn set_catalog_base_override(base: Option<String>) -> Option<String> {
+    match CATALOG_BASE_OVERRIDE.lock() {
+        Ok(mut guard) => std::mem::replace(&mut *guard, base),
+        Err(_) => base,
+    }
+}
+
+fn catalog_base() -> String {
+    if let Ok(guard) = CATALOG_BASE_OVERRIDE.lock()
+        && let Some(base) = guard.as_ref()
+    {
+        return base.clone();
+    }
+    std::env::var(CATALOG_BASE_ENV).unwrap_or_else(|_| DEFAULT_CATALOG_BASE.to_string())
+}
+
 /// `{base}/{filename}` for downloads.
 pub fn catalog_download_url(filename: &str) -> String {
-    let base = std::env::var(CATALOG_BASE_ENV).unwrap_or_else(|_| DEFAULT_CATALOG_BASE.to_string());
-    let trimmed = base.trim_end_matches('/');
+    let trimmed = catalog_base().trim_end_matches('/').to_owned();
     format!("{trimmed}/{filename}")
 }
 

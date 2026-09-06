@@ -25,10 +25,12 @@ fn hello_and_scan_over_stdio() {
         )
         .unwrap_or_else(|e| panic!("{e}"));
 
-    assert!(snapshot
-        .entries
-        .iter()
-        .any(|entry| entry.path.as_str() == "readme.txt"));
+    assert!(
+        snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.path.as_str() == "readme.txt")
+    );
     assert!(
         snapshot
             .bundles
@@ -70,9 +72,10 @@ fn chat_over_stdio_patches_a_child_revision() {
     assert!(reply.message.contains("Podcasts"), "{}", reply.message);
     let next = reply.revision.unwrap_or_else(|| panic!("child revision"));
     assert_eq!(next.parent, Some(revision.id));
-    assert!(next
-        .placements
-        .values()
-        .any(|placement| { placement.destination.as_str().starts_with("Podcasts/") }));
+    assert!(
+        next.placements
+            .values()
+            .any(|placement| { placement.destination.as_str().starts_with("Podcasts/") })
+    );
     client.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }

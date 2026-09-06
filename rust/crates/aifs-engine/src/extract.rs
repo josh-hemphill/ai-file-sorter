@@ -53,10 +53,10 @@ fn extract_one(
     }
     match entry.family {
         FileFamily::Audio | FileFamily::Video => {
-            if let Some(worker) = media {
-                if let Ok(evidence) = worker.extract(root, entry) {
-                    return evidence;
-                }
+            if let Some(worker) = media
+                && let Ok(evidence) = worker.extract(root, entry)
+            {
+                return evidence;
             }
             aifs_extractors::extract_entry(root, entry)
         }

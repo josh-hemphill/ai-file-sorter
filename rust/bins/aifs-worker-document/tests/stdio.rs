@@ -27,8 +27,10 @@ fn document_stub_returns_detector_evidence() {
         .extract(dir.path(), &entry)
         .unwrap_or_else(|e| panic!("{e}"))
         .unwrap_or_else(|| panic!("stub evidence"));
-    assert!(evidence
-        .fact(aifs_domain::evidence::keys::DESCRIPTION)
-        .is_some_and(|text| text.contains("stub")));
+    assert!(
+        evidence
+            .fact(aifs_domain::evidence::keys::DESCRIPTION)
+            .is_some_and(|text| text.contains("stub"))
+    );
     client.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }

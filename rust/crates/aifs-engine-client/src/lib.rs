@@ -2,8 +2,8 @@
 
 use aifs_domain::WorkspaceSnapshot;
 use aifs_protocol::{
-    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, ModelBackend,
-    ModelInventory, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
+    AppSettings, Command, Envelope, ErrorCode, Event, ModelBackend, ModelInventory,
+    PROTOCOL_VERSION, Request, RequestId, ScanOptions, decode_line, encode_line,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -179,13 +179,13 @@ impl EngineClient {
             match envelope.event {
                 Event::ScanCompleted { snapshot } => return Ok(snapshot),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected scan event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -238,13 +238,13 @@ impl EngineClient {
             match envelope.event {
                 Event::Planned { plan, issues } => return Ok((plan, issues)),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected plan event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -291,16 +291,16 @@ impl EngineClient {
         for envelope in envelopes {
             match envelope.event {
                 Event::ChatReply { message, revision } => {
-                    return Ok(ChatReply { message, revision })
+                    return Ok(ChatReply { message, revision });
                 }
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected chat event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -325,13 +325,13 @@ impl EngineClient {
             match envelope.event {
                 Event::Settings { settings } => return Ok(settings),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected settings event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -361,13 +361,13 @@ impl EngineClient {
             match envelope.event {
                 Event::EndpointProbed { ok, message } => return Ok((ok, message)),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected probe event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -392,13 +392,13 @@ impl EngineClient {
             match envelope.event {
                 Event::Models { inventory } => return Ok(inventory),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected models event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -416,13 +416,13 @@ impl EngineClient {
             match envelope.event {
                 Event::Revision { revision } => return Ok(revision),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected revision event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -440,13 +440,13 @@ impl EngineClient {
             match envelope.event {
                 Event::Journal { journal } => return Ok(journal),
                 Event::Failed { code, message, .. } => {
-                    return Err(ClientError::Engine { code, message })
+                    return Err(ClientError::Engine { code, message });
                 }
                 Event::Progress { .. } | Event::Log { .. } => {}
                 other => {
                     return Err(ClientError::Unexpected(format!(
                         "unexpected journal event {other:?}"
-                    )))
+                    )));
                 }
             }
         }
@@ -521,14 +521,14 @@ impl EngineClient {
 
 impl Drop for EngineClient {
     fn drop(&mut self) {
-        if let Some(mut stdin) = self.stdin.take() {
-            if let Ok(line) = encode_line(&Request {
+        if let Some(mut stdin) = self.stdin.take()
+            && let Ok(line) = encode_line(&Request {
                 id: RequestId("shutdown".to_owned()),
                 command: Command::Shutdown,
-            }) {
-                let _ = writeln!(stdin, "{line}");
-                let _ = stdin.flush();
-            }
+            })
+        {
+            let _ = writeln!(stdin, "{line}");
+            let _ = stdin.flush();
         }
         let wait = if self.mutating {
             MUTATING_SHUTDOWN_WAIT
@@ -570,12 +570,12 @@ pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
         return Err(ClientError::EngineNotFound(path.display().to_string()));
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(ENGINE_BINARY);
-            if sibling.exists() {
-                return Ok(sibling);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(ENGINE_BINARY);
+        if sibling.exists() {
+            return Ok(sibling);
         }
     }
 

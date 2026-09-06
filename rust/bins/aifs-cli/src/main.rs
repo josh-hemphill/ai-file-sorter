@@ -1,7 +1,7 @@
 //! Command-line interface that talks to `aifs-engine` over stdio.
 
 use aifs_domain::{JournalStatus, RevisionAuthor, RevisionPatch};
-use aifs_engine_client::{discover_engine_binary, EngineClient};
+use aifs_engine_client::{EngineClient, discover_engine_binary};
 use aifs_protocol::{ProposalPolicy, ScanOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

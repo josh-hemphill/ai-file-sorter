@@ -1,8 +1,8 @@
 //! Catalog GGUF downloads with progress. Shared files are fetched once.
 
 use aifs_protocol::{
-    artifact_is_present, artifact_path, catalog_download_url, catalog_entry, CatalogArtifact,
-    Envelope, Event, RequestId,
+    CatalogArtifact, Envelope, Event, RequestId, artifact_is_present, artifact_path,
+    catalog_download_url, catalog_entry,
 };
 use std::fs::{self, File};
 use std::io::{self, Read, Write};

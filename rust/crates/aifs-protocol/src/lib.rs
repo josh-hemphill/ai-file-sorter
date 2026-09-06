@@ -15,16 +15,16 @@ pub mod options;
 pub mod worker;
 
 pub use catalog::{
-    all_artifacts, artifact_bytes_on_disk, artifact_is_present, artifact_path,
-    catalog_download_url, catalog_entry, catalog_id_is_downloaded, catalog_ids_for_artifact,
-    CatalogArtifact, CatalogEntry, ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, CATALOG_BASE_ENV,
-    CATALOG_TEXT, CATALOG_VISION, DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME,
-    GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME,
+    ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, CATALOG_BASE_ENV, CATALOG_TEXT, CATALOG_VISION,
+    CatalogArtifact, CatalogEntry, DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME,
+    GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME, all_artifacts, artifact_bytes_on_disk,
+    artifact_is_present, artifact_path, catalog_download_url, catalog_entry,
+    catalog_id_is_downloaded, catalog_ids_for_artifact, set_catalog_base_override,
 };
-pub use codec::{decode_line, encode_line, CodecError};
+pub use codec::{CodecError, decode_line, encode_line};
 pub use models::{
-    probe_backend, probe_backend_at, ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot,
-    BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS,
+    BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS, ModelArtifactStatus, ModelBackend,
+    ModelInventory, ModelSlot, probe_backend, probe_backend_at,
 };
 pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 

@@ -5,7 +5,7 @@
 
 use aifs_engine_client::EngineClient;
 use aifs_extractors::write_id3v23_fixture;
-use aifs_planner::{diff_plan, ExpectedPlan};
+use aifs_planner::{ExpectedPlan, diff_plan};
 use aifs_protocol::{ProposalPolicy, ScanOptions};
 use std::fs;
 use std::path::{Path, PathBuf};

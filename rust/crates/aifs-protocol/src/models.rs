@@ -286,10 +286,11 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             if !Path::new(path).is_file() {
                 return (false, format!("{path} was not found"));
             }
-            if let Some(proj) = mmproj {
-                if !proj.is_empty() && !Path::new(proj).is_file() {
-                    return (false, format!("{proj} was not found"));
-                }
+            if let Some(proj) = mmproj
+                && !proj.is_empty()
+                && !Path::new(proj).is_file()
+            {
+                return (false, format!("{proj} was not found"));
             }
             (
                 true,

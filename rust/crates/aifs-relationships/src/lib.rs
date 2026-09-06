@@ -7,7 +7,7 @@ pub mod roles;
 pub mod series;
 pub mod sidecars;
 
-pub use projects::{detect_project, should_skip_traversal, DetectedProject};
+pub use projects::{DetectedProject, detect_project, should_skip_traversal};
 
 use aifs_domain::{
     Bundle, BundleConstraint, BundleId, BundleKind, ProjectStrength, WorkspaceSnapshot,
@@ -120,14 +120,18 @@ mod tests {
             file("movie.en.srt", FileFamily::Subtitle),
         ]);
         enrich(&mut snapshot, true);
-        assert!(snapshot
-            .bundles
-            .iter()
-            .any(|bundle| bundle.kind == BundleKind::SidecarGroup && bundle.members.len() == 2));
-        assert!(snapshot
-            .relationships
-            .iter()
-            .any(|rel| rel.kind == RelationshipKind::Subtitle));
+        assert!(
+            snapshot
+                .bundles
+                .iter()
+                .any(|bundle| bundle.kind == BundleKind::SidecarGroup && bundle.members.len() == 2)
+        );
+        assert!(
+            snapshot
+                .relationships
+                .iter()
+                .any(|rel| rel.kind == RelationshipKind::Subtitle)
+        );
     }
 
     #[test]

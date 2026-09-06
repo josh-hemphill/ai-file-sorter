@@ -3,6 +3,8 @@
 Tauri 2 shell + Vue 3 UI. The WebView never opens user files; it calls typed
 commands that forward JSONL to `aifs-engine`.
 
+Requires pnpm 12 (pinned in `package.json` as `packageManager`) and Node.js 24 LTS.
+
 ```bash
 cd rust
 cargo build -p aifs-engine
