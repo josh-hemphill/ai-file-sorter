@@ -1,0 +1,21 @@
+[package]
+name = "aifs-cli"
+description = "Command-line client for the AI File Sorter engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aifs"
+path = "src/main.rs"
+
+[dependencies]
+aifs-engine-client = { workspace = true }
+aifs-protocol = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

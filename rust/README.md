@@ -28,12 +28,27 @@ rust/
   crates/
     aifs-domain/          plain-data domain model (no I/O)
     aifs-protocol/        JSONL protocol + request options
+    aifs-scanner/         root walker, identity, project skip
+    aifs-relationships/   sidecar / series / archive / project bundles
+    aifs-extractors/      bounded media-tag readers
+    aifs-engine/          session store + hello/scan dispatch
+    aifs-engine-client/   spawn + JSONL client
+  bins/
+    aifs-engine/          stdio JSONL server
+    aifs-cli/             `aifs scan <folder>`
   docs/                   design notes
 ```
 
-Later slices add `crates/aifs-scanner`, `aifs-relationships`, `aifs-extractors`,
-`aifs-store`, `aifs-planner`, `aifs-apply`, the `bins/aifs-engine` and `bins/aifs-cli`
-binaries, and `apps/desktop` (Tauri 2 + Vue 3).
+Later slices add `aifs-store`, `aifs-planner`, `aifs-apply`, remaining engine
+commands, and `apps/desktop` (Tauri 2 + Vue 3).
+
+```bash
+cd rust
+cargo run -p aifs-cli -- scan /path/to/folder
+```
+
+The CLI locates `aifs-engine` next to itself, via `$AIFS_ENGINE`, or under
+`target/{debug,release}/`. There is no in-process fallback.
 
 ## Working on it
 

@@ -38,14 +38,16 @@ Rules:
 |-------|----------------|------------|
 | `aifs-domain` | Plain-data model: assets, bundles, evidence, revisions, plans, journals | serde |
 | `aifs-protocol` | JSONL request/event types and request options | domain |
-| `aifs-scanner` (next) | Walk a root, assign asset ids, identity, project protection | domain, protocol |
-| `aifs-relationships` (next) | Sidecar / series / archive-part / project bundle detectors | domain |
-| `aifs-extractors` (next) | Media tags, EXIF → evidence | domain |
+| `aifs-scanner` | Walk a root, assign asset ids, identity, project protection | domain, protocol, relationships |
+| `aifs-relationships` | Sidecar / series / archive-part / project bundle detectors | domain |
+| `aifs-extractors` | Media tags (ID3, FLAC, Ogg, MP4) → evidence | domain |
+| `aifs-engine` | In-memory sessions + request dispatch (`hello`, `scan`) | scanner, relationships, extractors, protocol |
+| `aifs-engine-client` | Spawn the engine binary and speak JSONL | protocol |
 | `aifs-store` (later) | SQLite workspace store with migrations | domain |
 | `aifs-planner` (later) | Heuristic proposals, revision patches, plan validation | domain, protocol |
 | `aifs-apply` (later) | Journaled apply, rollback, undo | domain |
-| `bins/aifs-engine` (later) | Stdio JSONL server tying the above together | all |
-| `bins/aifs-cli` (later) | Same operations for scripts and tests | all |
+| `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
+| `bins/aifs-cli` (`aifs`) | `aifs scan <folder>` via the engine process | engine-client |
 
 ## Data flow
 

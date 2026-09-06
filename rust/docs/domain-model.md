@@ -9,8 +9,10 @@ All types live in `crates/aifs-domain` and are plain serialisable values.
   content fingerprint) is captured at scan time so apply/undo can detect that a file
   changed underneath.
 - `RelativePath` is the only path type that crosses the engine boundary in proposals and
-  plans. It is normalised (`/` separators, no `.`/`..`), rejects absolute paths and
-  Windows-hostile names, and can be resolved under a session root safely.
+  plans. It is normalised (`/` separators, no `.`/`..` except the session-root sentinel
+  `.`), rejects absolute paths and Windows-hostile names, and can be resolved under a
+  session root safely. `RelativePath::session_root()` (`.`) means "the scanned folder
+  itself", used when a project is detected at the session root.
 
 ## Observation
 
