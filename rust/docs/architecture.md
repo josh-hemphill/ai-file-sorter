@@ -65,6 +65,10 @@ Rules:
    with every entry `intended`.
 6. `undo` → reverses a completed journal in reverse order with identity checks.
 
+Fixture regression (`rust/fixtures/inbox-mixed`) compares heuristic destinations,
+protected projects, and sidecar stems against a committed JSON map. The Qt
+engine is not in this fork, so “old vs new” is rust-engine vs golden plans.
+
 ## Filesystem safety
 
 Filesystem and SQLite cannot be one transaction, so apply is a journaled saga:

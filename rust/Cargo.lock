@@ -56,6 +56,7 @@ version = "0.1.0"
 dependencies = [
  "aifs-domain",
  "aifs-engine-client",
+ "aifs-planner",
  "aifs-protocol",
  "clap",
  "serde_json",
@@ -111,7 +112,10 @@ version = "0.1.0"
 dependencies = [
  "aifs-engine",
  "aifs-engine-client",
+ "aifs-extractors",
+ "aifs-planner",
  "aifs-protocol",
+ "serde_json",
  "tempfile",
 ]
 
@@ -138,6 +142,7 @@ version = "0.1.0"
 dependencies = [
  "aifs-domain",
  "aifs-protocol",
+ "serde",
  "tempfile",
 ]
 

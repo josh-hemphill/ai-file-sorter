@@ -25,6 +25,7 @@ cargo run -p aifs-cli -- scan /path/to/folder
 cargo run -p aifs-cli -- organize /path/to/folder          # dry run
 cargo run -p aifs-cli -- organize /path/to/folder --apply
 cargo run -p aifs-cli -- chat /path/to/folder "Move podcasts away from music"
+cargo run -p aifs-cli -- compare /path/to/folder --expected rust/fixtures/inbox-mixed.expected.json
 ```
 
 The CLI locates `aifs-engine` next to itself, via `$AIFS_ENGINE`, or under

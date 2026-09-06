@@ -68,6 +68,16 @@ enum Commands {
         #[arg(long)]
         include_hidden: bool,
     },
+    /// Scan, propose, and compare destinations to a golden JSON map.
+    Compare {
+        /// Folder to scan.
+        folder: PathBuf,
+        /// Expected destination map (`ExpectedPlan` JSON).
+        expected: PathBuf,
+        /// Include hidden files.
+        #[arg(long)]
+        include_hidden: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -213,6 +223,41 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(next) = reply.revision {
                     println!("  revision {} (parent {})", next.id, revision.id);
                 }
+            }
+            let _ = client.shutdown();
+            Ok(())
+        }
+        Commands::Compare {
+            folder,
+            expected,
+            include_hidden,
+        } => {
+            let expected: aifs_planner::ExpectedPlan =
+                serde_json::from_str(&std::fs::read_to_string(&expected)?)?;
+            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let snapshot = client.scan(
+                &folder,
+                ScanOptions {
+                    include_hidden,
+                    ..ScanOptions::default()
+                },
+                None,
+            )?;
+            let revision = client.propose(snapshot.session, ProposalPolicy::default())?;
+            let diffs = aifs_planner::diff_plan(&snapshot, &revision, &expected);
+            if diffs.is_empty() {
+                println!(
+                    "Matched {} destinations ({} bundles, {} projects)",
+                    expected.destinations.len(),
+                    snapshot.bundles.len(),
+                    snapshot.projects.len()
+                );
+            } else {
+                for diff in &diffs {
+                    eprintln!("{diff}");
+                }
+                let _ = client.shutdown();
+                return Err(format!("{} fixture mismatch(es)", diffs.len()).into());
             }
             let _ = client.shutdown();
             Ok(())

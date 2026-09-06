@@ -1,5 +1,9 @@
 //! Heuristic organisation proposals and validation of revisions into operation plans.
 
+pub mod compare;
+
+pub use compare::{destination_map, diff_plan, ExpectedPlan};
+
 use aifs_domain::{
     evidence::keys, AssetId, BundleConstraint, EntryKind, FileFamily, ObservedEntry, Operation,
     OperationPlan, Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation,
