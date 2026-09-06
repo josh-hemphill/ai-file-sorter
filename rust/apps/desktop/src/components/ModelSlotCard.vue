@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { probeEndpoint } from "../engine";
 import { BUILTIN_CATALOG, slotBackend, withSlotKind } from "../models";
 import type { ModelBackend, ModelSlot } from "../types";
@@ -17,6 +17,15 @@ const emit = defineEmits<{
 const probeMessage = ref<string | null>(null);
 const probing = ref(false);
 const apiKey = ref("");
+
+watch(
+  () => props.assignment.api_key,
+  (key) => {
+    if (!key) {
+      apiKey.value = "";
+    }
+  },
+);
 
 const kind = computed(() => props.assignment.kind ?? "off");
 

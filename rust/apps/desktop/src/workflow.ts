@@ -218,9 +218,13 @@ export interface PlanCounts {
 
 function journalStateBySeq(
   journal: ApplyJournal | null,
+  planId: string | undefined,
 ): Map<number, { state: string; message?: string; reason?: string }> {
   const map = new Map<number, { state: string; message?: string; reason?: string }>();
   if (!journal) {
+    return map;
+  }
+  if (journal.plan && planId && journal.plan !== planId) {
     return map;
   }
   for (const entry of journal.entries) {
@@ -280,7 +284,7 @@ export function previewRows(
   plan: OperationPlan | null,
   journal: ApplyJournal | null,
 ): PreviewRow[] {
-  const states = journalStateBySeq(journal);
+  const states = journalStateBySeq(journal, plan?.id);
   const operations = plan?.operations ?? [];
   if (operations.length > 0) {
     return operations.map((planned) => {

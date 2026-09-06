@@ -258,7 +258,10 @@ impl Engine {
         if let Some(failed) = self.require_hello(id) {
             return failed;
         }
-        let previous = load_models(&self.store).unwrap_or_default();
+        let previous = match load_models(&self.store) {
+            Ok(inventory) => inventory,
+            Err(error) => return store_failed(id, error),
+        };
         let merged = inventory.merge_secrets(&previous);
         match save_models(&self.store, &merged) {
             Ok(()) => Envelope::reply(
@@ -761,7 +764,7 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
 
 fn load_settings(store: &aifs_store::WorkspaceStore) -> Result<AppSettings, aifs_store::StoreError> {
     match store.get_meta(SETTINGS_META_KEY)? {
-        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        Some(json) => Ok(serde_json::from_str(&json)?),
         None => Ok(AppSettings::default()),
     }
 }
@@ -778,7 +781,7 @@ fn load_models(
     store: &aifs_store::WorkspaceStore,
 ) -> Result<ModelInventory, aifs_store::StoreError> {
     match store.get_meta(MODELS_META_KEY)? {
-        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        Some(json) => Ok(serde_json::from_str(&json)?),
         None => Ok(ModelInventory::default()),
     }
 }
@@ -842,9 +845,6 @@ fn emit_model_runtime_notices(
 }
 
 fn default_store_path() -> Option<std::path::PathBuf> {
-    if let Ok(explicit) = std::env::var("AIFS_STORE") {
-        return Some(explicit.into());
-    }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -1049,12 +1049,18 @@ fn emit_journal_outcome(
 pub fn run_stdio() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut engine = match default_store_path() {
-        Some(path) => Engine::with_store_path(&path).unwrap_or_else(|error| {
-            eprintln!("aifs-engine: opening {path:?} failed ({error}); using memory store");
-            Engine::new()
-        }),
-        None => Engine::new(),
+    let mut engine = if let Ok(explicit) = std::env::var("AIFS_STORE") {
+        Engine::with_store_path(std::path::Path::new(&explicit)).map_err(|error| {
+            io::Error::other(format!("opening AIFS_STORE {explicit}: {error}"))
+        })?
+    } else {
+        match default_store_path() {
+            Some(path) => Engine::with_store_path(&path).unwrap_or_else(|error| {
+                eprintln!("aifs-engine: opening {path:?} failed ({error}); using memory store");
+                Engine::new()
+            }),
+            None => Engine::new(),
+        }
     };
     for line in stdin.lock().lines() {
         let line = line?;
@@ -1565,6 +1571,32 @@ mod tests {
             Event::EndpointProbed { ok, message } => {
                 assert!(!ok, "{message}");
             }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_settings_json_is_a_storage_error() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_meta("app_settings", "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::GetSettings,
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
             other => panic!("unexpected {other:?}"),
         }
     }

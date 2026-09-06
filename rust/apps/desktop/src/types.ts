@@ -106,6 +106,7 @@ export interface OperationPlan {
 
 export interface ApplyJournal {
   id: Id;
+  plan?: Id;
   status: string;
   dry_run: boolean;
   entries: Array<{
