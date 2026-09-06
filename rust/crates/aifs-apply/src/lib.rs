@@ -630,20 +630,28 @@ mod tests {
     #[test]
     fn same_inode_destination_is_treated_as_the_source() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let src = dir.path().join("Photo.JPG");
-        let dest = dir.path().join("Photo.jpg");
-        fs::write(&src, b"img").unwrap_or_else(|e| panic!("{e}"));
+
+        // Distinct names so case-insensitive volumes still get two directory entries.
         #[cfg(unix)]
         {
+            let src = dir.path().join("a.bin");
+            let dest = dir.path().join("a-link.bin");
+            fs::write(&src, b"img").unwrap_or_else(|e| panic!("{e}"));
             fs::hard_link(&src, &dest).unwrap_or_else(|e| panic!("{e}"));
             assert!(is_same_file(&src, &dest));
             move_file(&src, &dest, &mut || {}).unwrap_or_else(|e| panic!("{e}"));
             assert!(dest.exists());
             assert_eq!(fs::read(&dest).ok(), Some(b"img".to_vec()));
         }
-        #[cfg(not(unix))]
-        {
-            let _ = (src, dest);
+
+        // Case-only rename: on case-insensitive volumes (typical macOS/Windows)
+        // Photo.jpg already names Photo.JPG, so hard-linking it would EEXIST.
+        let src = dir.path().join("Photo.JPG");
+        let dest = dir.path().join("Photo.jpg");
+        fs::write(&src, b"img").unwrap_or_else(|e| panic!("{e}"));
+        if is_same_file(&src, &dest) {
+            move_file(&src, &dest, &mut || {}).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(fs::read(&dest).ok(), Some(b"img".to_vec()));
         }
     }
 
