@@ -10,6 +10,7 @@ import type {
   ProgressEvent,
   ProposalRevision,
   WorkspaceSnapshot,
+  AppSettings,
 } from "./types";
 
 export async function connectEngine(): Promise<void> {
@@ -84,6 +85,14 @@ export function onEngineProgress(
   return listen<ProgressEvent>("engine-progress", (event) => handler(event.payload));
 }
 
-export function onEngineLog(handler: (event: LogEvent) => void): Promise<UnlistenFn> {
+export async function onEngineLog(handler: (event: LogEvent) => void): Promise<UnlistenFn> {
   return listen<LogEvent>("engine-log", (event) => handler(event.payload));
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  return invoke("get_settings");
+}
+
+export async function putSettings(settings: AppSettings): Promise<AppSettings> {
+  return invoke("put_settings", { settings });
 }

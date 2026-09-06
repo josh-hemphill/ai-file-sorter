@@ -132,6 +132,39 @@ export type IntentPreset = "inbox" | "archive" | "media" | "custom";
 export type WorkflowStep = "scan" | "review" | "resolve" | "preview" | "apply";
 export type AppSurface = "workspace" | "settings" | "setup";
 
+export interface ScanOptions {
+  recursive: boolean;
+  max_depth: number;
+  include_hidden: boolean;
+  protect_projects: boolean;
+  extract_metadata: boolean;
+  fingerprint_prefix_bytes: number;
+}
+
+export interface CategoryWhitelist {
+  main: string[];
+  global_subcategories: string[];
+  branching: Record<string, string[]>;
+}
+
+export interface ProposalPolicy {
+  style: "consistent" | "refined";
+  use_subfolders: boolean;
+  rename_media: boolean;
+  rename_images_with_date: boolean;
+  pinned_families: string[];
+  project_folder: string | null;
+  whitelist: CategoryWhitelist;
+  category_language: string;
+}
+
+export interface AppSettings {
+  scan: ScanOptions;
+  policy: ProposalPolicy;
+  analyze_images: boolean;
+  analyze_documents: boolean;
+}
+
 export interface ChatReply {
   message: string;
   revision: ProposalRevision | null;

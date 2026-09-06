@@ -10,7 +10,7 @@ use aifs_domain::{
     ProposalRevision, RelativePath, RelativePathError, ReviewState, RevisionAuthor,
     SuggestionOrigin, Timestamp, WorkspaceSnapshot,
 };
-use aifs_protocol::{FolderStyle, ProposalPolicy};
+use aifs_protocol::{CategoryWhitelist, FolderStyle, ProposalPolicy};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Builds a root heuristic revision from a snapshot. Placements start as `proposed`.
@@ -147,9 +147,64 @@ fn folder_for(
             }
         }
     }
+    folder = apply_category_whitelist(folder, entry.family, &policy.whitelist);
     RelativePath::parse(&folder).unwrap_or_else(|_| {
         RelativePath::parse(entry.family.default_folder()).unwrap_or_else(|_| entry.path.clone())
     })
+}
+
+fn apply_category_whitelist(
+    folder: String,
+    family: FileFamily,
+    whitelist: &CategoryWhitelist,
+) -> String {
+    let mut parts: Vec<String> = folder
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if parts.is_empty() {
+        return folder;
+    }
+    if !whitelist.allows_top(&parts[0]) {
+        let fallback = family.default_folder();
+        parts[0] = if whitelist.allows_top(fallback) {
+            fallback.to_owned()
+        } else {
+            whitelist
+                .main
+                .first()
+                .cloned()
+                .unwrap_or_else(|| fallback.to_owned())
+        };
+    }
+    if parts.len() > 1 {
+        let top = parts[0].clone();
+        let sub = parts[1].clone();
+        let allowed_subs = if !whitelist.global_subcategories.is_empty() {
+            Some(whitelist.global_subcategories.as_slice())
+        } else if let Some(children) = whitelist.branching.get(&top).or_else(|| {
+            whitelist
+                .branching
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(&top))
+                .map(|(_, value)| value)
+        }) {
+            Some(children.as_slice())
+        } else {
+            None
+        };
+        if let Some(allowed) = allowed_subs {
+            if allowed.is_empty()
+                || !allowed
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&sub))
+            {
+                parts.truncate(1);
+            }
+        }
+    }
+    parts.join("/")
 }
 
 fn file_name_for(
@@ -789,6 +844,36 @@ mod tests {
             .position(|path| path == "dump")
             .unwrap_or_else(|| panic!("dump"));
         assert!(nested_idx < dump_idx, "remove deepest directories first");
+    }
+
+    #[test]
+    fn whitelist_rewrites_disallowed_top_level_and_drops_unknown_subs() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot
+            .entries
+            .push(file("clip.mp3", FileFamily::Audio));
+        let mut policy = ProposalPolicy::default();
+        policy.style = FolderStyle::Refined;
+        policy.use_subfolders = true;
+        policy.rename_media = false;
+        policy.whitelist.main = vec!["Documents".into(), "Pictures".into()];
+        policy.whitelist.global_subcategories = vec!["Reports".into()];
+        snapshot.evidence.push(
+            Evidence::new(
+                snapshot.entries[0].id,
+                EvidenceSource::MediaTags,
+                Confidence::CERTAIN,
+            )
+            .with_fact(keys::MEDIA_TITLE, "Night")
+            .with_fact(keys::MEDIA_ARTIST, "Ada"),
+        );
+        let revision = propose(&snapshot, &policy);
+        let placement = revision
+            .placements
+            .values()
+            .next()
+            .unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Documents/clip.mp3");
     }
 
     #[test]

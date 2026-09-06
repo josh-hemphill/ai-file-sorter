@@ -2,8 +2,8 @@
 
 use aifs_domain::WorkspaceSnapshot;
 use aifs_protocol::{
-    decode_line, encode_line, Command, Envelope, ErrorCode, Event, Request, RequestId, ScanOptions,
-    PROTOCOL_VERSION,
+    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, Request, RequestId,
+    ScanOptions, PROTOCOL_VERSION,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -306,6 +306,37 @@ impl EngineClient {
         }
         Err(ClientError::Unexpected(
             "chat ended without chat_reply".to_owned(),
+        ))
+    }
+
+    /// Loads persisted classification settings.
+    pub fn get_settings(&mut self) -> Result<AppSettings, ClientError> {
+        self.expect_settings(Command::GetSettings)
+    }
+
+    /// Replaces persisted classification settings.
+    pub fn put_settings(&mut self, settings: AppSettings) -> Result<AppSettings, ClientError> {
+        self.expect_settings(Command::PutSettings { settings })
+    }
+
+    fn expect_settings(&mut self, command: Command) -> Result<AppSettings, ClientError> {
+        let envelopes = self.request(command)?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::Settings { settings } => return Ok(settings),
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected settings event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "request ended without settings".to_owned(),
         ))
     }
 
