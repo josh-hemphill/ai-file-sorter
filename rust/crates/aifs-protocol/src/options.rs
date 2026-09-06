@@ -61,6 +61,72 @@ pub struct ProposalPolicy {
     pub pinned_families: Vec<FileFamily>,
     /// Suggested destination folder for protected project bundles, or `None` to leave them.
     pub project_folder: Option<String>,
+    /// Optional allowed category names for heuristic (and later model) folders.
+    pub whitelist: CategoryWhitelist,
+    /// Display language for category names (`en` until translations exist).
+    pub category_language: String,
+}
+
+fn default_category_language() -> String {
+    "en".to_owned()
+}
+
+/// Constrains top-level and optional second-level folder names.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CategoryWhitelist {
+    /// Allowed top-level folders. Empty means any heuristic name is allowed.
+    pub main: Vec<String>,
+    /// Second-level names allowed under every main category. Mutually exclusive with [`Self::branching`].
+    pub global_subcategories: Vec<String>,
+    /// Per-category allowed children. Mutually exclusive with [`Self::global_subcategories`].
+    pub branching: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl CategoryWhitelist {
+    /// Returns an error when both subcategory styles are populated.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.global_subcategories.is_empty() && !self.branching.is_empty() {
+            return Err(
+                "Use either global subcategories or per-category branching, not both".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    /// True when `name` is allowed as a top-level folder.
+    pub fn allows_top(&self, name: &str) -> bool {
+        self.main.is_empty()
+            || self
+                .main
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(name))
+    }
+}
+
+/// Persisted scan/proposal/analysis policy owned by the engine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    /// Scan options used by the Custom intent.
+    pub scan: ScanOptions,
+    /// Placement policy used by the Custom intent.
+    pub policy: ProposalPolicy,
+    /// Run image description when a vision slot is connected.
+    pub analyze_images: bool,
+    /// Run document analysis when a document slot is connected.
+    pub analyze_documents: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            scan: ScanOptions::default(),
+            policy: ProposalPolicy::default(),
+            analyze_images: false,
+            analyze_documents: false,
+        }
+    }
 }
 
 impl Default for ProposalPolicy {
@@ -72,6 +138,8 @@ impl Default for ProposalPolicy {
             rename_images_with_date: false,
             pinned_families: vec![FileFamily::Code],
             project_folder: None,
+            whitelist: CategoryWhitelist::default(),
+            category_language: default_category_language(),
         }
     }
 }
@@ -90,5 +158,23 @@ mod tests {
             serde_json::from_str(r#"{"style":"refined"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(policy.style, FolderStyle::Refined);
         assert_eq!(policy.pinned_families, vec![FileFamily::Code]);
+        assert_eq!(policy.category_language, "en");
+        assert!(policy.whitelist.main.is_empty());
+        let settings: AppSettings = serde_json::from_str("{}").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(settings, AppSettings::default());
+    }
+
+    #[test]
+    fn whitelist_rejects_both_subcategory_styles() {
+        let mut whitelist = CategoryWhitelist {
+            main: vec!["Documents".into()],
+            global_subcategories: vec!["Reports".into()],
+            ..CategoryWhitelist::default()
+        };
+        assert!(whitelist.validate().is_ok());
+        whitelist
+            .branching
+            .insert("Documents".into(), vec!["Notes".into()]);
+        assert!(whitelist.validate().is_err());
     }
 }

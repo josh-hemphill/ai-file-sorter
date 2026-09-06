@@ -140,9 +140,26 @@ select {
   min-width: 8.5rem;
 }
 
-option {
+textarea {
+  font: inherit;
   color: var(--fg);
   background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.choice input {
+  flex: none;
+  width: auto;
 }
 
 button {

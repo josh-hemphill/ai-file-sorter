@@ -6,7 +6,7 @@ use aifs_domain::{
     RevisionId, RevisionPatch, SessionId, WorkspaceSnapshot,
 };
 use aifs_engine_client::{discover_engine_binary, EngineClient};
-use aifs_protocol::{Event, FolderStyle, LogLevel, ProposalPolicy, ScanOptions};
+use aifs_protocol::{AppSettings, Event, FolderStyle, LogLevel, ProposalPolicy, ScanOptions};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -113,7 +113,10 @@ struct ScanArgs {
     preset: String,
 }
 
-fn policy_for_preset(preset: &str) -> (ScanOptions, ProposalPolicy) {
+fn policy_for_preset(preset: &str) -> Option<(ScanOptions, ProposalPolicy)> {
+    if preset == "custom" {
+        return None;
+    }
     let mut scan = ScanOptions::default();
     let mut policy = ProposalPolicy::default();
     match preset {
@@ -126,11 +129,21 @@ fn policy_for_preset(preset: &str) -> (ScanOptions, ProposalPolicy) {
             policy.use_subfolders = true;
             policy.rename_media = true;
         }
-        "custom" | "inbox" => {}
         _ => {}
     }
     scan.protect_projects = true;
-    (scan, policy)
+    Some((scan, policy))
+}
+
+fn resolve_policy(
+    client: &mut EngineClient,
+    preset: &str,
+) -> Result<(ScanOptions, ProposalPolicy), String> {
+    if let Some(pair) = policy_for_preset(preset) {
+        return Ok(pair);
+    }
+    let settings = client.get_settings().map_err(|error| error.to_string())?;
+    Ok((settings.scan, settings.policy))
 }
 
 #[tauri::command]
@@ -140,8 +153,8 @@ fn scan_root(
     args: ScanArgs,
 ) -> Result<WorkspaceSnapshot, String> {
     ensure_client(&state)?;
-    let (options, _) = policy_for_preset(&args.preset);
     with_client(&state, |client| {
+        let (options, _) = resolve_policy(client, &args.preset)?;
         let envelopes = client
             .request_with_events(
                 aifs_protocol::Command::Scan {
@@ -171,8 +184,8 @@ fn propose_session(
     session: SessionId,
     preset: String,
 ) -> Result<ProposalRevision, String> {
-    let (_, policy) = policy_for_preset(&preset);
     with_client(&state, |client| {
+        let (_, policy) = resolve_policy(client, &preset)?;
         client
             .propose(session, policy)
             .map_err(|error| error.to_string())
@@ -313,6 +326,24 @@ fn chat_revision(
     })
 }
 
+#[tauri::command]
+fn get_settings(state: State<EngineState>) -> Result<AppSettings, String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        client.get_settings().map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn put_settings(state: State<EngineState>, settings: AppSettings) -> Result<AppSettings, String> {
+    ensure_client(&state)?;
+    with_client(&state, |client| {
+        client
+            .put_settings(settings)
+            .map_err(|error| error.to_string())
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -330,7 +361,9 @@ pub fn run() {
             plan_revision,
             apply_plan,
             undo_journal,
-            chat_revision
+            chat_revision,
+            get_settings,
+            put_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

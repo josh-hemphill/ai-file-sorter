@@ -13,7 +13,7 @@ pub mod options;
 pub mod worker;
 
 pub use codec::{decode_line, encode_line, CodecError};
-pub use options::{FolderStyle, ProposalPolicy, ScanOptions};
+pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 
 use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, PlanIssue, ProposalRevision, RevisionAuthor,
@@ -126,6 +126,13 @@ pub enum Command {
     },
     /// Stop the engine after in-flight work is cancelled.
     Shutdown,
+    /// Load persisted scan/proposal/analysis settings.
+    GetSettings,
+    /// Replace persisted scan/proposal/analysis settings.
+    PutSettings {
+        /// Settings blob owned by the engine store.
+        settings: AppSettings,
+    },
 }
 
 /// A command with its correlation id.
@@ -255,6 +262,11 @@ pub enum Event {
     },
     /// Engine is exiting.
     Shutdown,
+    /// `get_settings` / `put_settings` result.
+    Settings {
+        /// Persisted classification settings.
+        settings: AppSettings,
+    },
 }
 
 /// An event with the id of the request it answers. `id` is `None` for unsolicited
@@ -292,10 +304,11 @@ impl Envelope {
                 | Event::Revision { .. }
                 | Event::Planned { .. }
                 | Event::Journal { .. }
-                | Event::ChatReply { .. }
+                |             Event::ChatReply { .. }
                 | Event::Cancelled
                 | Event::Failed { .. }
                 | Event::Shutdown
+                | Event::Settings { .. }
         )
     }
 }

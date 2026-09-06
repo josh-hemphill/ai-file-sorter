@@ -213,6 +213,28 @@ impl WorkspaceStore {
             &id.to_string(),
         )
     }
+
+    /// Stores an opaque engine-owned JSON blob.
+    pub fn put_meta(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Loads an opaque engine-owned JSON blob.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
 }
 
 fn load_json<T: serde::de::DeserializeOwned>(
@@ -265,5 +287,18 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"))
             .unwrap_or_else(|| panic!("missing"));
         assert_eq!(latest.id, second.id);
+    }
+
+    #[test]
+    fn meta_round_trip() {
+        let store = WorkspaceStore::open_in_memory().unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_meta("app_settings", r#"{"analyze_images":true}"#)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let loaded = store
+            .get_meta("app_settings")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .unwrap_or_else(|| panic!("missing"));
+        assert!(loaded.contains("analyze_images"));
     }
 }

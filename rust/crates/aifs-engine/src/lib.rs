@@ -1,7 +1,7 @@
 //! Isolated workspace engine used by the `aifs-engine` stdio binary.
 //!
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-//! `undo`, `chat`, `cancel`, and `shutdown`.
+//! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, and `shutdown`.
 
 mod extract;
 
@@ -13,8 +13,8 @@ use aifs_domain::{
 };
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
-    decode_line, encode_line, Command, Envelope, ErrorCode, Event, LogLevel, ProposalPolicy,
-    Request, RequestId, ScanOptions, PROTOCOL_VERSION,
+    decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, LogLevel,
+    ProposalPolicy, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{scan, ScanError};
@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 const SCAN_LOG_CAP: usize = 400;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const SETTINGS_META_KEY: &str = "app_settings";
 
 /// Engine crate version reported on `hello`.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -39,6 +40,7 @@ pub fn capabilities() -> Vec<String> {
         "apply".to_owned(),
         "undo".to_owned(),
         "chat".to_owned(),
+        "settings".to_owned(),
     ];
     caps.extend(extract::worker_capabilities());
     caps
@@ -151,6 +153,8 @@ impl Engine {
                 emit(Envelope::reply(&request.id, Event::Shutdown));
             }
             Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
+            Command::GetSettings => emit(self.handle_get_settings(&request.id)),
+            Command::PutSettings { settings } => emit(self.handle_put_settings(&request.id, settings)),
         }
     }
 
@@ -195,6 +199,36 @@ impl Engine {
                 capabilities: capabilities(),
             },
         )
+    }
+
+    fn handle_get_settings(&self, id: &RequestId) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        match load_settings(&self.store) {
+            Ok(settings) => Envelope::reply(id, Event::Settings { settings }),
+            Err(error) => store_failed(id, error),
+        }
+    }
+
+    fn handle_put_settings(&self, id: &RequestId, settings: AppSettings) -> Envelope {
+        if let Some(failed) = self.require_hello(id) {
+            return failed;
+        }
+        if let Err(message) = settings.policy.whitelist.validate() {
+            return Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::InvalidRequest,
+                    message,
+                    issues: vec![],
+                },
+            );
+        }
+        match save_settings(&self.store, &settings) {
+            Ok(()) => Envelope::reply(id, Event::Settings { settings }),
+            Err(error) => store_failed(id, error),
+        }
     }
 
     fn handle_scan(
@@ -670,6 +704,38 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
     )
 }
 
+fn load_settings(store: &aifs_store::WorkspaceStore) -> Result<AppSettings, aifs_store::StoreError> {
+    match store.get_meta(SETTINGS_META_KEY)? {
+        Some(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
+        None => Ok(AppSettings::default()),
+    }
+}
+
+fn save_settings(
+    store: &aifs_store::WorkspaceStore,
+    settings: &AppSettings,
+) -> Result<(), aifs_store::StoreError> {
+    let json = serde_json::to_string(settings)?;
+    store.put_meta(SETTINGS_META_KEY, &json)
+}
+
+fn default_store_path() -> Option<std::path::PathBuf> {
+    if let Ok(explicit) = std::env::var("AIFS_STORE") {
+        return Some(explicit.into());
+    }
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                let mut path = std::path::PathBuf::from(home);
+                path.push(".local");
+                path.push("share");
+                path
+            })
+        })?;
+    Some(base.join("aifs").join("engine.sqlite"))
+}
+
 fn emit_progress(
     emit: &mut impl FnMut(Envelope),
     id: &RequestId,
@@ -859,7 +925,13 @@ fn emit_journal_outcome(
 pub fn run_stdio() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut engine = Engine::new();
+    let mut engine = match default_store_path() {
+        Some(path) => Engine::with_store_path(&path).unwrap_or_else(|error| {
+            eprintln!("aifs-engine: opening {path:?} failed ({error}); using memory store");
+            Engine::new()
+        }),
+        None => Engine::new(),
+    };
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -1263,5 +1335,59 @@ mod tests {
             "expected ID3 title in evidence, got {:?}",
             snapshot.evidence
         );
+    }
+
+    #[test]
+    fn settings_round_trip_and_reject_exclusive_whitelist() {
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let loaded = match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::GetSettings,
+        })) {
+            Event::Settings { settings } => settings,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(loaded, AppSettings::default());
+        let mut settings = AppSettings::default();
+        settings.scan.include_hidden = true;
+        settings.analyze_images = true;
+        settings.policy.style = aifs_protocol::FolderStyle::Refined;
+        settings.policy.whitelist.main = vec!["Documents".into()];
+        match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::PutSettings {
+                settings: settings.clone(),
+            },
+        })) {
+            Event::Settings { settings: stored } => assert_eq!(stored, settings),
+            other => panic!("unexpected {other:?}"),
+        }
+        match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::GetSettings,
+        })) {
+            Event::Settings { settings: stored } => assert_eq!(stored.scan.include_hidden, true),
+            other => panic!("unexpected {other:?}"),
+        }
+        settings.policy.whitelist.global_subcategories = vec!["Reports".into()];
+        settings
+            .policy
+            .whitelist
+            .branching
+            .insert("Documents".into(), vec!["Notes".into()]);
+        match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::PutSettings { settings },
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }
