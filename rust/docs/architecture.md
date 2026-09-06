@@ -82,5 +82,4 @@ Filesystem and SQLite cannot be one transaction, so apply is a journaled saga:
 ```
 
 Intent presets (Tidy inbox, Build archive, Media library, Custom) set scan and proposal
-options; the checkbox matrix of the Qt app lives in a settings drawer, not on the landing
-screen.
+options; advanced analysis controls belong in a workspace settings drawer.

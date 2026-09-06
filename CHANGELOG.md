@@ -1,5 +1,12 @@
 ﻿# Changelog
 
+## Unreleased (Rust rewrite fork)
+
+- Removed the C++/Qt application, vendored native dependencies, and Qt CI from this
+  fork. Development continues as the isolated Rust engine, CLI, and Tauri/Vue workspace.
+- Historical 1.9.x notes below describe the upstream Qt product.
+
+
 ## [1.9.2] - 2026-08-14
 
 - Fixed a Windows startup crash in Qt GUI theme refresh handling by preventing recursive palette-triggered stylesheet updates.

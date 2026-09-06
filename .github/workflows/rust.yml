@@ -2,14 +2,8 @@ name: Rust
 
 on:
   pull_request:
-    paths:
-      - "rust/**"
-      - ".github/workflows/rust.yml"
   push:
     branches: [main]
-    paths:
-      - "rust/**"
-      - ".github/workflows/rust.yml"
 
 env:
   CARGO_TERM_COLOR: always
