@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import test from "node:test";
 import { destinationTree, type TreeNode } from "./tree.ts";
 import type { ProposalRevision } from "./types";
 
@@ -24,13 +26,9 @@ function countLeaves(node: TreeNode): number {
   return node.children.reduce((sum, child) => sum + countLeaves(child), 0);
 }
 
-const tree = destinationTree(
-  revisionWith("Documents/Reports/q1.txt"),
-);
-if (tree.children.length !== 1 || tree.children[0]?.name !== "Documents") {
-  throw new Error("expected Documents root folder");
-}
-if (countLeaves(tree) !== 1) {
-  throw new Error("expected one file counted");
-}
-console.log("tree test ok");
+test("destinationTree counts files under folder segments", () => {
+  const tree = destinationTree(revisionWith("Documents/Reports/q1.txt"));
+  assert.equal(tree.children.length, 1);
+  assert.equal(tree.children[0]?.name, "Documents");
+  assert.equal(countLeaves(tree), 1);
+});
