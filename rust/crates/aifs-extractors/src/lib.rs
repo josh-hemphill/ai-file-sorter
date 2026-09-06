@@ -12,6 +12,12 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
+mod document;
+
+pub use document::{
+    extract_document_entry, write_docx_fixture, write_pdf_fixture, write_plain_text_fixture,
+};
+
 const MAX_ID3_TAG_BYTES: u32 = 2 * 1024 * 1024;
 const MAX_BLOCK_BYTES: u32 = 2 * 1024 * 1024;
 const MAX_MP4_TEXT_BYTES: u64 = 64 * 1024;
