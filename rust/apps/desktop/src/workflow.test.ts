@@ -270,6 +270,7 @@ test("previewRows maps plan operations to from→to rows", () => {
   };
   const rows = previewRows(plan, {
     id: "j",
+    plan: "p",
     status: "completed",
     dry_run: true,
     entries: [
@@ -296,6 +297,22 @@ test("previewRows ignores a journal from a different plan", () => {
   const rows = previewRows(plan, {
     id: "j",
     plan: "p1",
+    status: "completed",
+    dry_run: false,
+    entries: [{ seq: 0, state: { state: "done" } }],
+  });
+  assert.equal(rows[0]?.state, undefined);
+});
+
+test("previewRows ignores a journal with no plan id", () => {
+  const plan = {
+    id: "p",
+    operations: [
+      { seq: 0, operation: { op: "move" as const, asset: "a", from: "a.txt", to: "Documents/a.txt" } },
+    ],
+  };
+  const rows = previewRows(plan, {
+    id: "j",
     status: "completed",
     dry_run: false,
     entries: [{ seq: 0, state: { state: "done" } }],

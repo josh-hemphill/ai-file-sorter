@@ -224,7 +224,7 @@ function journalStateBySeq(
   if (!journal) {
     return map;
   }
-  if (journal.plan && planId && journal.plan !== planId) {
+  if (!journal.plan || !planId || journal.plan !== planId) {
     return map;
   }
   for (const entry of journal.entries) {

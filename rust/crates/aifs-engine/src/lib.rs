@@ -309,7 +309,10 @@ impl Engine {
         }
 
         let session = session.unwrap_or_default();
-        emit_model_runtime_notices(&self.store, id, emit);
+        if let Err(error) = emit_model_runtime_notices(&self.store, id, emit) {
+            emit(store_failed(id, error));
+            return;
+        }
         emit(Envelope::reply(
             id,
             Event::Progress {
@@ -798,9 +801,9 @@ fn emit_model_runtime_notices(
     store: &aifs_store::WorkspaceStore,
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
-) {
-    let settings = load_settings(store).unwrap_or_default();
-    let models = load_models(store).unwrap_or_default();
+) -> Result<(), aifs_store::StoreError> {
+    let settings = load_settings(store)?;
+    let models = load_models(store)?;
     let slot_off = |id: &str| {
         models
             .slots
@@ -842,6 +845,7 @@ fn emit_model_runtime_notices(
             );
         }
     }
+    Ok(())
 }
 
 fn default_store_path() -> Option<std::path::PathBuf> {
@@ -1049,9 +1053,10 @@ fn emit_journal_outcome(
 pub fn run_stdio() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut engine = if let Ok(explicit) = std::env::var("AIFS_STORE") {
-        Engine::with_store_path(std::path::Path::new(&explicit)).map_err(|error| {
-            io::Error::other(format!("opening AIFS_STORE {explicit}: {error}"))
+    let mut engine = if let Some(explicit) = std::env::var_os("AIFS_STORE") {
+        let path = std::path::PathBuf::from(&explicit);
+        Engine::with_store_path(&path).map_err(|error| {
+            io::Error::other(format!("opening AIFS_STORE {}: {error}", path.display()))
         })?
     } else {
         match default_store_path() {
@@ -1595,6 +1600,41 @@ mod tests {
         match terminal(engine.handle(Request {
             id: "2".into(),
             command: Command::GetSettings,
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_settings_json_fails_scan() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_meta("app_settings", "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
         })) {
             Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
             other => panic!("unexpected {other:?}"),
