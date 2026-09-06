@@ -81,7 +81,10 @@ fn role_for(
     if BROAD_NAMES.contains(&name) {
         return Some(DirectoryRoleKind::BroadInbox);
     }
-    if ARCHIVE_NAMES.contains(&name) || path_has_year(root) {
+    if ARCHIVE_NAMES.contains(&name) {
+        return Some(DirectoryRoleKind::WeakArchive);
+    }
+    if is_year_name(name) && !path_has_broad_segment(root) {
         return Some(DirectoryRoleKind::WeakArchive);
     }
     if LIBRARY_NAMES.contains(&name) {
@@ -104,11 +107,15 @@ fn role_for(
     None
 }
 
-fn path_has_year(path: &RelativePath) -> bool {
+fn is_year_name(name: &str) -> bool {
+    name.len() == 4
+        && name.chars().all(|ch| ch.is_ascii_digit())
+        && (name.starts_with("19") || name.starts_with("20"))
+}
+
+fn path_has_broad_segment(path: &RelativePath) -> bool {
     path.as_str().split('/').any(|segment| {
-        segment.len() == 4
-            && segment.chars().all(|ch| ch.is_ascii_digit())
-            && (segment.starts_with("19") || segment.starts_with("20"))
+        BROAD_NAMES.contains(&segment.to_ascii_lowercase().as_str())
     })
 }
 
@@ -207,5 +214,22 @@ mod tests {
             DirectoryRoleKind::BroadInbox
         );
         assert!(snapshot.bundles.is_empty());
+    }
+
+    #[test]
+    fn year_folder_inside_an_inbox_is_not_an_archive() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Downloads"),
+            dir("Downloads/2024"),
+            file("Downloads/2024/notes.txt", FileFamily::Document),
+        ];
+        classify_directories(&mut snapshot);
+        assert!(
+            !snapshot.directory_roles.iter().any(|role| {
+                role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "Downloads/2024"
+            }),
+            "dated folders under a dump must stay organisable"
+        );
     }
 }

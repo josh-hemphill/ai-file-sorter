@@ -130,6 +130,16 @@ test("currentWorkflowStep follows scan → review → resolve → preview → ap
     }),
     "apply",
   );
+  assert.equal(
+    currentWorkflowStep({
+      snapshot,
+      revision,
+      plan: null,
+      issues: [],
+      journal: { id: "j", status: "completed", dry_run: false, entries: [] },
+    }),
+    "review",
+  );
 });
 
 test("acceptedCount ignores proposed placements", () => {
@@ -198,6 +208,47 @@ test("itemRows collapses hard bundles", () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0]?.type, "group");
   assert.equal(rows[1]?.type, "file");
+});
+
+test("itemRows keeps hidden hard-bundle members", () => {
+  const photo = {
+    id: "1",
+    path: "photo.jpg",
+    kind: "file" as const,
+    family: "image",
+    identity: { size: 1 },
+  };
+  const xmp = {
+    id: "2",
+    path: "photo.xmp",
+    kind: "file" as const,
+    family: "sidecar",
+    identity: { size: 1 },
+  };
+  const snapshot = {
+    session: "s",
+    root: "/tmp",
+    entries: [photo, xmp],
+    skipped: [],
+    projects: [],
+    bundles: [
+      {
+        id: "b",
+        kind: "sidecar_group",
+        constraint: { kind: "move_together" as const },
+        members: ["1", "2"],
+        label: "photo",
+      },
+    ],
+    relationships: [],
+    evidence: [],
+  };
+  const rows = itemRows([photo], snapshot);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.type, "group");
+  if (rows[0]?.type === "group") {
+    assert.equal(rows[0].members.length, 2);
+  }
 });
 
 test("previewRows maps plan operations to from→to rows", () => {

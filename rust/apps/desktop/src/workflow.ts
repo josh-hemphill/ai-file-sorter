@@ -86,7 +86,7 @@ export function currentWorkflowStep(state: WorkflowState): WorkflowStep {
   if (hasErrors) {
     return "resolve";
   }
-  if (state.journal && !state.journal.dry_run && state.journal.status !== "undone") {
+  if (state.journal && !state.journal.dry_run && state.journal.status !== "undone" && state.plan) {
     return "apply";
   }
   if (state.plan) {
@@ -171,7 +171,9 @@ export function itemRows(
       rows.push({ type: "file", entry });
       continue;
     }
-    const members = files.filter((file) => bundle.members.includes(file.id));
+    const members = snapshot.entries.filter(
+      (file) => file.kind === "file" && bundle.members.includes(file.id),
+    );
     for (const member of members) {
       used.add(member.id);
     }

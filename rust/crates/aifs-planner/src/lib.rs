@@ -114,7 +114,14 @@ fn covering_role<'a>(
         .directory_roles
         .iter()
         .filter(|role| path.starts_with(&role.root))
-        .max_by_key(|role| role.root.as_str().len())
+        .max_by_key(|role| {
+            let preserve = matches!(
+                role.kind,
+                aifs_domain::DirectoryRoleKind::Library
+                    | aifs_domain::DirectoryRoleKind::WeakArchive
+            );
+            (preserve, role.root.as_str().len())
+        })
 }
 
 fn folder_for(
@@ -705,6 +712,27 @@ mod tests {
             .unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "Documents/note.txt");
         assert_eq!(placement.review, ReviewState::Proposed);
+    }
+
+    #[test]
+    fn nested_inbox_name_does_not_flatten_a_library() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("Music/tmp/clip.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.entries.push(entry);
+        snapshot.directory_roles.push(aifs_domain::DirectoryRoleMatch {
+            root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            kind: aifs_domain::DirectoryRoleKind::Library,
+            reason: "library".into(),
+        });
+        snapshot.directory_roles.push(aifs_domain::DirectoryRoleMatch {
+            root: RelativePath::parse("Music/tmp").unwrap_or_else(|e| panic!("{e}")),
+            kind: aifs_domain::DirectoryRoleKind::BroadInbox,
+            reason: "dump".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Music/tmp/clip.mp3");
     }
 
     #[test]

@@ -336,8 +336,8 @@ impl Engine {
             emit,
             id,
             "scan",
-            snapshot.entries.len() as u64,
-            Some(snapshot.entries.len() as u64),
+            (snapshot.entries.len() + snapshot.skipped.len()) as u64,
+            Some((snapshot.entries.len() + snapshot.skipped.len()) as u64),
             "walk complete",
         );
         emit_scan_logs(emit, id, &snapshot);
@@ -940,17 +940,18 @@ fn emit_scan_logs(
         );
         remaining -= 1;
     }
+    let mut skip_logged = 0usize;
     for skipped in &snapshot.skipped {
         if remaining == 0 {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Warn,
-                format!(
-                    "{} more skipped entries omitted from the stream",
-                    snapshot.skipped.len().saturating_sub(SCAN_LOG_CAP)
-                ),
-            );
+            let omitted = snapshot.skipped.len().saturating_sub(skip_logged);
+            if omitted > 0 {
+                emit_log(
+                    emit,
+                    id,
+                    LogLevel::Warn,
+                    format!("{omitted} more skipped entries omitted from the stream"),
+                );
+            }
             break;
         }
         let level = match skipped.reason {
@@ -964,6 +965,7 @@ fn emit_scan_logs(
             skip_log_line(skipped.path.as_str(), &skipped.reason),
         );
         remaining -= 1;
+        skip_logged += 1;
     }
 }
 
