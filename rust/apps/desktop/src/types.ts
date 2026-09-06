@@ -10,10 +10,16 @@ export interface ObservedEntry {
   identity: { size: number };
 }
 
+export type BundleConstraint =
+  | { kind: "soft" }
+  | { kind: "move_together" }
+  | { kind: "preserve_layout"; root: string }
+  | { kind: "protected"; reason: string };
+
 export interface Bundle {
   id: Id;
   kind: string;
-  constraint: string;
+  constraint: BundleConstraint | string;
   members: Id[];
   label?: string;
 }
@@ -105,6 +111,8 @@ export interface ProgressEvent {
 
 export type CenterView = "structure" | "items" | "relationships" | "activity";
 export type IntentPreset = "inbox" | "archive" | "media" | "custom";
+export type WorkflowStep = "scan" | "review" | "resolve" | "preview" | "apply";
+export type AppSurface = "workspace" | "settings" | "setup";
 
 export interface ChatReply {
   message: string;
