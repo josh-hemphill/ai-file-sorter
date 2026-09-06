@@ -391,7 +391,7 @@ File categorization with local LLMs is completely free of charge. If you prefer 
     sudo apt update && sudo apt install -y \
       build-essential cmake git qt6-base-dev qt6-base-dev-tools qt6-l10n-tools qt6-tools-dev-tools \
       libcurl4-gnutls-dev libjsoncpp-dev libsqlite3-dev libssl-dev libfmt-dev libspdlog-dev libmediainfo-dev \
-      zlib1g-dev patchelf
+      libsysprof-capture-4-dev zlib1g-dev patchelf
     ```
    - Fedora / RHEL:
 
