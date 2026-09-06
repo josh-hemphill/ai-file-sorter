@@ -28,8 +28,9 @@ diagnostic only.
 | `shutdown` | — | `shutdown` |
 | `get_settings` | — | `settings { settings }` |
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
-| `get_models` | — | `models { inventory }` (API keys omitted) |
+| `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` scanned from disk) |
 | `put_models` | `inventory: ModelInventory` | `models { inventory }` |
+| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; existing files skipped) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
 Every request has an `id` chosen by the client. Events echo that `id`; unsolicited events
@@ -62,7 +63,7 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 
 This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
-`put_models`, `probe_endpoint`, and `shutdown`. `chat` interprets the utterance into
+`put_models`, `download_model`, `probe_endpoint`, and `shutdown`. `chat` interprets the utterance into
 deterministic tools (`search`, `inspect`, `structure`, `group`, `rename`,
 `validate`) and, when those tools emit patches, stores a child revision authored
 by the mock assistant. The assistant never receives SQL or raw filesystem

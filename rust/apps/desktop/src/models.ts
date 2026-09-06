@@ -1,4 +1,4 @@
-import type { ModelBackend, ModelInventory, ModelSlot } from "./types";
+import type { ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot } from "./types";
 
 export const MODEL_SLOT_META = [
   {
@@ -28,7 +28,29 @@ export const BUILTIN_CATALOG = [
   { id: "gemma-3-4b-it-mmproj", label: "Gemma 3 4B Instruct + mmproj (vision)" },
 ] as const;
 
-export const GPU_PREFERENCES = ["auto", "cpu", "vulkan", "metal"] as const;
+export const GPU_PREFERENCES = [
+  {
+    id: "auto",
+    label: "Auto",
+    hint: "Prefer CUDA, then Vulkan or Metal, then CPU. Recorded for the future LLM worker.",
+  },
+  { id: "cpu", label: "CPU only", hint: "No GPU offload." },
+  {
+    id: "cuda",
+    label: "CUDA",
+    hint: "Needs NVIDIA drivers and a llama.cpp worker built with GGML_CUDA. Not used yet.",
+  },
+  {
+    id: "vulkan",
+    label: "Vulkan",
+    hint: "Needs a Vulkan-capable llama.cpp worker. Not used yet.",
+  },
+  {
+    id: "metal",
+    label: "Metal",
+    hint: "Needs a Metal-capable llama.cpp worker on macOS. Not used yet.",
+  },
+] as const;
 
 /** Default engine inventory for an empty Setup form. */
 export function defaultInventory(): ModelInventory {
@@ -36,6 +58,7 @@ export function defaultInventory(): ModelInventory {
     storage_dir: "",
     gpu_preference: "auto",
     slots: MODEL_SLOT_META.map((slot) => ({ id: slot.id, kind: "off" as const })),
+    artifacts: [],
   };
 }
 
@@ -83,5 +106,32 @@ export function inventorySummary(inventory: ModelInventory): string {
   if (assigned === 0) {
     return "All analysis slots off";
   }
-  return `${assigned} slot${assigned === 1 ? "" : "s"} assigned · model runtime not connected`;
+  return `${assigned} slot${assigned === 1 ? "" : "s"} assigned · scan still uses heuristics`;
+}
+
+/** Human size for catalog files. */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) {
+    return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+  }
+  if (bytes >= 1_000_000) {
+    return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  }
+  if (bytes >= 1_000) {
+    return `${(bytes / 1_000).toFixed(0)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+/** True when every GGUF this catalog id needs is already on disk. */
+export function catalogIsDownloaded(inventory: ModelInventory, catalogId: string): boolean {
+  const needed = (inventory.artifacts ?? []).filter((artifact) =>
+    artifact.used_by.includes(catalogId),
+  );
+  return needed.length > 0 && needed.every((artifact) => artifact.present);
+}
+
+/** Artifacts the Setup page lists once, even when several slots share them. */
+export function catalogArtifacts(inventory: ModelInventory): ModelArtifactStatus[] {
+  return inventory.artifacts ?? [];
 }

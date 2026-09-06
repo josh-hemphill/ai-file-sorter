@@ -31,6 +31,7 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
+ureq = "2.12"
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
