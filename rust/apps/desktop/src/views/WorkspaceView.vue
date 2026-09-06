@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import TabBar from "../components/TabBar.vue";
 import WorkflowStepper from "../components/WorkflowStepper.vue";
 import AnalysisStream from "../components/AnalysisStream.vue";
+import PreviewDiff from "../components/PreviewDiff.vue";
+import ApplyConfirm from "../components/ApplyConfirm.vue";
 import {
   applyPlan,
   chatRevision,
@@ -33,11 +35,15 @@ import type {
 import {
   INTENT_PRESETS,
   acceptedCount,
+  applyConfirmCopy,
   constraintLabel,
   currentWorkflowStep,
+  issueLabel,
   itemRows,
   loadRecentRoots,
   persistRecentRoots,
+  planCounts,
+  previewRows,
   rememberRoot,
   roleKindLabel,
   skippedReasonLabel,
@@ -67,6 +73,7 @@ const revision = ref<ProposalRevision | null>(null);
 const plan = ref<OperationPlan | null>(null);
 const issues = ref<PlanIssue[]>([]);
 const journal = ref<ApplyJournal | null>(null);
+const confirmApply = ref(false);
 const selectedAsset = ref<string | null>(null);
 const query = ref("");
 const draft = ref("");
@@ -116,10 +123,15 @@ const step = computed(() =>
   }),
 );
 const approved = computed(() => acceptedCount(revision.value));
+const counts = computed(() => planCounts(plan.value));
+const diffs = computed(() => previewRows(plan.value, journal.value));
+const confirmSummary = computed(() =>
+  applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
+);
 const tabCounts = computed(() => ({
   items: files.value.length,
   relationships: snapshot.value?.bundles.length ?? 0,
-  activity: logLines.value.length + issues.value.length,
+  activity: logLines.value.length + issues.value.length + diffs.value.length,
 }));
 const analysisStages = computed(() =>
   STAGE_ORDER.filter((stage) => stageProgress.value[stage.id]).map((stage) => ({
@@ -210,6 +222,15 @@ async function setReviewAssets(
   } finally {
     busy.value = false;
   }
+  if (
+    revision.value &&
+    acceptedCount(revision.value) > 0 &&
+    !Object.values(revision.value.placements).some(
+      (placement) => placement.review === "proposed",
+    )
+  ) {
+    await validatePlan();
+  }
 }
 
 async function acceptAll() {
@@ -232,6 +253,9 @@ async function acceptAll() {
   } finally {
     busy.value = false;
   }
+  if (revision.value && acceptedCount(revision.value) > 0) {
+    await validatePlan();
+  }
 }
 
 async function validatePlan() {
@@ -249,6 +273,23 @@ async function validatePlan() {
   } finally {
     busy.value = false;
   }
+}
+
+async function requestApply() {
+  if (!snapshot.value || !plan.value) {
+    engineError.value = "Validate a plan before preview or apply.";
+    return;
+  }
+  if (errorIssues.value.length > 0) {
+    engineError.value = "Fix plan errors before applying.";
+    return;
+  }
+  confirmApply.value = true;
+}
+
+async function confirmAndApply() {
+  confirmApply.value = false;
+  await runApply(false);
 }
 
 async function runApply(dryRun: boolean) {
@@ -562,15 +603,23 @@ function familyOf(entry: ObservedEntry): string {
         aria-labelledby="tab-activity"
       >
         <AnalysisStream :stages="analysisStages" :lines="logLines" :progress="progress" />
-        <ul>
+        <ul v-if="issues.length">
           <li v-for="(issue, index) in issues" :key="index">
-            <strong>{{ issue.severity }}</strong> {{ issue.code }}: {{ issue.message }}
+            <strong>{{ issue.severity }}</strong> {{ issueLabel(issue) }}
           </li>
         </ul>
-        <p v-if="journal">
-          Journal {{ journal.id }} · {{ journal.status }} · dry_run={{ journal.dry_run }}
+        <PreviewDiff
+          v-if="plan || journal"
+          :rows="diffs"
+          :counts="counts"
+          :journal-status="journal?.status"
+          :dry-run="journal?.dry_run"
+        />
+        <p v-if="journal" class="muted">
+          {{ journal.dry_run ? "Preview journal" : "Apply journal" }}
+          {{ journal.status }} · {{ journal.entries.length }} operations
         </p>
-        <p v-if="!issues.length && !journal && !logLines.length && !progress" class="muted">
+        <p v-if="!issues.length && !plan && !journal && !logLines.length && !progress" class="muted">
           Scan progress, validation, and apply results show up here.
         </p>
       </div>
@@ -608,11 +657,15 @@ function familyOf(entry: ObservedEntry): string {
             type="button"
             class="primary"
             :disabled="busy || !plan || errorIssues.length > 0"
-            @click="runApply(false)"
+            @click="requestApply"
           >
             Apply
           </button>
-          <button type="button" :disabled="busy || !journal || journal.dry_run" @click="runUndo">
+          <button
+            type="button"
+            :disabled="busy || !journal || journal.dry_run || journal.status === 'undone'"
+            @click="runUndo"
+          >
             Undo
           </button>
         </div>
@@ -656,5 +709,12 @@ function familyOf(entry: ObservedEntry): string {
         <button type="submit" :disabled="busy || !revision">Send</button>
       </form>
     </aside>
+    <ApplyConfirm
+      v-if="confirmApply && snapshot"
+      :root="snapshot.root"
+      :summary="confirmSummary"
+      @cancel="confirmApply = false"
+      @confirm="confirmAndApply"
+    />
   </div>
 </template>

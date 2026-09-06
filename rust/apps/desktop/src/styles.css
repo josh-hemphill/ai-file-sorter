@@ -416,3 +416,47 @@ h2 {
   padding-left: 18px;
   font-size: 13px;
 }
+
+.preview-diff {
+  margin-top: 12px;
+}
+
+.preview-summary {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 7, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.modal {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px;
+  max-width: 480px;
+  width: min(480px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal h2 {
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
+  font-size: 18px;
+}
+
+.modal .row {
+  justify-content: flex-end;
+  margin-top: 8px;
+}

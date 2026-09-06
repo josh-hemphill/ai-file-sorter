@@ -313,7 +313,7 @@ pub fn validate(
     if accepted.is_empty() {
         issues.push(PlanIssue::error(
             "nothing_accepted",
-            "no placements are accepted; accept items before planning",
+            "Approve at least one proposed change before Validate. Nothing is moved until you Apply.",
             vec![],
         ));
         return (None, issues);
@@ -408,18 +408,25 @@ pub fn validate(
             }
         }
     }
-    for (asset, from, to) in ordered {
-        let Some(entry) = index.get(&asset) else {
+    for (asset, from, to) in &ordered {
+        let Some(entry) = index.get(asset) else {
             continue;
         };
         operations.push(PlannedOperation {
             seq,
             operation: Operation::Move {
-                asset,
-                from,
-                to,
+                asset: *asset,
+                from: from.clone(),
+                to: to.clone(),
                 expected: entry.identity.clone(),
             },
+        });
+        seq += 1;
+    }
+    for dir in empty_directories_to_remove(snapshot, &ordered) {
+        operations.push(PlannedOperation {
+            seq,
+            operation: Operation::RemoveEmptyDirectory { path: dir },
         });
         seq += 1;
     }
@@ -537,6 +544,60 @@ fn order_moves(
         }
     }
     Ok(ordered)
+}
+
+fn empty_directories_to_remove(
+    snapshot: &WorkspaceSnapshot,
+    moves: &[(AssetId, RelativePath, RelativePath)],
+) -> Vec<RelativePath> {
+    let moving: BTreeSet<String> = moves.iter().map(|(_, from, _)| from.case_fold()).collect();
+    let mut occupied: BTreeSet<String> = BTreeSet::new();
+    for (_, _, to) in moves {
+        occupied.insert(to.case_fold());
+        let mut parent = to.parent();
+        while let Some(dir) = parent {
+            occupied.insert(dir.case_fold());
+            parent = dir.parent();
+        }
+    }
+    let mut emptied_roots: BTreeSet<RelativePath> = BTreeSet::new();
+    for (_, from, _) in moves {
+        let mut parent = from.parent();
+        while let Some(dir) = parent {
+            if dir.is_session_root() {
+                break;
+            }
+            emptied_roots.insert(dir.clone());
+            parent = dir.parent();
+        }
+    }
+    let mut candidates = emptied_roots.clone();
+    for entry in &snapshot.entries {
+        if entry.kind != EntryKind::Directory || entry.path.is_session_root() {
+            continue;
+        }
+        if emptied_roots
+            .iter()
+            .any(|root| entry.path.starts_with(root))
+        {
+            candidates.insert(entry.path.clone());
+        }
+    }
+    let mut removable: Vec<RelativePath> = candidates
+        .into_iter()
+        .filter(|dir| {
+            if occupied.contains(&dir.case_fold()) {
+                return false;
+            }
+            !snapshot.entries.iter().any(|entry| {
+                entry.kind == EntryKind::File
+                    && entry.path.starts_with(dir)
+                    && !moving.contains(&entry.path.case_fold())
+            })
+        })
+        .collect();
+    removable.sort_by_key(|path| std::cmp::Reverse(path.as_str().len()));
+    removable
 }
 
 /// Marks every placement accepted. Used by the CLI organise shortcut.
@@ -667,5 +728,100 @@ mod tests {
             .iter()
             .all(|issue| issue.severity != PlanIssueSeverity::Error));
         assert!(plan.is_some());
+    }
+
+    fn directory(path: &str) -> ObservedEntry {
+        ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse(path).unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: FileIdentity::default(),
+            is_hidden: false,
+            lock: LockState::Readable,
+        }
+    }
+
+    #[test]
+    fn emptied_source_directories_are_removed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot.entries.push(directory("dump/nested"));
+        snapshot
+            .entries
+            .push(file("dump/nested/a.txt", FileFamily::Document));
+        snapshot
+            .entries
+            .push(file("keep.txt", FileFamily::Document));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &revision);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        let removed: Vec<String> = plan
+            .operations
+            .iter()
+            .filter_map(|planned| match &planned.operation {
+                Operation::RemoveEmptyDirectory { path } => Some(path.as_str().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            removed.contains(&"dump/nested".to_owned()),
+            "nested emptied dir should be removed first, got {removed:?}"
+        );
+        assert!(
+            removed.contains(&"dump".to_owned()),
+            "parent emptied dir should be removed, got {removed:?}"
+        );
+        assert!(
+            !removed.iter().any(|path| path == "Documents"),
+            "destination folders must not be cleaned, got {removed:?}"
+        );
+        let nested_idx = removed
+            .iter()
+            .position(|path| path == "dump/nested")
+            .unwrap_or_else(|| panic!("nested"));
+        let dump_idx = removed
+            .iter()
+            .position(|path| path == "dump")
+            .unwrap_or_else(|| panic!("dump"));
+        assert!(nested_idx < dump_idx, "remove deepest directories first");
+    }
+
+    #[test]
+    fn occupied_source_folder_is_not_removed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot
+            .entries
+            .push(file("dump/a.txt", FileFamily::Document));
+        snapshot
+            .entries
+            .push(file("dump/keep.bin", FileFamily::Generic));
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let only_text = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "accept dump text only",
+                &[aifs_domain::RevisionPatch::Accept {
+                    assets: vec![snapshot.entries[1].id],
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &only_text);
+        assert!(issues
+            .iter()
+            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|planned| matches!(
+                planned.operation,
+                Operation::RemoveEmptyDirectory { ref path } if path.as_str() == "dump"
+            )),
+            "dump still has keep.bin"
+        );
     }
 }
