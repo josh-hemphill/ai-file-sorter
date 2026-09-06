@@ -12,11 +12,11 @@ bins/aifs-engine
     ├── builds and patches proposal revisions
     ├── validates revisions into operation plans
     ├── applies plans through a journal (recovery + undo)
-    └── supervises workers (future)
-          ├── local LLM worker (llama.cpp)
-          ├── media worker (ffprobe / MediaInfo)
-          ├── document worker (PDF, Office)
-          └── vision worker
+    └── supervises workers
+          ├── `aifs-worker-media` (Rust tag readers; later ffprobe)
+          ├── `aifs-worker-document` (PDF/Office stub)
+          ├── `aifs-worker-vision` (EXIF/OCR stub)
+          └── `aifs-worker-llm` (llama.cpp stub)
 ```
 
 Rules:
@@ -44,21 +44,30 @@ Rules:
 | `aifs-store` | SQLite WAL store for snapshots, revisions, plans, journals | domain |
 | `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
 | `aifs-apply` | Journaled local apply + undo | domain, scanner |
-| `aifs-engine` | Request dispatch (`hello` … `undo`) | all of the above |
+| `aifs-ai-tools` | Keyword tools that emit `RevisionPatch`es (never SQL or FS ops) | domain, planner |
+| `aifs-engine` | Request dispatch (`hello` … `chat`); supervises workers | domain, protocol, store, workers |
+| `aifs-worker-runtime` / `aifs-worker-client` | Worker JSONL loop and spawn/timeout client | protocol |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
-| `bins/aifs-cli` (`aifs`) | `aifs scan` / `aifs organize` via the engine process | engine-client |
+| `bins/aifs-worker-*` | Isolated extractors (evidence only; never SQLite or FS mutation) | runtime, extractors |
+| `bins/aifs-cli` (`aifs`) | `aifs scan` / `organize` / `chat` via the engine process | engine-client |
+| `apps/desktop` | Tauri 2 shell + Vue 3 workspace; JSONL to the engine | engine-client, protocol |
 
 ## Data flow
 
 1. `scan` → `WorkspaceSnapshot` (entries, skipped, projects, bundles, relationships,
    evidence). Persisted; never mutated.
 2. `propose` → root `ProposalRevision` from heuristics.
-3. `patch` (user or assistant) → child revision. The chain is the review history.
+3. `patch` (user) or `chat` (assistant tools) → child revision. The chain is the
+   review history. Chat never mutates disk; it only patches the proposal.
 4. `plan` → `OperationPlan` or a list of `PlanIssue`s. Hard-bundle splits, protected
    members, collisions, and path escapes are errors.
 5. `apply` → `ApplyJournal`, written before each operation. Dry run produces a journal
    with every entry `intended`.
 6. `undo` → reverses a completed journal in reverse order with identity checks.
+
+Fixture regression (`rust/fixtures/inbox-mixed`) compares heuristic destinations,
+protected projects, and sidecar stems against a committed JSON map. The Qt
+engine is not in this fork, so “old vs new” is rust-engine vs golden plans.
 
 ## Filesystem safety
 
@@ -82,5 +91,4 @@ Filesystem and SQLite cannot be one transaction, so apply is a journaled saga:
 ```
 
 Intent presets (Tidy inbox, Build archive, Media library, Custom) set scan and proposal
-options; the checkbox matrix of the Qt app lives in a settings drawer, not on the landing
-screen.
+options; advanced analysis controls belong in a workspace settings drawer.

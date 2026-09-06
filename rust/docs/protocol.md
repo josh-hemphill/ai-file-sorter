@@ -23,6 +23,7 @@ diagnostic only.
 | `plan` | `session`, `revision` | `planned { plan, issues }` or `failed { plan_rejected, issues }` |
 | `apply` | `session`, `plan`, `dry_run` | `journal` |
 | `undo` | `session`, `journal` | `journal` |
+| `chat` | `session`, `revision`, `utterance` | `chat_reply { message, revision? }` |
 | `cancel` | `target` | `cancelled` on the target request |
 | `shutdown` | — | `shutdown` |
 
@@ -33,8 +34,8 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 
 - `progress { stage, current, total?, message }` — may repeat; never terminal.
 - `log { level, message }` — never terminal.
-- `ready`, `scan_completed`, `revision`, `planned`, `journal`, `cancelled`, `failed`,
-  `shutdown` — terminal for their request.
+- `ready`, `scan_completed`, `revision`, `planned`, `journal`, `chat_reply`,
+  `cancelled`, `failed`, `shutdown` — terminal for their request.
 
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
 
@@ -54,5 +55,29 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 ```
 
 This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-`undo`, `cancel`, and `shutdown`. `plan` requires accepted placements (the CLI
-`organize` command accepts all heuristic placements, then dry-runs by default).
+`undo`, `chat`, `cancel`, and `shutdown`. `chat` interprets the utterance into
+deterministic tools (`search`, `inspect`, `structure`, `group`, `rename`,
+`validate`) and, when those tools emit patches, stores a child revision authored
+by the mock assistant. The assistant never receives SQL or raw filesystem
+operations. `plan` requires accepted placements (the CLI `organize` command
+accepts all heuristic placements, then dry-runs by default).
+
+## Workers
+
+The engine speaks a second JSONL dialect with disposable worker processes
+(`crates/aifs-protocol::worker`). Transport is the same (one JSON object per
+line). Workers never open SQLite and never mutate user files.
+
+| `type` | Payload | Terminal event |
+|--------|---------|----------------|
+| `hello` | `worker`, `protocol_version` | `ready` |
+| `extract` | `root`, `entry` | `extracted { evidence? }` |
+| `shutdown` | — | `shutdown` |
+
+Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
+`aifs-worker-llm`. Discovery uses `$AIFS_WORKER_MEDIA` (and siblings), then a
+binary next to the engine, then `target/{debug,release}/`. Scan prefers a live
+media worker and falls back to in-process Rust tag readers when that binary is
+missing. Document and vision workers are stubs that return low-confidence
+detector evidence.
+

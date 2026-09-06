@@ -22,6 +22,15 @@ const ENGINE_BINARY: &str = if cfg!(windows) {
     "aifs-engine"
 };
 
+/// Assistant reply from a `chat` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatReply {
+    /// Tool summary shown to the user.
+    pub message: String,
+    /// Child revision when tools produced patches.
+    pub revision: Option<aifs_domain::ProposalRevision>,
+}
+
 /// Failures talking to the engine process.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -267,6 +276,39 @@ impl EngineClient {
         self.expect_journal(Command::Undo { session, journal })
     }
 
+    /// Runs assistant tools against a revision. Returns a child revision when patches land.
+    pub fn chat(
+        &mut self,
+        session: aifs_domain::SessionId,
+        revision: aifs_domain::RevisionId,
+        utterance: impl Into<String>,
+    ) -> Result<ChatReply, ClientError> {
+        let envelopes = self.request(Command::Chat {
+            session,
+            revision,
+            utterance: utterance.into(),
+        })?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::ChatReply { message, revision } => {
+                    return Ok(ChatReply { message, revision })
+                }
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected chat event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "chat ended without chat_reply".to_owned(),
+        ))
+    }
+
     fn expect_revision(
         &mut self,
         command: Command,
@@ -317,6 +359,16 @@ impl EngineClient {
 
     /// Sends a command and collects events until a terminal one for that id.
     pub fn request(&mut self, command: Command) -> Result<Vec<Envelope>, ClientError> {
+        self.request_with_events(command, |_| {})
+    }
+
+    /// Like [`Self::request`], invoking `on_event` for every matching envelope
+    /// (including progress) as it arrives.
+    pub fn request_with_events(
+        &mut self,
+        command: Command,
+        mut on_event: impl FnMut(&Envelope),
+    ) -> Result<Vec<Envelope>, ClientError> {
         let mutating = command_mutates_disk(&command);
         if mutating {
             self.mutating = true;
@@ -345,6 +397,7 @@ impl EngineClient {
                 self.buffered.push(envelope);
                 continue;
             }
+            on_event(&envelope);
             let terminal = envelope.is_terminal();
             collected.push(envelope);
             if terminal {

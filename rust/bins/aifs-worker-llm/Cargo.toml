@@ -1,0 +1,19 @@
+[package]
+name = "aifs-worker-llm"
+description = "Isolated language-model worker stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aifs-worker-llm"
+path = "src/main.rs"
+
+[dependencies]
+aifs-protocol = { workspace = true }
+aifs-worker-runtime = { workspace = true }
+
+[lints]
+workspace = true

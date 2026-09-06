@@ -1,0 +1,13 @@
+{
+  "destinations": {
+    "readme.txt": "Documents/readme.txt",
+    "photo.CR2": "Pictures/photo.CR2",
+    "photo.jpg": "Pictures/photo.jpg",
+    "photo.xmp": "Pictures/photo.xmp",
+    "show.mp3": "Music/Ada/Ada - Night Drive.mp3",
+    "clip.mp4": "Videos/clip.mp4",
+    "clip.srt": "Videos/clip.srt"
+  },
+  "protected_projects": ["rust-app"],
+  "sidecar_stems": ["photo", "clip"]
+}

@@ -710,8 +710,7 @@ fn assign_mp4_field(atom_type: u32, value: String, fields: &mut MediaFields) {
     }
 }
 
-/// Builds a tiny ID3v2.3 file for tests.
-#[cfg(test)]
+/// Builds a tiny ID3v2.3 file for tests and fixtures.
 pub fn write_id3v23_fixture(
     path: &Path,
     title: &str,

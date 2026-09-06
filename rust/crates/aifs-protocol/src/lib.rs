@@ -10,6 +10,7 @@
 
 pub mod codec;
 pub mod options;
+pub mod worker;
 
 pub use codec::{decode_line, encode_line, CodecError};
 pub use options::{FolderStyle, ProposalPolicy, ScanOptions};
@@ -108,6 +109,15 @@ pub enum Command {
         session: SessionId,
         /// Journal to reverse.
         journal: JournalId,
+    },
+    /// Interpret an utterance into tools and optionally patch the revision.
+    Chat {
+        /// Session.
+        session: SessionId,
+        /// Revision the assistant should edit.
+        revision: RevisionId,
+        /// User utterance. Tools may emit patches; they never return filesystem ops.
+        utterance: String,
     },
     /// Cancel an in-flight request.
     Cancel {
@@ -223,6 +233,14 @@ pub enum Event {
         /// Resulting journal.
         journal: ApplyJournal,
     },
+    /// `chat` finished. `revision` is present when tools produced a child revision.
+    ChatReply {
+        /// Assistant summary of tool results.
+        message: String,
+        /// Child revision when patches were applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<ProposalRevision>,
+    },
     /// The request was cancelled.
     Cancelled,
     /// The request failed.
@@ -274,6 +292,7 @@ impl Envelope {
                 | Event::Revision { .. }
                 | Event::Planned { .. }
                 | Event::Journal { .. }
+                | Event::ChatReply { .. }
                 | Event::Cancelled
                 | Event::Failed { .. }
                 | Event::Shutdown
@@ -349,5 +368,34 @@ mod tests {
     fn broadcast_omits_id() {
         let json = serde_json::to_string(&Envelope::broadcast(Event::Shutdown)).unwrap_or_default();
         assert_eq!(json, r#"{"type":"shutdown"}"#);
+    }
+
+    #[test]
+    fn chat_request_flattens_and_omits_empty_revision() {
+        let request = Request {
+            id: "c1".into(),
+            command: Command::Chat {
+                session: SessionId::default(),
+                revision: RevisionId::default(),
+                utterance: "validate this plan".into(),
+            },
+        };
+        let json = serde_json::to_value(&request).unwrap_or_default();
+        assert_eq!(json["type"], "chat");
+        assert_eq!(json["utterance"], "validate this plan");
+        let reply = Envelope::reply(
+            &"c1".into(),
+            Event::ChatReply {
+                message: "ok".into(),
+                revision: None,
+            },
+        );
+        let encoded = serde_json::to_string(&reply).unwrap_or_default();
+        assert!(encoded.contains("\"type\":\"chat_reply\""));
+        assert!(
+            !encoded.contains("revision"),
+            "empty revision must be omitted: {encoded}"
+        );
+        assert!(reply.is_terminal());
     }
 }

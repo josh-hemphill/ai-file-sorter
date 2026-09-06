@@ -1,205 +1,31 @@
-# Created by https://www.toptal.com/developers/gitignore/api/c++,visualstudiocode
-# Edit at https://www.toptal.com/developers/gitignore?templates=c++,visualstudiocode
+# Rust
+rust/target/
+**/*.rs.bk
 
-### C++ ###
-# Prerequisites
-*.d
+# Node / Vue / Tauri
+node_modules/
+rust/**/node_modules/
+dist/
+.output/
+rust/apps/desktop/src-tauri/gen/
+rust/apps/desktop/src-tauri/target/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-obj/
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Databases
-*.db
-
-# Environment variables
-# .env
-encryption.ini
-msstore.env
-sourceforge.env
-msstore-api/
-localize.env
-localize.env.example
-app/scripts/git-private.env
-app/scripts/git-private.env.example
-app/scripts/git-private.manifest
-app/scripts/git-private.manifest.example
-app/scripts/git-private.ps1
-app/scripts/git-private.README.md
-app/scripts/git_private_sync.py
-
-# Virtual environments
-.venv/
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-main
-obfuscate_encrypt
-bin/
-
-# Keep vendored PDFium runtimes in source control.
-!external/pdfium/**/bin/
-!external/pdfium/**/bin/pdfium.dll
-!external/pdfium/**/lib/
-!external/pdfium/**/lib/pdfium.dll.lib
-!external/pdfium/**/lib/libpdfium.so
-!external/pdfium/**/lib/libpdfium.dylib
-
-# Scripts
-reset_key_4_github.sh
-create_macos_bundle.sh
-create_dmg.sh
-
-# Packaging
-*.nsi
-*.msix
-msix/
-package_msix.ps1
-appcert-AIFileSorter.xml
-msix-layout/
-
-# References
-# includePaths.txt
-
-### VisualStudioCode ###
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
 .vscode/
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
-
-### Visual Studio
-vcpkg_installed/
-
-# Local History for Visual Studio Code
 .history/
 
-# Cache directories
-.cache/
-.ccache*/
-.codacy/
-
-# Built Visual Studio Code Extensions
-*.vsix
-
-### VisualStudioCode Patch ###
-# Ignore all local history of files
-.history
-.ionide
-
-# Temp files
-*.*~
-*~
-
-# Temp notes
-todos_md/
-
-# Mac files
-.DS_Store
-
-# Script docs + backups
-app/scripts/SCRIPTS-README.md
-app/scripts/examples/
-app/scripts/localize_ai_file_sorter.py
-app/scripts/localize_ai_file_sorter.README.md
-app/scripts/local_support_code_signer.py
-app/scripts/__pycache__/
-*.bak
-
-# Ignore llama headers (generated or from external)
-app/include/llama/*.h
-
-# R & D
-/assets/
-/plugins/
-/scripts/
-!app/scripts/
-/tools/
-/reports/
-/logo-workdir-temp/
-/tmp/
-/Testing/
-changelog/
-/models/
-/rd/
-/prototypes/
-/store/ms-store/
-/.github/workflows/ms-store-listing.yml
-/docs/**
-!/docs/
-!/docs/architecture.md
-!/docs/headless-runtime-contract.md
-!/docs/configuration-and-environment.md
-!/docs/testing.md
-!/docs/categorization-behavior.md
-!/docs/updater-contract.md
-
-# Build artifacts
-
-build*/
-dist/
-app/lib/ggml/
-# Generated precompiled llama runtime directories
-app/lib/precompiled*/
-external/libzip/build*/
-
-# Defensive CMake/Ninja outputs outside build*/ if they appear later
-CMakeCache.txt
-CMakeFiles/
-Testing/
-compile_commands.json
-.ninja_log
-.ninja_deps
-CMakeUserPresets.json
-
-# Additional IDE / OS noise
-.idea/
-Thumbs.db
-Desktop.ini
-
-# Generic Python cache outside the already-listed script paths
-__pycache__/
-.pytest_cache/
-
-# Local SQLite scratch files
+# Local scratch
 *.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+/tmp/
+.cache/
 
-# No longer relevant
-api-key-encryption/
-
-# End of https://www.toptal.com/developers/gitignore/api/c++,visualstudiocode
-
-
-#Ignore vscode AI rules
-.github/instructions/codacy.instructions.md
-
-# Rust rewrite (rust/)
-rust/target/
-rust/**/node_modules/
-rust/apps/desktop/src-tauri/gen/
+# Env
+.env
+.env.local
+encryption.ini

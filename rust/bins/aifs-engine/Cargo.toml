@@ -17,6 +17,9 @@ aifs-engine = { workspace = true }
 [dev-dependencies]
 aifs-engine-client = { workspace = true }
 aifs-protocol = { workspace = true }
+aifs-planner = { workspace = true }
+aifs-extractors = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

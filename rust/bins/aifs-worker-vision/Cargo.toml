@@ -1,0 +1,20 @@
+[package]
+name = "aifs-worker-vision"
+description = "Isolated image/vision worker stub (evidence only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aifs-worker-vision"
+path = "src/main.rs"
+
+[dependencies]
+aifs-domain = { workspace = true }
+aifs-protocol = { workspace = true }
+aifs-worker-runtime = { workspace = true }
+
+[lints]
+workspace = true
