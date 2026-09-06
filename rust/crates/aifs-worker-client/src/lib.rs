@@ -192,7 +192,14 @@ impl WorkerClient {
                     return Err(WorkerClientError::Worker { code, message });
                 }
                 WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
-                _ => {}
+                WorkerEvent::Loaded { .. }
+                | WorkerEvent::Unloaded
+                | WorkerEvent::Inferred { .. }
+                | WorkerEvent::ChatCompleted { .. } => {
+                    return Err(WorkerClientError::Unexpected(
+                        "extract ended with a non-extract event".to_owned(),
+                    ));
+                }
             }
         }
         Err(WorkerClientError::Unexpected(
@@ -214,7 +221,9 @@ impl WorkerClient {
                 backend,
                 gpu_preference: gpu_preference.into(),
                 n_gpu_layers,
-                api_key,
+                api_key: api_key
+                    .filter(|key| !key.trim().is_empty())
+                    .map(aifs_protocol::worker::RedactedString::new),
                 storage_dir: storage_dir.into(),
             },
             LOAD_TIMEOUT,
@@ -237,7 +246,15 @@ impl WorkerClient {
                 WorkerEvent::Failed { code, message } => {
                     return Err(WorkerClientError::Worker { code, message });
                 }
-                _ => {}
+                WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
+                WorkerEvent::Extracted { .. }
+                | WorkerEvent::Unloaded
+                | WorkerEvent::Inferred { .. }
+                | WorkerEvent::ChatCompleted { .. } => {
+                    return Err(WorkerClientError::Unexpected(
+                        "load ended with a non-load event".to_owned(),
+                    ));
+                }
             }
         }
         Err(WorkerClientError::Unexpected(
@@ -254,7 +271,15 @@ impl WorkerClient {
                 WorkerEvent::Failed { code, message } => {
                     return Err(WorkerClientError::Worker { code, message });
                 }
-                _ => {}
+                WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
+                WorkerEvent::Extracted { .. }
+                | WorkerEvent::Loaded { .. }
+                | WorkerEvent::Inferred { .. }
+                | WorkerEvent::ChatCompleted { .. } => {
+                    return Err(WorkerClientError::Unexpected(
+                        "unload ended with a non-unload event".to_owned(),
+                    ));
+                }
             }
         }
         Err(WorkerClientError::Unexpected(
@@ -298,7 +323,15 @@ impl WorkerClient {
                 WorkerEvent::Failed { code, message } => {
                     return Err(WorkerClientError::Worker { code, message });
                 }
-                _ => {}
+                WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
+                WorkerEvent::Extracted { .. }
+                | WorkerEvent::Loaded { .. }
+                | WorkerEvent::Unloaded
+                | WorkerEvent::ChatCompleted { .. } => {
+                    return Err(WorkerClientError::Unexpected(
+                        "infer ended with a non-infer event".to_owned(),
+                    ));
+                }
             }
         }
         Err(WorkerClientError::Unexpected(
@@ -325,7 +358,15 @@ impl WorkerClient {
                 WorkerEvent::Failed { code, message } => {
                     return Err(WorkerClientError::Worker { code, message });
                 }
-                _ => {}
+                WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
+                WorkerEvent::Extracted { .. }
+                | WorkerEvent::Loaded { .. }
+                | WorkerEvent::Unloaded
+                | WorkerEvent::Inferred { .. } => {
+                    return Err(WorkerClientError::Unexpected(
+                        "chat ended with a non-chat event".to_owned(),
+                    ));
+                }
             }
         }
         Err(WorkerClientError::Unexpected(

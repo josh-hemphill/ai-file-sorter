@@ -11,8 +11,7 @@ rust-version.workspace = true
 name = "aifs-worker-llm"
 path = "src/main.rs"
 
-# Names match later llama.cpp backends. Enabling them here does not compile
-# llama.cpp; the stub still infers without reading GGUF bytes.
+# Reserved names for later llama.cpp backends; the stub never reports an accelerator.
 [features]
 default = []
 cuda = []

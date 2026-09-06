@@ -9,7 +9,7 @@ use stub::StubHandler;
 fn main() {
     if let Err(error) = aifs_worker_runtime::run_with_handler(
         WorkerKind::Llm,
-        &["stub", "categorize", "describe", "chat"],
+        &["stub", "load", "unload", "categorize", "describe", "chat"],
         StubHandler::default(),
     ) {
         eprintln!("aifs-worker-llm: {error}");

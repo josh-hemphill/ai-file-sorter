@@ -1,15 +1,14 @@
-//! Device selection for the LLM worker. CUDA/Vulkan/Metal require a matching feature build.
+//! Device selection for the LLM worker. The stub never reports an accelerator.
 
 /// Resolves `gpu_preference` to a device id and optional fallback message.
 pub fn resolve_device(preference: &str) -> (String, Option<String>) {
     let pref = preference.trim();
     let pref = if pref.is_empty() { "auto" } else { pref };
     match pref {
-        "cpu" => ("cpu".to_owned(), None),
-        "cuda" => pick("cuda", cuda_ready(), "CUDA"),
-        "vulkan" => pick("vulkan", vulkan_ready(), "Vulkan"),
-        "metal" => pick("metal", metal_ready(), "Metal"),
-        "auto" => auto_device(),
+        "cpu" | "auto" => ("cpu".to_owned(), None),
+        "cuda" => cpu_fallback("CUDA"),
+        "vulkan" => cpu_fallback("Vulkan"),
+        "metal" => cpu_fallback("Metal"),
         other => (
             "cpu".to_owned(),
             Some(format!("unknown gpu_preference {other}; using cpu")),
@@ -17,51 +16,13 @@ pub fn resolve_device(preference: &str) -> (String, Option<String>) {
     }
 }
 
-fn auto_device() -> (String, Option<String>) {
-    if cuda_ready() {
-        return ("cuda".to_owned(), None);
-    }
-    if vulkan_ready() {
-        return ("vulkan".to_owned(), None);
-    }
-    if metal_ready() {
-        return ("metal".to_owned(), None);
-    }
-    ("cpu".to_owned(), None)
-}
-
-fn pick(name: &str, ready: bool, label: &str) -> (String, Option<String>) {
-    if ready {
-        (name.to_owned(), None)
-    } else {
-        (
-            "cpu".to_owned(),
-            Some(format!(
-                "{label} requested but this worker build cannot use it; using cpu"
-            )),
-        )
-    }
-}
-
-fn cuda_ready() -> bool {
-    cfg!(feature = "cuda") && nvidia_present()
-}
-
-fn vulkan_ready() -> bool {
-    cfg!(feature = "vulkan")
-}
-
-fn metal_ready() -> bool {
-    cfg!(feature = "metal") && cfg!(target_os = "macos")
-}
-
-fn nvidia_present() -> bool {
-    std::path::Path::new("/proc/driver/nvidia/version").is_file()
-        || std::process::Command::new("nvidia-smi")
-            .arg("-L")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+fn cpu_fallback(label: &str) -> (String, Option<String>) {
+    (
+        "cpu".to_owned(),
+        Some(format!(
+            "{label} requested but this worker build cannot use it; using cpu"
+        )),
+    )
 }
 
 #[cfg(test)]
@@ -76,10 +37,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_without_feature_falls_back() {
-        if cfg!(feature = "cuda") {
-            return;
-        }
+    fn cuda_preference_falls_back_until_llama() {
         let (device, fallback) = resolve_device("cuda");
         assert_eq!(device, "cpu");
         assert!(

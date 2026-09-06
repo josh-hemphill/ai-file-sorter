@@ -189,7 +189,9 @@ fn dispatch(
             backend,
             &gpu_preference,
             n_gpu_layers,
-            api_key,
+            api_key
+                .filter(|secret| !secret.is_blank())
+                .map(aifs_protocol::worker::RedactedString::into_inner),
             &storage_dir,
         ) {
             Ok(loaded) => WorkerEnvelope::reply(

@@ -28,6 +28,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     let mut client =
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
     assert!(client.capabilities().iter().any(|cap| cap == "stub"));
+    assert!(client.capabilities().iter().any(|cap| cap == "load"));
     let loaded = client
         .load(
             ModelBackend::Catalog {
@@ -41,6 +42,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(loaded.model, "gemma-3-4b-it");
     assert_eq!(loaded.device, "cpu");
+    assert_eq!(loaded.n_gpu_layers, 0);
     assert!(
         loaded
             .fallback

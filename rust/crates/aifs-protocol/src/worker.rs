@@ -8,7 +8,40 @@ use crate::{
 };
 use aifs_domain::{Evidence, ObservedEntry};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
+
+/// API key on the wire. `Debug` never prints the value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RedactedString(String);
+
+impl RedactedString {
+    /// Wraps a secret.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Consumes the wrapper.
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    /// True when the value is empty or whitespace.
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl fmt::Debug for RedactedString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+fn skip_blank_api_key(value: &Option<RedactedString>) -> bool {
+    value.as_ref().is_none_or(RedactedString::is_blank)
+}
 
 /// Worker wire version; currently matches [`PROTOCOL_VERSION`].
 pub const WORKER_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION;
@@ -78,8 +111,8 @@ pub enum WorkerCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         n_gpu_layers: Option<u32>,
         /// Hosted API key; never logged.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "skip_blank_api_key")]
+        api_key: Option<RedactedString>,
         /// Directory that holds catalog GGUFs.
         #[serde(default)]
         storage_dir: String,
@@ -265,20 +298,31 @@ mod tests {
 
     #[test]
     fn load_omits_empty_secrets_and_infer_is_terminal() {
-        let request = WorkerRequest {
+        let none_key = WorkerRequest {
             id: "2".into(),
-            command: WorkerCommand::Load {
-                backend: crate::ModelBackend::Catalog {
-                    catalog_id: "gemma-3-4b-it".into(),
-                },
-                gpu_preference: "auto".into(),
-                n_gpu_layers: None,
-                api_key: None,
-                storage_dir: String::new(),
-            },
+            command: load_command(None),
         };
-        let json = serde_json::to_string(&request).unwrap_or_default();
+        let json = serde_json::to_string(&none_key).unwrap_or_default();
         assert!(!json.contains("api_key"), "{json}");
+        let blank_key = WorkerRequest {
+            id: "2".into(),
+            command: load_command(Some(RedactedString::new(""))),
+        };
+        let blank_json = serde_json::to_string(&blank_key).unwrap_or_default();
+        assert!(!blank_json.contains("api_key"), "{blank_json}");
+        let secret = RedactedString::new("sk-secret");
+        let with_key = WorkerRequest {
+            id: "2".into(),
+            command: load_command(Some(secret.clone())),
+        };
+        let secret_json = serde_json::to_string(&with_key).unwrap_or_default();
+        assert!(
+            secret_json.contains("\"api_key\":\"sk-secret\""),
+            "{secret_json}"
+        );
+        let debug = format!("{with_key:?}");
+        assert!(!debug.contains("sk-secret"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
         let loaded = WorkerEnvelope::reply(
             &"2".into(),
             WorkerEvent::Loaded {
@@ -293,5 +337,17 @@ mod tests {
         let encoded = serde_json::to_string(&inferred).unwrap_or_default();
         assert!(!encoded.contains("evidence"), "{encoded}");
         assert!(inferred.is_terminal());
+    }
+
+    fn load_command(api_key: Option<RedactedString>) -> WorkerCommand {
+        WorkerCommand::Load {
+            backend: crate::ModelBackend::Catalog {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+            gpu_preference: "auto".into(),
+            n_gpu_layers: None,
+            api_key,
+            storage_dir: String::new(),
+        }
     }
 }

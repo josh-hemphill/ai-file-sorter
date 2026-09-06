@@ -7,6 +7,9 @@ use aifs_protocol::ModelBackend;
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use std::path::Path;
 
+const STUB_CONFIDENCE: f32 = 0.4;
+const CHAT_UTTERANCE_CHARS: usize = 200;
+
 /// Session-lived stub backend. Does not read GGUF bytes.
 #[derive(Default)]
 pub struct StubHandler {
@@ -36,10 +39,15 @@ impl WorkerHandler for StubHandler {
         }
         let model = model_label(&backend);
         let (device, fallback) = resolve_device(gpu_preference);
+        let n_gpu_layers = if device == "cpu" {
+            0
+        } else {
+            n_gpu_layers.unwrap_or(0)
+        };
         let loaded = LoadedModel {
             device,
             model,
-            n_gpu_layers: n_gpu_layers.unwrap_or(0),
+            n_gpu_layers,
             fallback,
         };
         self.loaded = Some(loaded.clone());
@@ -67,7 +75,7 @@ impl WorkerHandler for StubHandler {
                 EvidenceSource::LocalModel {
                     model: loaded.model.clone(),
                 },
-                Confidence::new(0.4),
+                Confidence::new(STUB_CONFIDENCE),
             )
             .with_fact(keys::CATEGORY, entry.family.default_folder())
             .with_fact(keys::DESCRIPTION, stub_description(entry))
@@ -94,7 +102,7 @@ impl WorkerHandler for StubHandler {
                 EvidenceSource::LocalModel {
                     model: loaded.model.clone(),
                 },
-                Confidence::new(0.4),
+                Confidence::new(STUB_CONFIDENCE),
             )
             .with_fact(
                 keys::DESCRIPTION,
@@ -107,7 +115,10 @@ impl WorkerHandler for StubHandler {
         let _ = self.require_loaded()?;
         Ok(format!(
             "stub chat; engine should run tools. utterance={}",
-            utterance.chars().take(200).collect::<String>()
+            utterance
+                .chars()
+                .take(CHAT_UTTERANCE_CHARS)
+                .collect::<String>()
         ))
     }
 }
