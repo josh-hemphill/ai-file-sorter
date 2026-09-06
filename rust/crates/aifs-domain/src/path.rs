@@ -31,6 +31,9 @@ pub enum RelativePathError {
     /// A segment ends with a space or dot, which Windows silently strips.
     #[error("segment '{0}' ends with a space or dot")]
     TrailingSpaceOrDot(String),
+    /// The value is not a single file name (empty, `.`/`..`, or contains a separator).
+    #[error("not a single file name: {0}")]
+    NotAFileName(String),
 }
 
 const FORBIDDEN_CHARACTERS: [char; 8] = ['<', '>', ':', '"', '\\', '|', '?', '*'];
@@ -119,11 +122,24 @@ impl RelativePath {
         RelativePath::parse(&format!("{}/{}", self.0, child))
     }
 
+    /// Parses a single file-name segment: no separators, and not empty/`.`/`..`.
+    pub fn parse_file_name(name: &str) -> Result<String, RelativePathError> {
+        if name.is_empty() {
+            return Err(RelativePathError::Empty);
+        }
+        if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+            return Err(RelativePathError::NotAFileName(name.to_owned()));
+        }
+        validate_segment(name)?;
+        Ok(name.to_owned())
+    }
+
     /// Replaces the final segment, keeping the parent folder.
     pub fn with_file_name(&self, name: &str) -> Result<RelativePath, RelativePathError> {
+        let name = Self::parse_file_name(name)?;
         match self.parent() {
-            Some(parent) => parent.join(name),
-            None => RelativePath::parse(name),
+            Some(parent) => parent.join(&name),
+            None => RelativePath::parse(&name),
         }
     }
 
@@ -291,5 +307,41 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(path.as_str(), "a/b.txt");
         assert!(RelativePath::from_root_and_path(root, Path::new("/data/other/b.txt")).is_err());
+    }
+
+    #[test]
+    fn with_file_name_rejects_multi_segment_and_dot_names() {
+        let path = RelativePath::parse("Music/track.mp3").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            path.with_file_name("2024_song.mp3")
+                .map(|p| p.as_str().to_owned())
+                .ok(),
+            Some("Music/2024_song.mp3".into())
+        );
+        assert_eq!(
+            path.with_file_name("nested/song.mp3"),
+            Err(RelativePathError::NotAFileName("nested/song.mp3".into()))
+        );
+        assert_eq!(
+            path.with_file_name("nested\\song.mp3"),
+            Err(RelativePathError::NotAFileName("nested\\song.mp3".into()))
+        );
+        assert_eq!(
+            path.with_file_name("."),
+            Err(RelativePathError::NotAFileName(".".into()))
+        );
+        assert_eq!(
+            path.with_file_name(".."),
+            Err(RelativePathError::NotAFileName("..".into()))
+        );
+        assert_eq!(path.with_file_name(""), Err(RelativePathError::Empty));
+        let top = RelativePath::parse("track.mp3").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            top.with_file_name("renamed.mp3")
+                .map(|p| p.as_str().to_owned())
+                .ok(),
+            Some("renamed.mp3".into())
+        );
+        assert!(top.with_file_name("a/b").is_err());
     }
 }
