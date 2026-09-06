@@ -1,0 +1,25 @@
+[package]
+name = "aifs-worker-document"
+description = "Isolated document/PDF worker stub (evidence only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aifs-worker-document"
+path = "src/main.rs"
+
+[dependencies]
+aifs-domain = { workspace = true }
+aifs-protocol = { workspace = true }
+aifs-worker-runtime = { workspace = true }
+
+[dev-dependencies]
+aifs-domain = { workspace = true }
+aifs-worker-client = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

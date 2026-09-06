@@ -99,6 +99,7 @@ dependencies = [
  "aifs-relationships",
  "aifs-scanner",
  "aifs-store",
+ "aifs-worker-client",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
@@ -180,6 +181,63 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "aifs-worker-client"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-protocol",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "aifs-worker-document"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-protocol",
+ "aifs-worker-client",
+ "aifs-worker-runtime",
+ "tempfile",
+]
+
+[[package]]
+name = "aifs-worker-llm"
+version = "0.1.0"
+dependencies = [
+ "aifs-protocol",
+ "aifs-worker-runtime",
+]
+
+[[package]]
+name = "aifs-worker-media"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-extractors",
+ "aifs-protocol",
+ "aifs-worker-client",
+ "aifs-worker-runtime",
+ "tempfile",
+]
+
+[[package]]
+name = "aifs-worker-runtime"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-protocol",
+]
+
+[[package]]
+name = "aifs-worker-vision"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-protocol",
+ "aifs-worker-runtime",
 ]
 
 [[package]]

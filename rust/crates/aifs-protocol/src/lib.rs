@@ -10,6 +10,7 @@
 
 pub mod codec;
 pub mod options;
+pub mod worker;
 
 pub use codec::{decode_line, encode_line, CodecError};
 pub use options::{FolderStyle, ProposalPolicy, ScanOptions};

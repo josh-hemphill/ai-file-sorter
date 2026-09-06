@@ -17,6 +17,7 @@ aifs-store = { workspace = true }
 aifs-planner = { workspace = true }
 aifs-apply = { workspace = true }
 aifs-ai-tools = { workspace = true }
+aifs-worker-client = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

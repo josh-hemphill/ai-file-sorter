@@ -3,10 +3,11 @@
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 //! `undo`, `chat`, `cancel`, and `shutdown`.
 
+mod extract;
+
 use aifs_ai_tools::{execute, interpret, MOCK_ASSISTANT_MODEL};
 use aifs_apply::{apply_plan_with_hooks, undo_journal_with_hooks, ApplyHook};
 use aifs_domain::{JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, WorkspaceSnapshot};
-use aifs_extractors::extract_into_with_progress;
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
     decode_line, encode_line, Command, Envelope, ErrorCode, Event, ProposalPolicy, Request,
@@ -23,7 +24,7 @@ pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Capabilities advertised in this slice.
 pub fn capabilities() -> Vec<String> {
-    vec![
+    let mut caps = vec![
         "scan".to_owned(),
         "media_tags".to_owned(),
         "propose".to_owned(),
@@ -31,7 +32,9 @@ pub fn capabilities() -> Vec<String> {
         "apply".to_owned(),
         "undo".to_owned(),
         "chat".to_owned(),
-    ]
+    ];
+    caps.extend(extract::worker_capabilities());
+    caps
 }
 
 /// SQLite-backed session store plus stdio request dispatch.
@@ -250,7 +253,7 @@ impl Engine {
         enrich(&mut snapshot, options.protect_projects);
 
         if options.extract_metadata {
-            extract_into_with_progress(&mut snapshot, |current, total| {
+            extract::extract_into_supervised(&mut snapshot, |current, total| {
                 if current == 1 || current % 50 == 0 || current == total {
                     emit(Envelope::reply(
                         id,
@@ -258,7 +261,7 @@ impl Engine {
                             stage: "extract".to_owned(),
                             current,
                             total: Some(total),
-                            message: "reading media tags".to_owned(),
+                            message: "reading evidence via workers".to_owned(),
                         },
                     ));
                 }
@@ -953,6 +956,50 @@ mod tests {
         assert!(
             dest.starts_with("Podcasts/"),
             "expected Podcasts destination, got {dest}"
+        );
+    }
+
+    #[test]
+    fn scan_extracts_id3_tags_in_process_when_workers_absent() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        aifs_extractors::write_id3v23_fixture(
+            &dir.path().join("show.mp3"),
+            "Night Drive",
+            "Ada",
+            "After Hours",
+            "2019",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(
+            snapshot.evidence.iter().any(|bag| {
+                bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive")
+            }),
+            "expected ID3 title in evidence, got {:?}",
+            snapshot.evidence
         );
     }
 }

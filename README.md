@@ -28,7 +28,10 @@ cargo run -p aifs-cli -- chat /path/to/folder "Move podcasts away from music"
 ```
 
 The CLI locates `aifs-engine` next to itself, via `$AIFS_ENGINE`, or under
-`target/{debug,release}/`. There is no in-process fallback.
+`target/{debug,release}/`. There is no in-process fallback. Scan will spawn
+`aifs-worker-media` (and document/vision stubs) when those binaries are on the
+same path; media-tag extraction falls back to in-process Rust readers if the
+media worker is missing.
 
 ```bash
 cd rust

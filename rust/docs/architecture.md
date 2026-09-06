@@ -12,11 +12,11 @@ bins/aifs-engine
     ├── builds and patches proposal revisions
     ├── validates revisions into operation plans
     ├── applies plans through a journal (recovery + undo)
-    └── supervises workers (future)
-          ├── local LLM worker (llama.cpp)
-          ├── media worker (ffprobe / MediaInfo)
-          ├── document worker (PDF, Office)
-          └── vision worker
+    └── supervises workers
+          ├── `aifs-worker-media` (Rust tag readers; later ffprobe)
+          ├── `aifs-worker-document` (PDF/Office stub)
+          ├── `aifs-worker-vision` (EXIF/OCR stub)
+          └── `aifs-worker-llm` (llama.cpp stub)
 ```
 
 Rules:
@@ -45,8 +45,10 @@ Rules:
 | `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
 | `aifs-apply` | Journaled local apply + undo | domain, scanner |
 | `aifs-ai-tools` | Keyword tools that emit `RevisionPatch`es (never SQL or FS ops) | domain, planner |
-| `aifs-engine` | Request dispatch (`hello` … `chat`) | all of the above |
+| `aifs-engine` | Request dispatch (`hello` … `chat`); supervises workers | domain, protocol, store, workers |
+| `aifs-worker-runtime` / `aifs-worker-client` | Worker JSONL loop and spawn/timeout client | protocol |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
+| `bins/aifs-worker-*` | Isolated extractors (evidence only; never SQLite or FS mutation) | runtime, extractors |
 | `bins/aifs-cli` (`aifs`) | `aifs scan` / `organize` / `chat` via the engine process | engine-client |
 | `apps/desktop` | Tauri 2 shell + Vue 3 workspace; JSONL to the engine | engine-client, protocol |
 
