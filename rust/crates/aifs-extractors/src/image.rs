@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{self, Cursor, Read};
 use std::path::Path;
 
+/// EXIF APP1 lives near the start of JPEG/HEIC; RAW TIFF strings farther in may be missed.
 const MAX_EXIF_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Reads capture date and camera for one observed image.
@@ -80,7 +81,22 @@ fn read_exif_fields(path: &Path) -> Option<ExifFields> {
 fn field_display(exif: &exif::Exif, tag: exif::Tag) -> Option<String> {
     let field = exif.get_field(tag, exif::In::PRIMARY)?;
     let value = field.display_value().to_string();
-    let trimmed = value.trim().trim_matches('"').trim();
+    sanitize_exif(value.trim().trim_matches('"'))
+}
+
+fn sanitize_exif(value: &str) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch == '\0' {
+            continue;
+        }
+        if ch.is_control() {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim();
     if trimmed.is_empty() {
         None
     } else {
@@ -93,12 +109,13 @@ fn normalize_captured_on(value: &str) -> Option<String> {
     if digits.len() < 8 {
         return None;
     }
-    Some(format!(
-        "{}-{}-{}",
-        &digits[0..4],
-        &digits[4..6],
-        &digits[6..8]
-    ))
+    let year: u32 = digits[0..4].parse().ok()?;
+    let month: u32 = digits[4..6].parse().ok()?;
+    let day: u32 = digits[6..8].parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
 }
 
 fn gps_coord(exif: &exif::Exif, tag: exif::Tag, ref_tag: exif::Tag) -> Option<String> {

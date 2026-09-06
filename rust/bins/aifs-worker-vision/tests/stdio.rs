@@ -37,10 +37,6 @@ fn vision_worker_extracts_exif() {
         .unwrap_or_else(|| panic!("exif evidence"));
     assert_eq!(evidence.fact(keys::IMAGE_CAPTURED_ON), Some("2021-07-15"));
     assert_eq!(evidence.fact(keys::IMAGE_CAMERA), Some("Canon EOS R5"));
-    assert!(
-        !evidence
-            .fact(keys::DESCRIPTION)
-            .is_some_and(|text| text.contains("stub"))
-    );
+    assert_eq!(evidence.fact(keys::DESCRIPTION), None);
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
 }
