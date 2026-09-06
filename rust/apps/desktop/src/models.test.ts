@@ -36,5 +36,7 @@ test("withSlotKind clears foreign fields", () => {
   );
   assert.equal(next.kind, "catalog");
   assert.equal(next.model, undefined);
+  assert.equal(next.api_key, "");
+  assert.equal(next.api_key_set, false);
   assert.deepEqual(slotBackend(next), { kind: "catalog", catalog_id: "gemma-3-4b-it" });
 });

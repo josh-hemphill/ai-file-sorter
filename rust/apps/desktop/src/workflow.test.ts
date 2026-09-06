@@ -7,6 +7,7 @@ import {
   currentWorkflowStep,
   issueLabel,
   itemRows,
+  planAlreadyApplied,
   planCounts,
   previewRows,
   rememberRoot,
@@ -149,6 +150,30 @@ test("currentWorkflowStep follows scan → review → resolve → preview → ap
       journal: { id: "j", status: "completed", dry_run: false, entries: [] },
     }),
     "review",
+  );
+});
+
+test("planAlreadyApplied requires a matching mutating journal", () => {
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p", status: "completed", dry_run: false, entries: [] },
+      "p",
+    ),
+    true,
+  );
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p", status: "completed", dry_run: true, entries: [] },
+      "p",
+    ),
+    false,
+  );
+  assert.equal(
+    planAlreadyApplied(
+      { id: "j", plan: "p1", status: "completed", dry_run: false, entries: [] },
+      "p2",
+    ),
+    false,
   );
 });
 

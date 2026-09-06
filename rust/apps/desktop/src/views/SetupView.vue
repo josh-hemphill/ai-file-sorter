@@ -17,6 +17,7 @@ const inventory = ref<ModelInventory>(defaultInventory());
 const error = ref<string | null>(null);
 const saved = ref(false);
 const busy = ref(false);
+const loaded = ref(false);
 
 function metaFor(id: string) {
   return MODEL_SLOT_META.find((slot) => slot.id === id) ?? {
@@ -39,6 +40,7 @@ async function load() {
   try {
     await connectEngine();
     inventory.value = await getModels();
+    loaded.value = true;
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -77,7 +79,7 @@ onMounted(() => {
         </p>
       </div>
       <div class="row">
-        <button type="button" :disabled="busy" @click="save">Save</button>
+        <button type="button" :disabled="busy || !loaded" @click="save">Save</button>
         <button type="button" class="primary" @click="emit('back')">Back to workspace</button>
       </div>
     </header>

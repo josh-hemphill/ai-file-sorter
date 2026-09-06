@@ -63,17 +63,16 @@ export function slotBackend(slot: ModelSlot): ModelBackend {
 
 /** Applies a backend kind, clearing fields that belong to other kinds. */
 export function withSlotKind(slot: ModelSlot, kind: ModelBackend["kind"]): ModelSlot {
+  const hosted = kind === "open_ai" || kind === "gemini" || kind === "custom_endpoint";
   return {
     id: slot.id,
     kind,
-    api_key_set: slot.api_key_set,
+    api_key: hosted ? slot.api_key : "",
+    api_key_set: hosted ? slot.api_key_set : false,
     catalog_id: kind === "catalog" ? (slot.catalog_id ?? BUILTIN_CATALOG[0].id) : undefined,
     path: kind === "local_gguf" ? (slot.path ?? "") : undefined,
     mmproj: kind === "local_gguf" ? slot.mmproj : undefined,
-    model:
-      kind === "open_ai" || kind === "gemini" || kind === "custom_endpoint"
-        ? (slot.model ?? "")
-        : undefined,
+    model: hosted ? (slot.model ?? "") : undefined,
     base_url: kind === "custom_endpoint" ? (slot.base_url ?? "") : undefined,
   };
 }

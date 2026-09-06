@@ -164,9 +164,14 @@ fn folder_for(
     if folder.is_empty() {
         return None;
     }
-    RelativePath::parse(&folder).ok().or_else(|| {
-        RelativePath::parse(entry.family.default_folder()).ok()
-    })
+    match RelativePath::parse(&folder) {
+        Ok(path) => Some(path),
+        Err(_) => folder
+            .split('/')
+            .next()
+            .filter(|top| !top.is_empty())
+            .and_then(|top| RelativePath::parse(top).ok()),
+    }
 }
 
 fn apply_category_whitelist(
@@ -919,6 +924,36 @@ mod tests {
             .unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "clip.mp3");
         assert_eq!(placement.origin, SuggestionOrigin::Unchanged);
+    }
+
+    #[test]
+    fn invalid_subfolder_does_not_escape_whitelist() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("show.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(id, EvidenceSource::MediaTags, Confidence::CERTAIN)
+                .with_fact(keys::MEDIA_TITLE, "Night")
+                .with_fact(keys::MEDIA_ARTIST, "AUX")
+                .with_fact(keys::MEDIA_GENRE, "Podcast"),
+        );
+        snapshot.entries.push(entry);
+        let mut policy = ProposalPolicy::default();
+        policy.style = FolderStyle::Refined;
+        policy.use_subfolders = true;
+        policy.rename_media = false;
+        policy.whitelist.main = vec!["Podcasts".into()];
+        let revision = propose(&snapshot, &policy);
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert!(
+            placement.destination.as_str().starts_with("Podcasts/"),
+            "must stay under the allowed top, got {}",
+            placement.destination.as_str()
+        );
+        assert!(
+            !placement.destination.as_str().starts_with("Music/"),
+            "must not fall back to the family default outside the whitelist"
+        );
     }
 
     #[test]

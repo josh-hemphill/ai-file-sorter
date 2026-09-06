@@ -148,18 +148,29 @@ impl ModelInventory {
         let mut next = self;
         next.slots = Self::normalized_slots(&next.slots);
         for slot in &mut next.slots {
-            let incoming = slot.api_key.as_ref().is_some_and(|key| !key.trim().is_empty());
-            if incoming {
+            if !backend_holds_secrets(&slot.backend) {
+                slot.api_key = None;
+                slot.api_key_set = false;
                 continue;
             }
-            if let Some(stored) = previous.slots.iter().find(|candidate| candidate.id == slot.id)
-            {
-                slot.api_key = stored.api_key.clone();
-                slot.api_key_set = stored.api_key_set
-                    || stored
-                        .api_key
-                        .as_ref()
-                        .is_some_and(|key| !key.is_empty());
+            match slot.api_key.as_deref().map(str::trim) {
+                None => {
+                    if let Some(stored) =
+                        previous.slots.iter().find(|candidate| candidate.id == slot.id)
+                    {
+                        slot.api_key = stored.api_key.clone();
+                        slot.api_key_set = stored.api_key_set
+                            || stored
+                                .api_key
+                                .as_ref()
+                                .is_some_and(|key| !key.is_empty());
+                    }
+                }
+                Some("") => {
+                    slot.api_key = None;
+                    slot.api_key_set = false;
+                }
+                Some(_) => {}
             }
         }
         next
@@ -177,6 +188,13 @@ impl ModelInventory {
             })
             .collect()
     }
+}
+
+fn backend_holds_secrets(backend: &ModelBackend) -> bool {
+    matches!(
+        backend,
+        ModelBackend::OpenAi { .. } | ModelBackend::Gemini { .. } | ModelBackend::CustomEndpoint { .. }
+    )
 }
 
 /// Checks a backend without contacting model vendors.
@@ -273,5 +291,41 @@ mod tests {
         };
         let merged = incoming.merge_secrets(&previous);
         assert_eq!(merged.slots[0].api_key.as_deref(), Some("sk-keep"));
+    }
+
+    #[test]
+    fn put_clears_key_when_blank_and_drops_secrets_on_off_slots() {
+        let mut previous = ModelInventory::default();
+        previous.slots[0].api_key = Some("sk-keep".into());
+        previous.slots[0].backend = ModelBackend::OpenAi {
+            model: "gpt-4.1-mini".into(),
+        };
+        let cleared = ModelInventory {
+            slots: vec![ModelSlot {
+                id: "categorize".into(),
+                backend: ModelBackend::OpenAi {
+                    model: "gpt-4.1-mini".into(),
+                },
+                api_key: Some(String::new()),
+                api_key_set: true,
+            }],
+            ..ModelInventory::default()
+        };
+        let merged = cleared.merge_secrets(&previous);
+        assert!(merged.slots[0].api_key.is_none());
+        assert!(!merged.slots[0].api_key_set);
+
+        let off = ModelInventory {
+            slots: vec![ModelSlot {
+                id: "categorize".into(),
+                backend: ModelBackend::Off,
+                api_key: None,
+                api_key_set: true,
+            }],
+            ..ModelInventory::default()
+        };
+        let merged = off.merge_secrets(&previous);
+        assert!(merged.slots[0].api_key.is_none());
+        assert!(!merged.slots[0].api_key_set);
     }
 }

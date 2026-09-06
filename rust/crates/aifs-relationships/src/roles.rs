@@ -42,7 +42,13 @@ pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
             .filter(|entry| entry.kind == EntryKind::File && entry.path.starts_with(&root))
             .cloned()
             .collect();
-        let Some(kind) = role_for(&name, &root, &files) else {
+        let session_root_name = snapshot
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let Some(kind) = role_for(&name, &root, &files, &session_root_name) else {
             continue;
         };
         let reason = role_reason(kind, &root);
@@ -77,6 +83,7 @@ fn role_for(
     name: &str,
     root: &RelativePath,
     files: &[aifs_domain::ObservedEntry],
+    session_root_name: &str,
 ) -> Option<DirectoryRoleKind> {
     if BROAD_NAMES.contains(&name) {
         return Some(DirectoryRoleKind::BroadInbox);
@@ -84,7 +91,10 @@ fn role_for(
     if ARCHIVE_NAMES.contains(&name) {
         return Some(DirectoryRoleKind::WeakArchive);
     }
-    if is_year_name(name) && !path_has_broad_segment(root) {
+    if is_year_name(name)
+        && !path_has_broad_segment(root)
+        && !BROAD_NAMES.contains(&session_root_name)
+    {
         return Some(DirectoryRoleKind::WeakArchive);
     }
     if LIBRARY_NAMES.contains(&name) {
@@ -230,6 +240,22 @@ mod tests {
                 role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "Downloads/2024"
             }),
             "dated folders under a dump must stay organisable"
+        );
+    }
+
+    #[test]
+    fn year_folder_at_a_downloads_scan_root_is_not_an_archive() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
+        snapshot.entries = vec![
+            dir("2024"),
+            file("2024/notes.txt", FileFamily::Document),
+        ];
+        classify_directories(&mut snapshot);
+        assert!(
+            !snapshot.directory_roles.iter().any(|role| {
+                role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "2024"
+            }),
+            "year folders at a Downloads scan root must stay organisable"
         );
     }
 }

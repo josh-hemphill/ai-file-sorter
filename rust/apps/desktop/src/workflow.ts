@@ -108,6 +108,21 @@ export function journalBelongsToPlan(
   return Boolean(journal?.plan && planId && journal.plan === planId);
 }
 
+/** True when this plan already ran a mutating apply. */
+export function planAlreadyApplied(
+  journal: ApplyJournal | null,
+  planId: string | undefined,
+): boolean {
+  return (
+    journalBelongsToPlan(journal, planId) &&
+    Boolean(
+      journal &&
+        !journal.dry_run &&
+        (journal.status === "completed" || journal.status === "failed"),
+    )
+  );
+}
+
 /** Human label for a bundle constraint (engine tagged JSON, not the raw object). */
 export function constraintLabel(constraint: BundleConstraint | string): string {
   if (typeof constraint === "string") {

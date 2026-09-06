@@ -50,6 +50,7 @@ import {
   roleKindLabel,
   skippedReasonLabel,
   journalBelongsToPlan,
+  planAlreadyApplied,
 } from "../workflow";
 
 const STREAM_CAP = 1000;
@@ -138,6 +139,9 @@ const journalForPlan = computed(() =>
   (journalBelongsToPlan(journal.value, plan.value?.id) || !plan.value)
     ? journal.value
     : null,
+);
+const applyLocked = computed(() =>
+  planAlreadyApplied(journal.value, plan.value?.id),
 );
 const confirmSummary = computed(() =>
   applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
@@ -684,13 +688,13 @@ function familyOf(entry: ObservedEntry): string {
           <button type="button" :disabled="busy || !revision" @click="validatePlan">
             Validate
           </button>
-          <button type="button" :disabled="busy || !plan" @click="runApply(true)">
+          <button type="button" :disabled="busy || !plan || applyLocked" @click="runApply(true)">
             Preview
           </button>
           <button
             type="button"
             class="primary"
-            :disabled="busy || !plan || errorIssues.length > 0"
+            :disabled="busy || !plan || errorIssues.length > 0 || applyLocked"
             @click="requestApply"
           >
             Apply

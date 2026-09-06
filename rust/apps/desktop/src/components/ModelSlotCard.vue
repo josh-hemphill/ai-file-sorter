@@ -126,7 +126,7 @@ async function probe() {
         type="password"
         autocomplete="off"
         :placeholder="assignment.api_key_set ? 'Key stored in the engine' : 'Optional'"
-        @change="update({ api_key: apiKey || undefined })"
+        @change="update({ api_key: apiKey })"
       />
     </label>
     <div class="row">

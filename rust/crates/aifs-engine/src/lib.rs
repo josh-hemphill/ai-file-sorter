@@ -310,8 +310,12 @@ impl Engine {
 
         let session = session.unwrap_or_default();
         if let Err(error) = emit_model_runtime_notices(&self.store, id, emit) {
-            emit(store_failed(id, error));
-            return;
+            emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                format!("Could not read settings or models ({error}); scan continues."),
+            );
         }
         emit(Envelope::reply(
             id,
@@ -849,17 +853,37 @@ fn emit_model_runtime_notices(
 }
 
 fn default_store_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| {
-                let mut path = std::path::PathBuf::from(home);
-                path.push(".local");
-                path.push("share");
-                path
-            })
-        })?;
-    Some(base.join("aifs").join("engine.sqlite"))
+    durable_store_base(
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )
+    .map(|base| base.join("aifs").join("engine.sqlite"))
+}
+
+fn durable_store_base(
+    xdg_data_home: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    user_profile: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    if let Some(xdg) = xdg_data_home {
+        return Some(std::path::PathBuf::from(xdg));
+    }
+    if let Some(local) = local_app_data {
+        return Some(std::path::PathBuf::from(local));
+    }
+    let home = home.or(user_profile)?;
+    let mut path = std::path::PathBuf::from(home);
+    if cfg!(windows) {
+        path.push("AppData");
+        path.push("Local");
+    } else {
+        path.push(".local");
+        path.push("share");
+    }
+    Some(path)
 }
 
 fn emit_progress(
@@ -1060,10 +1084,9 @@ pub fn run_stdio() -> io::Result<()> {
         })?
     } else {
         match default_store_path() {
-            Some(path) => Engine::with_store_path(&path).unwrap_or_else(|error| {
-                eprintln!("aifs-engine: opening {path:?} failed ({error}); using memory store");
-                Engine::new()
-            }),
+            Some(path) => Engine::with_store_path(&path).map_err(|error| {
+                io::Error::other(format!("opening {}: {error}", path.display()))
+            })?,
             None => Engine::new(),
         }
     };
@@ -1607,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_settings_json_fails_scan() {
+    fn corrupt_settings_json_does_not_abort_scan() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
         let db = dir.path().join("engine.sqlite");
@@ -1636,8 +1659,24 @@ mod tests {
                 session: None,
             },
         })) {
-            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
+            Event::ScanCompleted { snapshot } => {
+                assert!(snapshot
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path.as_str() == "note.txt"));
+            }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn durable_store_base_uses_windows_app_data_and_unix_home() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            durable_store_base(None, Some(OsStr::new("/win/local")), Some(OsStr::new("/home")), None),
+            Some(std::path::PathBuf::from("/win/local"))
+        );
+        let from_profile = durable_store_base(None, None, None, Some(OsStr::new("/Users/me")));
+        assert!(from_profile.is_some(), "USERPROFILE must yield a store base");
     }
 }
