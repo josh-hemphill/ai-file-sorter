@@ -389,6 +389,17 @@ fn hidden_attribute(_metadata: &Metadata) -> bool {
     false
 }
 
+/// Recaptures identity so apply/undo can detect that a file changed underneath.
+pub fn read_identity(path: &Path, fingerprint_prefix_bytes: u64) -> io::Result<FileIdentity> {
+    let metadata = fs::symlink_metadata(path)?;
+    let kind = if metadata.is_dir() {
+        EntryKind::Directory
+    } else {
+        EntryKind::File
+    };
+    Ok(file_identity(path, &metadata, kind, fingerprint_prefix_bytes).0)
+}
+
 fn file_identity(
     path: &Path,
     metadata: &Metadata,

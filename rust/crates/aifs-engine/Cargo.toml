@@ -13,6 +13,9 @@ aifs-protocol = { workspace = true }
 aifs-scanner = { workspace = true }
 aifs-relationships = { workspace = true }
 aifs-extractors = { workspace = true }
+aifs-store = { workspace = true }
+aifs-planner = { workspace = true }
+aifs-apply = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

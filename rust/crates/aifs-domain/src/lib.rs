@@ -30,7 +30,8 @@ pub use journal::{ApplyJournal, JournalEntry, JournalState, JournalStatus};
 pub use path::{RelativePath, RelativePathError};
 pub use plan::{Operation, OperationPlan, PlanIssue, PlanIssueSeverity, PlannedOperation};
 pub use proposal::{
-    Placement, ProposalRevision, ReviewState, RevisionAuthor, RevisionPatch, SuggestionOrigin,
+    PatchError, Placement, ProposalRevision, ReviewState, RevisionAuthor, RevisionPatch,
+    SuggestionOrigin,
 };
 pub use relationship::{
     Bundle, BundleConstraint, BundleKind, Confidence, Relationship, RelationshipKind,

@@ -1,7 +1,8 @@
 //! Command-line interface that talks to `aifs-engine` over stdio.
 
+use aifs_domain::{RevisionAuthor, RevisionPatch};
 use aifs_engine_client::{discover_engine_binary, EngineClient};
-use aifs_protocol::ScanOptions;
+use aifs_protocol::{ProposalPolicy, ScanOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -39,6 +40,20 @@ enum Commands {
         /// Skip media-tag extraction.
         #[arg(long)]
         no_extract: bool,
+    },
+    /// Scan, propose, accept, plan, and apply (default: dry run).
+    Organize {
+        /// Folder to organise.
+        folder: PathBuf,
+        /// Dump the plan/journal as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Actually move files. Default is a dry run.
+        #[arg(long)]
+        apply: bool,
+        /// Include hidden files.
+        #[arg(long)]
+        include_hidden: bool,
     },
 }
 
@@ -94,6 +109,54 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         project.name, project.rule_id, project.root
                     );
                 }
+            }
+            let _ = client.shutdown();
+            Ok(())
+        }
+        Commands::Organize {
+            folder,
+            json,
+            apply,
+            include_hidden,
+        } => {
+            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let snapshot = client.scan(
+                &folder,
+                ScanOptions {
+                    include_hidden,
+                    ..ScanOptions::default()
+                },
+                None,
+            )?;
+            let revision = client.propose(snapshot.session, ProposalPolicy::default())?;
+            let assets: Vec<_> = revision.placements.keys().copied().collect();
+            let accepted = client.patch(
+                snapshot.session,
+                revision.id,
+                RevisionAuthor::User,
+                "accept all",
+                vec![RevisionPatch::Accept { assets }],
+            )?;
+            let (plan, issues) = client.plan(snapshot.session, accepted.id)?;
+            if issues
+                .iter()
+                .any(|issue| matches!(issue.severity, aifs_domain::PlanIssueSeverity::Error))
+            {
+                return Err(format!("plan rejected: {issues:?}").into());
+            }
+            let journal = client.apply(snapshot.session, plan.id, !apply)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&journal)?);
+            } else {
+                println!(
+                    "{} {} ({} moves, {} done, dry_run={})",
+                    if apply { "Applied" } else { "Previewed" },
+                    folder.display(),
+                    plan.move_count(),
+                    journal.done_count(),
+                    journal.dry_run
+                );
+                println!("  session {}  journal {}", snapshot.session, journal.id);
             }
             let _ = client.shutdown();
             Ok(())

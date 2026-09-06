@@ -12,7 +12,7 @@ pub mod codec;
 pub mod options;
 
 pub use codec::{decode_line, encode_line, CodecError};
-pub use options::{ProposalPolicy, ScanOptions};
+pub use options::{FolderStyle, ProposalPolicy, ScanOptions};
 
 use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, PlanIssue, ProposalRevision, RevisionAuthor,

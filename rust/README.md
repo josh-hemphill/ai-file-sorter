@@ -31,7 +31,10 @@ rust/
     aifs-scanner/         root walker, identity, project skip
     aifs-relationships/   sidecar / series / archive / project bundles
     aifs-extractors/      bounded media-tag readers
-    aifs-engine/          session store + hello/scan dispatch
+    aifs-store/            SQLite workspace store
+    aifs-planner/          heuristic propose + plan validation
+    aifs-apply/            journaled apply + undo
+    aifs-engine/           session store + command dispatch
     aifs-engine-client/   spawn + JSONL client
   bins/
     aifs-engine/          stdio JSONL server
@@ -44,7 +47,8 @@ commands, and `apps/desktop` (Tauri 2 + Vue 3).
 
 ```bash
 cd rust
-cargo run -p aifs-cli -- scan /path/to/folder
+cargo run -p aifs-cli -- organize /path/to/folder
+cargo run -p aifs-cli -- organize /path/to/folder --apply
 ```
 
 The CLI locates `aifs-engine` next to itself, via `$AIFS_ENGINE`, or under
