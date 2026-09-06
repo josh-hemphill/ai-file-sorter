@@ -78,6 +78,8 @@ pub enum BundleKind {
     Series,
     /// Split archive parts.
     ArchiveParts,
+    /// Directory that should move or stay as a layout unit.
+    Folder,
     /// User-defined group.
     Manual,
 }

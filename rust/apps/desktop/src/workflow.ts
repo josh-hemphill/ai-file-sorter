@@ -1,7 +1,9 @@
 import type {
   ApplyJournal,
+  Bundle,
   BundleConstraint,
   CenterView,
+  ObservedEntry,
   OperationPlan,
   PlanIssue,
   ProposalRevision,
@@ -130,4 +132,65 @@ export function acceptedCount(revision: ProposalRevision | null): number {
   }
   return Object.values(revision.placements).filter((placement) => placement.review === "accepted")
     .length;
+}
+
+export type ItemRow =
+  | { type: "file"; entry: ObservedEntry }
+  | { type: "group"; bundle: Bundle; members: ObservedEntry[] };
+
+function isHardConstraint(constraint: Bundle["constraint"]): boolean {
+  if (typeof constraint === "string") {
+    return constraint !== "soft";
+  }
+  return constraint.kind !== "soft";
+}
+
+/** Groups hard-bundle members into single review rows. */
+export function itemRows(
+  files: ObservedEntry[],
+  snapshot: WorkspaceSnapshot | null,
+): ItemRow[] {
+  if (!snapshot) {
+    return files.map((entry) => ({ type: "file", entry }));
+  }
+  const used = new Set<string>();
+  const rows: ItemRow[] = [];
+  for (const entry of files) {
+    if (used.has(entry.id)) {
+      continue;
+    }
+    const bundle = snapshot.bundles.find(
+      (candidate) =>
+        isHardConstraint(candidate.constraint) &&
+        candidate.members.includes(entry.id) &&
+        candidate.members.length > 1,
+    );
+    if (!bundle) {
+      used.add(entry.id);
+      rows.push({ type: "file", entry });
+      continue;
+    }
+    const members = files.filter((file) => bundle.members.includes(file.id));
+    for (const member of members) {
+      used.add(member.id);
+    }
+    rows.push({ type: "group", bundle, members });
+  }
+  return rows;
+}
+
+/** Human label for a directory role chip. */
+export function roleKindLabel(kind: string): string {
+  switch (kind) {
+    case "library":
+      return "Library";
+    case "broad_inbox":
+      return "Broad folder";
+    case "weak_archive":
+      return "Archive context";
+    case "mixed":
+      return "Mixed";
+    default:
+      return kind.replace(/_/g, " ");
+  }
 }

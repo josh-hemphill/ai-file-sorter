@@ -1,0 +1,11 @@
+{
+  "destinations": {
+    "readme.txt": "Documents/readme.txt",
+    "photo.jpg": "Pictures/photo.jpg",
+    "photo.xmp": "Pictures/photo.xmp",
+    "Music/Ada/night.mp3": "Music/Ada/night.mp3",
+    "old/2019/client-a/invoice.txt": "old/2019/client-a/invoice.txt"
+  },
+  "protected_projects": ["rust-app"],
+  "sidecar_stems": ["photo"]
+}

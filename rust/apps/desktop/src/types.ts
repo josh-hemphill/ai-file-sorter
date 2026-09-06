@@ -51,6 +51,12 @@ export interface ProjectMatch {
   reason: string;
 }
 
+export interface DirectoryRoleMatch {
+  root: string;
+  kind: "library" | "broad_inbox" | "weak_archive" | "mixed";
+  reason: string;
+}
+
 export interface WorkspaceSnapshot {
   session: Id;
   root: string;
@@ -60,6 +66,7 @@ export interface WorkspaceSnapshot {
   bundles: Bundle[];
   relationships: Relationship[];
   evidence: Evidence[];
+  directory_roles?: DirectoryRoleMatch[];
 }
 
 export interface Placement {

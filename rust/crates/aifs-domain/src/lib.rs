@@ -36,5 +36,8 @@ pub use proposal::{
 pub use relationship::{
     Bundle, BundleConstraint, BundleKind, Confidence, Relationship, RelationshipKind,
 };
-pub use snapshot::{ProjectMatch, ProjectStrength, SkipReason, SkippedEntry, WorkspaceSnapshot};
+pub use snapshot::{
+    DirectoryRoleKind, DirectoryRoleMatch, ProjectMatch, ProjectStrength, SkipReason, SkippedEntry,
+    WorkspaceSnapshot,
+};
 pub use time::Timestamp;

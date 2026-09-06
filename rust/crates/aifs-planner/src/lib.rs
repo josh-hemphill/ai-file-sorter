@@ -74,6 +74,18 @@ fn destination_for(
             Some("protected project member".to_owned()),
         );
     }
+    if let Some(role) = covering_role(snapshot, &entry.path) {
+        if matches!(
+            role.kind,
+            aifs_domain::DirectoryRoleKind::Library | aifs_domain::DirectoryRoleKind::WeakArchive
+        ) {
+            return (
+                entry.path.clone(),
+                SuggestionOrigin::Unchanged,
+                Some(role.reason.clone()),
+            );
+        }
+    }
 
     let folder = folder_for(snapshot, entry, policy);
     let file_name = file_name_for(snapshot, entry, policy);
@@ -92,6 +104,17 @@ fn destination_for(
         None
     };
     (destination, origin, rationale)
+}
+
+fn covering_role<'a>(
+    snapshot: &'a WorkspaceSnapshot,
+    path: &RelativePath,
+) -> Option<&'a aifs_domain::DirectoryRoleMatch> {
+    snapshot
+        .directory_roles
+        .iter()
+        .filter(|role| path.starts_with(&role.root))
+        .max_by_key(|role| role.root.as_str().len())
 }
 
 fn folder_for(

@@ -4,6 +4,7 @@ import {
   acceptedCount,
   constraintLabel,
   currentWorkflowStep,
+  itemRows,
   rememberRoot,
   skippedReasonLabel,
 } from "./workflow.ts";
@@ -148,4 +149,49 @@ test("acceptedCount ignores proposed placements", () => {
     },
   };
   assert.equal(acceptedCount(revision), 1);
+});
+
+test("itemRows collapses hard bundles", () => {
+  const photo = {
+    id: "1",
+    path: "photo.jpg",
+    kind: "file" as const,
+    family: "image",
+    identity: { size: 1 },
+  };
+  const xmp = {
+    id: "2",
+    path: "photo.xmp",
+    kind: "file" as const,
+    family: "sidecar",
+    identity: { size: 1 },
+  };
+  const note = {
+    id: "3",
+    path: "readme.txt",
+    kind: "file" as const,
+    family: "document",
+    identity: { size: 1 },
+  };
+  const rows = itemRows([photo, xmp, note], {
+    session: "s",
+    root: "/tmp",
+    entries: [photo, xmp, note],
+    skipped: [],
+    projects: [],
+    bundles: [
+      {
+        id: "b",
+        kind: "sidecar_group",
+        constraint: { kind: "move_together" },
+        members: ["1", "2"],
+        label: "photo",
+      },
+    ],
+    relationships: [],
+    evidence: [],
+  });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]?.type, "group");
+  assert.equal(rows[1]?.type, "file");
 });
