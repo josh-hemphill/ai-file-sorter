@@ -80,6 +80,11 @@ line). Workers never open SQLite and never mutate user files.
 |--------|---------|----------------|
 | `hello` | `worker`, `protocol_version` | `ready` |
 | `extract` | `root`, `entry` | `extracted { evidence? }` |
+| `load` | `backend`, `gpu_preference`, optional `n_gpu_layers`, optional `api_key`, `storage_dir` | `loaded { device, model, n_gpu_layers, fallback? }` |
+| `unload` | — | `unloaded` |
+| `categorize` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
+| `describe` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
+| `chat` | `utterance`, `context` | `chat_completed { message }` |
 | `shutdown` | — | `shutdown` |
 
 Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
@@ -87,5 +92,7 @@ Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 binary next to the engine, then `target/{debug,release}/`. Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
 missing. Document and vision workers are stubs that return low-confidence
-detector evidence.
+detector evidence. The LLM worker accepts `load` / `categorize` / `describe` /
+`chat` and currently returns stub `local_model` evidence; llama.cpp is not linked
+yet. `api_key` on `load` is never written to logs.
 

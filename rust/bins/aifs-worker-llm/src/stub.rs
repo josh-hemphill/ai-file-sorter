@@ -1,0 +1,140 @@
+//! Canned infer used until llama.cpp or a hosted backend is loaded.
+
+use crate::device::resolve_device;
+use aifs_domain::evidence::keys;
+use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
+use aifs_protocol::ModelBackend;
+use aifs_worker_runtime::{LoadedModel, WorkerHandler};
+use std::path::Path;
+
+/// Session-lived stub backend. Does not read GGUF bytes.
+#[derive(Default)]
+pub struct StubHandler {
+    loaded: Option<LoadedModel>,
+}
+
+impl WorkerHandler for StubHandler {
+    fn extract(
+        &mut self,
+        _root: &Path,
+        _entry: &ObservedEntry,
+    ) -> Result<Option<Evidence>, String> {
+        Err("llm worker does not extract files".to_owned())
+    }
+
+    fn load(
+        &mut self,
+        backend: ModelBackend,
+        gpu_preference: &str,
+        n_gpu_layers: Option<u32>,
+        api_key: Option<String>,
+        _storage_dir: &str,
+    ) -> Result<LoadedModel, String> {
+        let _ = api_key;
+        if matches!(backend, ModelBackend::Off) {
+            return Err("cannot load an off slot".to_owned());
+        }
+        let model = model_label(&backend);
+        let (device, fallback) = resolve_device(gpu_preference);
+        let loaded = LoadedModel {
+            device,
+            model,
+            n_gpu_layers: n_gpu_layers.unwrap_or(0),
+            fallback,
+        };
+        self.loaded = Some(loaded.clone());
+        Ok(loaded)
+    }
+
+    fn unload(&mut self) -> Result<(), String> {
+        self.loaded = None;
+        Ok(())
+    }
+
+    fn categorize(
+        &mut self,
+        _root: &Path,
+        entry: &ObservedEntry,
+        _evidence: &[Evidence],
+    ) -> Result<Option<Evidence>, String> {
+        let loaded = self.require_loaded()?;
+        if entry.kind != EntryKind::File {
+            return Ok(None);
+        }
+        Ok(Some(
+            Evidence::new(
+                entry.id,
+                EvidenceSource::LocalModel {
+                    model: loaded.model.clone(),
+                },
+                Confidence::new(0.4),
+            )
+            .with_fact(keys::CATEGORY, entry.family.default_folder())
+            .with_fact(keys::DESCRIPTION, stub_description(entry))
+            .with_fact(keys::SUGGESTED_NAME, entry.path.file_name()),
+        ))
+    }
+
+    fn describe(
+        &mut self,
+        _root: &Path,
+        entry: &ObservedEntry,
+        _evidence: &[Evidence],
+    ) -> Result<Option<Evidence>, String> {
+        let loaded = self.require_loaded()?;
+        if entry.kind != EntryKind::File {
+            return Ok(None);
+        }
+        if !matches!(entry.family, FileFamily::Image | FileFamily::RawImage) {
+            return Ok(None);
+        }
+        Ok(Some(
+            Evidence::new(
+                entry.id,
+                EvidenceSource::LocalModel {
+                    model: loaded.model.clone(),
+                },
+                Confidence::new(0.4),
+            )
+            .with_fact(
+                keys::DESCRIPTION,
+                format!("stub vision description of {}", entry.path.as_str()),
+            ),
+        ))
+    }
+
+    fn chat(&mut self, utterance: &str, _context: &str) -> Result<String, String> {
+        let _ = self.require_loaded()?;
+        Ok(format!(
+            "stub chat; engine should run tools. utterance={}",
+            utterance.chars().take(200).collect::<String>()
+        ))
+    }
+}
+
+impl StubHandler {
+    fn require_loaded(&self) -> Result<&LoadedModel, String> {
+        self.loaded
+            .as_ref()
+            .ok_or_else(|| "load a model before infer".to_owned())
+    }
+}
+
+fn model_label(backend: &ModelBackend) -> String {
+    match backend {
+        ModelBackend::Off => "off".to_owned(),
+        ModelBackend::Catalog { catalog_id } => catalog_id.clone(),
+        ModelBackend::LocalGguf { path, .. } => path.clone(),
+        ModelBackend::OpenAi { model } => format!("openai:{model}"),
+        ModelBackend::Gemini { model } => format!("gemini:{model}"),
+        ModelBackend::CustomEndpoint { model, .. } => format!("custom:{model}"),
+    }
+}
+
+fn stub_description(entry: &ObservedEntry) -> String {
+    format!(
+        "stub category {} for {}",
+        entry.family.default_folder(),
+        entry.path.as_str()
+    )
+}

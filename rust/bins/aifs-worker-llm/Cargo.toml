@@ -1,6 +1,6 @@
 [package]
 name = "aifs-worker-llm"
-description = "Isolated language-model worker stub"
+description = "Isolated language-model worker (stub infer; llama.cpp is a later feature)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,9 +11,22 @@ rust-version.workspace = true
 name = "aifs-worker-llm"
 path = "src/main.rs"
 
+# Names match later llama.cpp backends. Enabling them here does not compile
+# llama.cpp; the stub still infers without reading GGUF bytes.
+[features]
+default = []
+cuda = []
+vulkan = []
+metal = []
+
 [dependencies]
+aifs-domain = { workspace = true }
 aifs-protocol = { workspace = true }
 aifs-worker-runtime = { workspace = true }
+
+[dev-dependencies]
+aifs-worker-client = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

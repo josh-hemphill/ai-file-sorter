@@ -4,7 +4,7 @@ use aifs_domain::{Evidence, ObservedEntry};
 use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
-use aifs_protocol::{ErrorCode, RequestId, decode_line, encode_line};
+use aifs_protocol::{ErrorCode, ModelBackend, RequestId, decode_line, encode_line};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -14,7 +14,22 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const LOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const INFER_TIMEOUT: Duration = Duration::from_secs(120);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
+/// Successful `load` reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerLoad {
+    /// Device actually used.
+    pub device: String,
+    /// Model id or filename.
+    pub model: String,
+    /// GPU layers offloaded.
+    pub n_gpu_layers: u32,
+    /// Why a requested accelerator was not used.
+    pub fallback: Option<String>,
+}
 
 /// Failures talking to a worker process.
 #[derive(Debug, Error)]
@@ -177,10 +192,144 @@ impl WorkerClient {
                     return Err(WorkerClientError::Worker { code, message });
                 }
                 WorkerEvent::Ready { .. } | WorkerEvent::Shutdown => {}
+                _ => {}
             }
         }
         Err(WorkerClientError::Unexpected(
             "extract ended without extracted".to_owned(),
+        ))
+    }
+
+    /// Loads a backend into the LLM worker.
+    pub fn load(
+        &mut self,
+        backend: ModelBackend,
+        gpu_preference: impl Into<String>,
+        n_gpu_layers: Option<u32>,
+        api_key: Option<String>,
+        storage_dir: impl Into<String>,
+    ) -> Result<WorkerLoad, WorkerClientError> {
+        let envelopes = self.request_with_timeout(
+            WorkerCommand::Load {
+                backend,
+                gpu_preference: gpu_preference.into(),
+                n_gpu_layers,
+                api_key,
+                storage_dir: storage_dir.into(),
+            },
+            LOAD_TIMEOUT,
+        )?;
+        for envelope in envelopes {
+            match envelope.event {
+                WorkerEvent::Loaded {
+                    device,
+                    model,
+                    n_gpu_layers,
+                    fallback,
+                } => {
+                    return Ok(WorkerLoad {
+                        device,
+                        model,
+                        n_gpu_layers,
+                        fallback,
+                    });
+                }
+                WorkerEvent::Failed { code, message } => {
+                    return Err(WorkerClientError::Worker { code, message });
+                }
+                _ => {}
+            }
+        }
+        Err(WorkerClientError::Unexpected(
+            "load ended without loaded".to_owned(),
+        ))
+    }
+
+    /// Drops a loaded backend.
+    pub fn unload(&mut self) -> Result<(), WorkerClientError> {
+        let envelopes = self.request(WorkerCommand::Unload)?;
+        for envelope in envelopes {
+            match envelope.event {
+                WorkerEvent::Unloaded => return Ok(()),
+                WorkerEvent::Failed { code, message } => {
+                    return Err(WorkerClientError::Worker { code, message });
+                }
+                _ => {}
+            }
+        }
+        Err(WorkerClientError::Unexpected(
+            "unload ended without unloaded".to_owned(),
+        ))
+    }
+
+    /// Categorizes a file with the loaded model.
+    pub fn categorize(
+        &mut self,
+        root: impl AsRef<Path>,
+        entry: &ObservedEntry,
+        evidence: Vec<Evidence>,
+    ) -> Result<Option<Evidence>, WorkerClientError> {
+        self.infer(WorkerCommand::Categorize {
+            root: root.as_ref().to_path_buf(),
+            entry: entry.clone(),
+            evidence,
+        })
+    }
+
+    /// Describes an image with the loaded model.
+    pub fn describe(
+        &mut self,
+        root: impl AsRef<Path>,
+        entry: &ObservedEntry,
+        evidence: Vec<Evidence>,
+    ) -> Result<Option<Evidence>, WorkerClientError> {
+        self.infer(WorkerCommand::Describe {
+            root: root.as_ref().to_path_buf(),
+            entry: entry.clone(),
+            evidence,
+        })
+    }
+
+    fn infer(&mut self, command: WorkerCommand) -> Result<Option<Evidence>, WorkerClientError> {
+        let envelopes = self.request_with_timeout(command, INFER_TIMEOUT)?;
+        for envelope in envelopes {
+            match envelope.event {
+                WorkerEvent::Inferred { evidence } => return Ok(evidence),
+                WorkerEvent::Failed { code, message } => {
+                    return Err(WorkerClientError::Worker { code, message });
+                }
+                _ => {}
+            }
+        }
+        Err(WorkerClientError::Unexpected(
+            "infer ended without inferred".to_owned(),
+        ))
+    }
+
+    /// Runs a chat turn. The message is untrusted text.
+    pub fn chat(
+        &mut self,
+        utterance: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Result<String, WorkerClientError> {
+        let envelopes = self.request_with_timeout(
+            WorkerCommand::Chat {
+                utterance: utterance.into(),
+                context: context.into(),
+            },
+            INFER_TIMEOUT,
+        )?;
+        for envelope in envelopes {
+            match envelope.event {
+                WorkerEvent::ChatCompleted { message } => return Ok(message),
+                WorkerEvent::Failed { code, message } => {
+                    return Err(WorkerClientError::Worker { code, message });
+                }
+                _ => {}
+            }
+        }
+        Err(WorkerClientError::Unexpected(
+            "chat ended without chat_completed".to_owned(),
         ))
     }
 
@@ -193,6 +342,14 @@ impl WorkerClient {
     fn request(
         &mut self,
         command: WorkerCommand,
+    ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
+        self.request_with_timeout(command, REQUEST_TIMEOUT)
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        command: WorkerCommand,
+        timeout: Duration,
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
         let id = RequestId(self.next_id.to_string());
         self.next_id += 1;
@@ -212,7 +369,7 @@ impl WorkerClient {
         }
         let mut collected = Vec::new();
         loop {
-            let envelope = self.recv_next()?;
+            let envelope = self.recv_next(timeout)?;
             let matches = envelope.id.as_ref() == Some(&id) || envelope.id.is_none();
             if !matches {
                 continue;
@@ -225,8 +382,8 @@ impl WorkerClient {
         }
     }
 
-    fn recv_next(&mut self) -> Result<WorkerEnvelope, WorkerClientError> {
-        match self.rx.recv_timeout(REQUEST_TIMEOUT) {
+    fn recv_next(&mut self, timeout: Duration) -> Result<WorkerEnvelope, WorkerClientError> {
+        match self.rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => Err(WorkerClientError::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(WorkerClientError::Disconnected),

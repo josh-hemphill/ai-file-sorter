@@ -202,8 +202,11 @@ dependencies = [
 name = "aifs-worker-llm"
 version = "0.1.0"
 dependencies = [
+ "aifs-domain",
  "aifs-protocol",
+ "aifs-worker-client",
  "aifs-worker-runtime",
+ "tempfile",
 ]
 
 [[package]]

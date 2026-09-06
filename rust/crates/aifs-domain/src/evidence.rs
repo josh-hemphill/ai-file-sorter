@@ -65,6 +65,10 @@ pub mod keys {
     pub const DESCRIPTION: &str = "description";
     /// Suggested filename (without folder).
     pub const SUGGESTED_NAME: &str = "suggested_name";
+    /// Suggested top-level category from a model (untrusted).
+    pub const CATEGORY: &str = "category";
+    /// Suggested subcategory from a model (untrusted).
+    pub const CATEGORY_SUB: &str = "category.sub";
 }
 
 /// A bag of facts about one asset from one source.

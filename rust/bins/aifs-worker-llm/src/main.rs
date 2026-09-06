@@ -1,11 +1,17 @@
-//! Isolated LLM worker stub. File extraction is not a language-model job.
+//! Isolated LLM worker. Stub infer until the llama.cpp backend is compiled in.
+
+mod device;
+mod stub;
 
 use aifs_protocol::worker::WorkerKind;
+use stub::StubHandler;
 
 fn main() {
-    if let Err(error) = aifs_worker_runtime::run_stdio(WorkerKind::Llm, &["stub"], |_, _| {
-        Err("llm worker does not extract files; chat tools stay in the engine".to_owned())
-    }) {
+    if let Err(error) = aifs_worker_runtime::run_with_handler(
+        WorkerKind::Llm,
+        &["stub", "categorize", "describe", "chat"],
+        StubHandler::default(),
+    ) {
         eprintln!("aifs-worker-llm: {error}");
         std::process::exit(1);
     }
