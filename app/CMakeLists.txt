@@ -453,23 +453,31 @@ elseif(DEFINED MediaInfoLib_LIBRARY AND TARGET ${MediaInfoLib_LIBRARY})
 elseif(TARGET mediainfo)
     list(APPEND MEDIAINFO_DEPS_LIBS mediainfo)
 else()
+    # Do not use pkg_check_modules(IMPORTED_TARGET). On Ubuntu/Debian,
+    # `pkg-config --cflags libmediainfo` follows glib's private Requires
+    # (libsysprof-capture-4) and injects /usr/include/sysprof-6 even when
+    # that directory is not installed. CMake then errors:
+    #   Imported target "PkgConfig::MEDIAINFO" includes non-existent path
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(MEDIAINFO QUIET IMPORTED_TARGET libmediainfo)
-        if(TARGET PkgConfig::MEDIAINFO)
-            list(APPEND MEDIAINFO_DEPS_LIBS PkgConfig::MEDIAINFO)
-        endif()
+        pkg_check_modules(PC_MEDIAINFO QUIET libmediainfo)
     endif()
-    if(NOT MEDIAINFO_DEPS_LIBS AND APPLE)
+
+    set(_aifs_mediainfo_include_hints
+        ${PC_MEDIAINFO_INCLUDEDIR}
+        ${PC_MEDIAINFO_INCLUDE_DIRS}
+    )
+    set(_aifs_mediainfo_library_hints
+        ${PC_MEDIAINFO_LIBDIR}
+        ${PC_MEDIAINFO_LIBRARY_DIRS}
+    )
+    if(APPLE)
         set(_aifs_mediainfo_prefixes "")
         if(DEFINED ENV{HOMEBREW_PREFIX} AND NOT "$ENV{HOMEBREW_PREFIX}" STREQUAL "")
             list(APPEND _aifs_mediainfo_prefixes "$ENV{HOMEBREW_PREFIX}")
         endif()
         list(APPEND _aifs_mediainfo_prefixes /opt/homebrew /usr/local)
         list(REMOVE_DUPLICATES _aifs_mediainfo_prefixes)
-
-        set(_aifs_mediainfo_include_hints "")
-        set(_aifs_mediainfo_library_hints "")
         foreach(_aifs_prefix IN LISTS _aifs_mediainfo_prefixes)
             list(APPEND _aifs_mediainfo_include_hints
                 "${_aifs_prefix}/opt/libmediainfo/include"
@@ -480,30 +488,30 @@ else()
                 "${_aifs_prefix}/lib"
             )
         endforeach()
-
-        find_path(AIFS_MEDIAINFO_INCLUDE_DIR
-            NAMES MediaInfo/MediaInfo.h
-            HINTS ${_aifs_mediainfo_include_hints}
-        )
-        find_library(AIFS_MEDIAINFO_LIBRARY
-            NAMES mediainfo libmediainfo
-            HINTS ${_aifs_mediainfo_library_hints}
-        )
-        if(AIFS_MEDIAINFO_INCLUDE_DIR AND AIFS_MEDIAINFO_LIBRARY)
-            if(NOT TARGET AIFS::MediaInfoLib)
-                add_library(AIFS::MediaInfoLib UNKNOWN IMPORTED)
-                set_target_properties(AIFS::MediaInfoLib PROPERTIES
-                    IMPORTED_LOCATION "${AIFS_MEDIAINFO_LIBRARY}"
-                    INTERFACE_INCLUDE_DIRECTORIES "${AIFS_MEDIAINFO_INCLUDE_DIR}"
-                )
-            endif()
-            list(APPEND MEDIAINFO_DEPS_LIBS AIFS::MediaInfoLib)
-        endif()
-
-        unset(_aifs_mediainfo_include_hints)
-        unset(_aifs_mediainfo_library_hints)
         unset(_aifs_mediainfo_prefixes)
     endif()
+
+    find_path(AIFS_MEDIAINFO_INCLUDE_DIR
+        NAMES MediaInfo/MediaInfo.h
+        HINTS ${_aifs_mediainfo_include_hints}
+    )
+    find_library(AIFS_MEDIAINFO_LIBRARY
+        NAMES mediainfo libmediainfo
+        HINTS ${_aifs_mediainfo_library_hints}
+    )
+    if(AIFS_MEDIAINFO_INCLUDE_DIR AND AIFS_MEDIAINFO_LIBRARY)
+        if(NOT TARGET AIFS::MediaInfoLib)
+            add_library(AIFS::MediaInfoLib UNKNOWN IMPORTED)
+            set_target_properties(AIFS::MediaInfoLib PROPERTIES
+                IMPORTED_LOCATION "${AIFS_MEDIAINFO_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${AIFS_MEDIAINFO_INCLUDE_DIR}"
+            )
+        endif()
+        list(APPEND MEDIAINFO_DEPS_LIBS AIFS::MediaInfoLib)
+    endif()
+
+    unset(_aifs_mediainfo_include_hints)
+    unset(_aifs_mediainfo_library_hints)
 endif()
 if(MEDIAINFO_DEPS_LIBS)
     foreach(_mediainfo_target IN LISTS MEDIAINFO_DEPS_LIBS)

@@ -18,8 +18,10 @@
 #include <vector>
 
 #ifdef AI_FILE_SORTER_USE_MEDIAINFOLIB
-#if defined(__APPLE__) && !defined(UNICODE) && !defined(_UNICODE)
-// Homebrew's MediaInfoLib is built with the wide-character API enabled.
+#if !defined(_WIN32) && !defined(UNICODE) && !defined(_UNICODE)
+// Distro and Homebrew MediaInfoLib export the wide-character C++ API
+// (std::wstring). Compiling MediaInfo.h without UNICODE looks for the
+// char overloads, which Ubuntu's libmediainfo.so does not provide.
 #define UNICODE
 #define _UNICODE
 #endif
