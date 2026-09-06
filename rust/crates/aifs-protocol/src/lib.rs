@@ -8,14 +8,23 @@
 //! The protocol is the stable boundary described in `rust/docs/protocol.md`. Breaking
 //! changes bump [`PROTOCOL_VERSION`]; additive changes must keep old fields working.
 
+pub mod catalog;
 pub mod codec;
 pub mod models;
 pub mod options;
 pub mod worker;
 
+pub use catalog::{
+    all_artifacts, artifact_bytes_on_disk, artifact_is_present, artifact_path,
+    catalog_download_url, catalog_entry, catalog_id_is_downloaded, catalog_ids_for_artifact,
+    CatalogArtifact, CatalogEntry, ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, CATALOG_BASE_ENV,
+    CATALOG_TEXT, CATALOG_VISION, DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME,
+    GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME,
+};
 pub use codec::{decode_line, encode_line, CodecError};
 pub use models::{
-    probe_backend, ModelBackend, ModelInventory, ModelSlot, BUILTIN_CATALOG, MODEL_SLOT_IDS,
+    probe_backend, probe_backend_at, ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot,
+    BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS,
 };
 pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 
@@ -152,6 +161,11 @@ pub enum Command {
         /// Optional key used only for this probe; never logged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+    },
+    /// Download every GGUF this catalog id needs. Files already on disk are skipped.
+    DownloadModel {
+        /// Catalog id such as `gemma-3-4b-it`.
+        catalog_id: String,
     },
 }
 

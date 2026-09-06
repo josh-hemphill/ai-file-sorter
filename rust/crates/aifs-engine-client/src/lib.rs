@@ -376,6 +376,16 @@ impl EngineClient {
         ))
     }
 
+    /// Downloads catalog GGUFs, skipping files already in the storage directory.
+    pub fn download_model(
+        &mut self,
+        catalog_id: impl Into<String>,
+    ) -> Result<ModelInventory, ClientError> {
+        self.expect_models(Command::DownloadModel {
+            catalog_id: catalog_id.into(),
+        })
+    }
+
     fn expect_models(&mut self, command: Command) -> Result<ModelInventory, ClientError> {
         let envelopes = self.request(command)?;
         for envelope in envelopes {
@@ -543,7 +553,9 @@ impl Drop for EngineClient {
 fn command_mutates_disk(command: &Command) -> bool {
     matches!(
         command,
-        Command::Apply { dry_run: false, .. } | Command::Undo { .. }
+        Command::Apply { dry_run: false, .. }
+            | Command::Undo { .. }
+            | Command::DownloadModel { .. }
     )
 }
 

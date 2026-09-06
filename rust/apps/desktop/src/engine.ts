@@ -113,3 +113,7 @@ export async function probeEndpoint(
 ): Promise<[boolean, string]> {
   return invoke("probe_endpoint", { args: { ...backend, api_key: apiKey } });
 }
+
+export async function downloadModel(catalogId: string): Promise<ModelInventory> {
+  return invoke("download_model", { catalogId });
+}

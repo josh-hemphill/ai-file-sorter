@@ -190,6 +190,17 @@ export interface ModelInventory {
   storage_dir: string;
   gpu_preference: string;
   slots: ModelSlot[];
+  artifacts?: ModelArtifactStatus[];
+}
+
+export interface ModelArtifactStatus {
+  id: string;
+  filename: string;
+  path: string;
+  expected_bytes: number;
+  bytes_on_disk: number;
+  present: boolean;
+  used_by: string[];
 }
 
 export interface ChatReply {
