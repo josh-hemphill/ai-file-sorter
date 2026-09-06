@@ -52,3 +52,7 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 {"id":"2","type":"progress","stage":"scan","current":120,"total":null,"message":"Downloads"}
 {"id":"2","type":"scan_completed","snapshot":{...}}
 ```
+
+This slice implements `hello`, `scan`, `cancel`, and `shutdown`. `propose`,
+`patch`, `plan`, `apply`, and `undo` return `failed { code: internal }` until
+the store/planner/apply crates land.

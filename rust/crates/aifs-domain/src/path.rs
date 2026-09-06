@@ -49,6 +49,16 @@ const RESERVED_NAMES: [&str; 22] = [
 pub struct RelativePath(String);
 
 impl RelativePath {
+    /// Path that refers to the session root itself (a project detected at the scanned folder).
+    pub fn session_root() -> Self {
+        Self(".".to_owned())
+    }
+
+    /// True when this path is the session root sentinel (`.`).
+    pub fn is_session_root(&self) -> bool {
+        self.0 == "."
+    }
+
     /// Parses and validates a candidate path. Backslashes are treated as separators so
     /// user-typed Windows paths still normalise.
     pub fn parse(value: &str) -> Result<Self, RelativePathError> {
@@ -56,6 +66,9 @@ impl RelativePath {
         let trimmed = unified.trim();
         if trimmed.is_empty() {
             return Err(RelativePathError::Empty);
+        }
+        if trimmed == "." {
+            return Ok(Self::session_root());
         }
         if trimmed.starts_with('/') || has_drive_prefix(trimmed) {
             return Err(RelativePathError::Absolute(value.to_owned()));
@@ -83,6 +96,9 @@ impl RelativePath {
         let stripped = path
             .strip_prefix(root)
             .map_err(|_| RelativePathError::Absolute(path.display().to_string()))?;
+        if stripped.as_os_str().is_empty() {
+            return Ok(Self::session_root());
+        }
         let mut segments = Vec::new();
         for component in stripped.components() {
             match component {
@@ -145,6 +161,9 @@ impl RelativePath {
 
     /// Returns true when `self` is `ancestor` or lives below it.
     pub fn starts_with(&self, ancestor: &RelativePath) -> bool {
+        if ancestor.is_session_root() {
+            return true;
+        }
         self == ancestor || self.0.starts_with(&format!("{}/", ancestor.0))
     }
 
@@ -155,6 +174,9 @@ impl RelativePath {
 
     /// Resolves the path under a concrete root directory.
     pub fn resolve(&self, root: &Path) -> PathBuf {
+        if self.is_session_root() {
+            return root.to_path_buf();
+        }
         let mut out = root.to_path_buf();
         for segment in self.segments() {
             out.push(segment);
@@ -307,6 +329,19 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(path.as_str(), "a/b.txt");
         assert!(RelativePath::from_root_and_path(root, Path::new("/data/other/b.txt")).is_err());
+        let at_root =
+            RelativePath::from_root_and_path(root, root).unwrap_or_else(|e| panic!("{e}"));
+        assert!(at_root.is_session_root());
+        assert_eq!(at_root.resolve(root), root);
+    }
+
+    #[test]
+    fn session_root_is_an_ancestor_of_every_path() {
+        let root = RelativePath::session_root();
+        let child = RelativePath::parse("Docs/a.txt").unwrap_or_else(|e| panic!("{e}"));
+        assert!(child.starts_with(&root));
+        assert!(root.starts_with(&root));
+        assert_eq!(RelativePath::parse(".").ok(), Some(root));
     }
 
     #[test]
