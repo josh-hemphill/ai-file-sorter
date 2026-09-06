@@ -105,7 +105,7 @@ impl CategoryWhitelist {
 }
 
 /// Persisted scan/proposal/analysis policy owned by the engine.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     /// Scan options used by the Custom intent.
@@ -116,17 +116,6 @@ pub struct AppSettings {
     pub analyze_images: bool,
     /// Run document analysis when a document slot is connected.
     pub analyze_documents: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            scan: ScanOptions::default(),
-            policy: ProposalPolicy::default(),
-            analyze_images: false,
-            analyze_documents: false,
-        }
-    }
 }
 
 impl Default for ProposalPolicy {

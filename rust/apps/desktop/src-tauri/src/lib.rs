@@ -230,10 +230,7 @@ fn plan_revision(
 ) -> Result<PlanResult, String> {
     with_client(&state, |client| {
         let envelopes = client
-            .request_with_events(
-                aifs_protocol::Command::Plan { session, revision },
-                |_| {},
-            )
+            .request_with_events(aifs_protocol::Command::Plan { session, revision }, |_| {})
             .map_err(|error| error.to_string())?;
         for envelope in envelopes {
             match envelope.event {
@@ -243,7 +240,9 @@ fn plan_revision(
                         issues,
                     });
                 }
-                Event::Failed { message, issues, .. } => {
+                Event::Failed {
+                    message, issues, ..
+                } => {
                     return Ok(PlanResult {
                         plan: None,
                         issues: if issues.is_empty() {

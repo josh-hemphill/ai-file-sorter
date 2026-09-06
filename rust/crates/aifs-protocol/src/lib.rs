@@ -336,7 +336,7 @@ impl Envelope {
                 | Event::Revision { .. }
                 | Event::Planned { .. }
                 | Event::Journal { .. }
-                |             Event::ChatReply { .. }
+                | Event::ChatReply { .. }
                 | Event::Cancelled
                 | Event::Failed { .. }
                 | Event::Shutdown

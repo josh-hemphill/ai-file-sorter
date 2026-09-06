@@ -18,7 +18,9 @@ const BROAD_NAMES: &[&str] = &[
     "tmp",
     "incoming",
 ];
-const ARCHIVE_NAMES: &[&str] = &["old", "archive", "archives", "backup", "bak", "final", "finals"];
+const ARCHIVE_NAMES: &[&str] = &[
+    "old", "archive", "archives", "backup", "bak", "final", "finals",
+];
 
 /// Classifies directories and emits PreserveLayout bundles for units that must not flatten.
 pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
@@ -30,9 +32,11 @@ pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
         .collect();
 
     for (dir_id, root) in directories {
-        if snapshot.projects.iter().any(|project| {
-            project.root == root && project.strength == ProjectStrength::Strong
-        }) {
+        if snapshot
+            .projects
+            .iter()
+            .any(|project| project.root == root && project.strength == ProjectStrength::Strong)
+        {
             continue;
         }
         let name = root.file_name().to_ascii_lowercase();
@@ -57,8 +61,10 @@ pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
             kind,
             reason: reason.clone(),
         });
-        if matches!(kind, DirectoryRoleKind::Library | DirectoryRoleKind::WeakArchive)
-            && !files.is_empty()
+        if matches!(
+            kind,
+            DirectoryRoleKind::Library | DirectoryRoleKind::WeakArchive
+        ) && !files.is_empty()
         {
             let members: Vec<_> = snapshot
                 .entries
@@ -106,7 +112,10 @@ fn role_for(
             .filter(|entry| {
                 matches!(
                     entry.family,
-                    FileFamily::Audio | FileFamily::Video | FileFamily::Image | FileFamily::RawImage
+                    FileFamily::Audio
+                        | FileFamily::Video
+                        | FileFamily::Image
+                        | FileFamily::RawImage
                 )
             })
             .count();
@@ -124,22 +133,28 @@ fn is_year_name(name: &str) -> bool {
 }
 
 fn path_has_broad_segment(path: &RelativePath) -> bool {
-    path.as_str().split('/').any(|segment| {
-        BROAD_NAMES.contains(&segment.to_ascii_lowercase().as_str())
-    })
+    path.as_str()
+        .split('/')
+        .any(|segment| BROAD_NAMES.contains(&segment.to_ascii_lowercase().as_str()))
 }
 
 fn role_reason(kind: DirectoryRoleKind, root: &RelativePath) -> String {
     match kind {
         DirectoryRoleKind::Library => {
-            format!("{} looks like an existing library; keep its layout", root.as_str())
+            format!(
+                "{} looks like an existing library; keep its layout",
+                root.as_str()
+            )
         }
         DirectoryRoleKind::WeakArchive => format!(
             "{} looks like a previous archive attempt; keep path context",
             root.as_str()
         ),
         DirectoryRoleKind::BroadInbox => {
-            format!("{} is a generic dump; files can be organised independently", root.as_str())
+            format!(
+                "{} is a generic dump; files can be organised independently",
+                root.as_str()
+            )
         }
         DirectoryRoleKind::Mixed => format!("{} has mixed contents", root.as_str()),
     }
@@ -148,9 +163,7 @@ fn role_reason(kind: DirectoryRoleKind, root: &RelativePath) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aifs_domain::{
-        AssetId, FileIdentity, LockState, ObservedEntry, RelativePath, SessionId,
-    };
+    use aifs_domain::{AssetId, FileIdentity, LockState, ObservedEntry, RelativePath, SessionId};
     use std::path::PathBuf;
 
     fn file(path: &str, family: FileFamily) -> ObservedEntry {
@@ -217,7 +230,10 @@ mod tests {
     #[test]
     fn downloads_is_a_broad_inbox() {
         let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
-        snapshot.entries = vec![dir("Downloads"), file("Downloads/a.txt", FileFamily::Document)];
+        snapshot.entries = vec![
+            dir("Downloads"),
+            file("Downloads/a.txt", FileFamily::Document),
+        ];
         classify_directories(&mut snapshot);
         assert_eq!(
             snapshot.directory_roles[0].kind,
@@ -237,7 +253,8 @@ mod tests {
         classify_directories(&mut snapshot);
         assert!(
             !snapshot.directory_roles.iter().any(|role| {
-                role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "Downloads/2024"
+                role.kind == DirectoryRoleKind::WeakArchive
+                    && role.root.as_str() == "Downloads/2024"
             }),
             "dated folders under a dump must stay organisable"
         );
@@ -245,11 +262,9 @@ mod tests {
 
     #[test]
     fn year_folder_at_a_downloads_scan_root_is_not_an_archive() {
-        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
-        snapshot.entries = vec![
-            dir("2024"),
-            file("2024/notes.txt", FileFamily::Document),
-        ];
+        let mut snapshot =
+            WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
+        snapshot.entries = vec![dir("2024"), file("2024/notes.txt", FileFamily::Document)];
         classify_directories(&mut snapshot);
         assert!(
             !snapshot.directory_roles.iter().any(|role| {
@@ -261,7 +276,8 @@ mod tests {
 
     #[test]
     fn nested_year_folder_under_downloads_scan_root_can_still_be_an_archive() {
-        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
+        let mut snapshot =
+            WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
         snapshot.entries = vec![
             dir("Projects"),
             dir("Projects/2019"),

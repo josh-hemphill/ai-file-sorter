@@ -346,10 +346,7 @@ impl EngineClient {
     }
 
     /// Replaces model slot assignments.
-    pub fn put_models(
-        &mut self,
-        inventory: ModelInventory,
-    ) -> Result<ModelInventory, ClientError> {
+    pub fn put_models(&mut self, inventory: ModelInventory) -> Result<ModelInventory, ClientError> {
         self.expect_models(Command::PutModels { inventory })
     }
 

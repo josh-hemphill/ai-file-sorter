@@ -15,7 +15,8 @@ use aifs_domain::{
 use aifs_planner::{propose, validate};
 use aifs_protocol::{
     decode_line, encode_line, AppSettings, Command, Envelope, ErrorCode, Event, LogLevel,
-    ModelBackend, ModelInventory, ProposalPolicy, Request, RequestId, ScanOptions, PROTOCOL_VERSION,
+    ModelBackend, ModelInventory, ProposalPolicy, Request, RequestId, ScanOptions,
+    PROTOCOL_VERSION,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{scan, ScanError};
@@ -157,9 +158,13 @@ impl Engine {
             }
             Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
             Command::GetSettings => emit(self.handle_get_settings(&request.id)),
-            Command::PutSettings { settings } => emit(self.handle_put_settings(&request.id, settings)),
+            Command::PutSettings { settings } => {
+                emit(self.handle_put_settings(&request.id, settings))
+            }
             Command::GetModels => emit(self.handle_get_models(&request.id)),
-            Command::PutModels { inventory } => emit(self.handle_put_models(&request.id, inventory)),
+            Command::PutModels { inventory } => {
+                emit(self.handle_put_models(&request.id, inventory))
+            }
             Command::ProbeEndpoint { backend, api_key } => {
                 emit(self.handle_probe_endpoint(&request.id, backend, api_key))
             }
@@ -769,7 +774,9 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
     )
 }
 
-fn load_settings(store: &aifs_store::WorkspaceStore) -> Result<AppSettings, aifs_store::StoreError> {
+fn load_settings(
+    store: &aifs_store::WorkspaceStore,
+) -> Result<AppSettings, aifs_store::StoreError> {
     match store.get_meta(SETTINGS_META_KEY)? {
         Some(json) => Ok(serde_json::from_str(&json)?),
         None => Ok(AppSettings::default()),
@@ -945,11 +952,7 @@ fn skip_log_line(path: &str, reason: &SkipReason) -> String {
     }
 }
 
-fn emit_scan_logs(
-    emit: &mut impl FnMut(Envelope),
-    id: &RequestId,
-    snapshot: &WorkspaceSnapshot,
-) {
+fn emit_scan_logs(emit: &mut impl FnMut(Envelope), id: &RequestId, snapshot: &WorkspaceSnapshot) {
     let mut remaining = SCAN_LOG_CAP;
     for project in &snapshot.projects {
         if remaining == 0 {
@@ -968,8 +971,7 @@ fn emit_scan_logs(
         );
         remaining -= 1;
     }
-    let mut skip_logged = 0usize;
-    for skipped in &snapshot.skipped {
+    for (skip_logged, skipped) in snapshot.skipped.iter().enumerate() {
         if remaining == 0 {
             let omitted = snapshot.skipped.len().saturating_sub(skip_logged);
             if omitted > 0 {
@@ -993,7 +995,6 @@ fn emit_scan_logs(
             skip_log_line(skipped.path.as_str(), &skipped.reason),
         );
         remaining -= 1;
-        skip_logged += 1;
     }
 }
 
@@ -1178,8 +1179,8 @@ mod tests {
 
     #[test]
     fn scan_stream_includes_projects_skips_and_bundles() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/inbox-mixed");
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/inbox-mixed");
         let mut engine = Engine::new();
         engine.handle(Request {
             id: "1".into(),
@@ -1229,8 +1230,8 @@ mod tests {
 
     #[test]
     fn junk_drawer_keeps_library_and_archive_paths() {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/junk-drawer");
+        let root =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/junk-drawer");
         let mut engine = Engine::new();
         engine.handle(Request {
             id: "1".into(),
@@ -1531,7 +1532,7 @@ mod tests {
             id: "4".into(),
             command: Command::GetSettings,
         })) {
-            Event::Settings { settings: stored } => assert_eq!(stored.scan.include_hidden, true),
+            Event::Settings { settings: stored } => assert!(stored.scan.include_hidden),
             other => panic!("unexpected {other:?}"),
         }
         settings.policy.whitelist.global_subcategories = vec!["Reports".into()];
@@ -1673,10 +1674,18 @@ mod tests {
     fn durable_store_base_uses_windows_app_data_and_unix_home() {
         use std::ffi::OsStr;
         assert_eq!(
-            durable_store_base(None, Some(OsStr::new("/win/local")), Some(OsStr::new("/home")), None),
+            durable_store_base(
+                None,
+                Some(OsStr::new("/win/local")),
+                Some(OsStr::new("/home")),
+                None
+            ),
             Some(std::path::PathBuf::from("/win/local"))
         );
         let from_profile = durable_store_base(None, None, None, Some(OsStr::new("/Users/me")));
-        assert!(from_profile.is_some(), "USERPROFILE must yield a store base");
+        assert!(
+            from_profile.is_some(),
+            "USERPROFILE must yield a store base"
+        );
     }
 }

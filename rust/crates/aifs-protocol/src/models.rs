@@ -5,17 +5,21 @@ use serde::{Deserialize, Serialize};
 /// Built-in catalog entries the Setup UI can assign without a filesystem path.
 pub const BUILTIN_CATALOG: &[(&str, &str)] = &[
     ("gemma-3-4b-it", "Gemma 3 4B Instruct (text)"),
-    ("gemma-3-4b-it-mmproj", "Gemma 3 4B Instruct + mmproj (vision)"),
+    (
+        "gemma-3-4b-it-mmproj",
+        "Gemma 3 4B Instruct + mmproj (vision)",
+    ),
 ];
 
 /// Analysis slots the workspace can assign independently.
 pub const MODEL_SLOT_IDS: &[&str] = &["categorize", "vision", "document", "chat"];
 
 /// How a slot is backed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelBackend {
     /// Heuristics only.
+    #[default]
     Off,
     /// Built-in GGUF to download into the storage directory later.
     Catalog {
@@ -47,12 +51,6 @@ pub enum ModelBackend {
         /// Model id.
         model: String,
     },
-}
-
-impl Default for ModelBackend {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 /// One analysis slot.
@@ -98,10 +96,7 @@ impl ModelSlot {
             id: self.id.clone(),
             backend: self.backend.clone(),
             api_key: None,
-            api_key_set: self
-                .api_key
-                .as_ref()
-                .is_some_and(|key| !key.is_empty())
+            api_key_set: self.api_key.as_ref().is_some_and(|key| !key.is_empty())
                 || self.api_key_set,
         }
     }
@@ -155,15 +150,14 @@ impl ModelInventory {
             }
             match slot.api_key.as_deref().map(str::trim) {
                 None => {
-                    if let Some(stored) =
-                        previous.slots.iter().find(|candidate| candidate.id == slot.id)
+                    if let Some(stored) = previous
+                        .slots
+                        .iter()
+                        .find(|candidate| candidate.id == slot.id)
                     {
                         slot.api_key = stored.api_key.clone();
                         slot.api_key_set = stored.api_key_set
-                            || stored
-                                .api_key
-                                .as_ref()
-                                .is_some_and(|key| !key.is_empty());
+                            || stored.api_key.as_ref().is_some_and(|key| !key.is_empty());
                     }
                 }
                 Some("") => {
@@ -193,7 +187,9 @@ impl ModelInventory {
 fn backend_holds_secrets(backend: &ModelBackend) -> bool {
     matches!(
         backend,
-        ModelBackend::OpenAi { .. } | ModelBackend::Gemini { .. } | ModelBackend::CustomEndpoint { .. }
+        ModelBackend::OpenAi { .. }
+            | ModelBackend::Gemini { .. }
+            | ModelBackend::CustomEndpoint { .. }
     )
 }
 
@@ -271,7 +267,10 @@ mod tests {
         inventory.slots[0].api_key = Some("sk-secret".into());
         let json = serde_json::to_string(&inventory.redacted()).unwrap_or_else(|e| panic!("{e}"));
         assert!(!json.contains("sk-secret"), "{json}");
-        assert!(json.contains("api_key_set") || json.contains("true"), "{json}");
+        assert!(
+            json.contains("api_key_set") || json.contains("true"),
+            "{json}"
+        );
     }
 
     #[test]

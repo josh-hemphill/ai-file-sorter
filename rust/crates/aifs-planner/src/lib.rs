@@ -219,11 +219,7 @@ fn apply_category_whitelist(
             None
         };
         if let Some(allowed) = allowed_subs {
-            if allowed.is_empty()
-                || !allowed
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&sub))
-            {
+            if allowed.is_empty() || !allowed.iter().any(|name| name.eq_ignore_ascii_case(&sub)) {
                 parts.truncate(1);
             }
         }
@@ -655,9 +651,10 @@ fn empty_directories_to_remove(
             entry.kind != EntryKind::Directory
                 && entry.path.starts_with(dir)
                 && !moving.contains(&entry.path.case_fold())
-        }) || snapshot.skipped.iter().any(|entry| {
-            entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold())
-        })
+        }) || snapshot
+            .skipped
+            .iter()
+            .any(|entry| entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold()))
     };
     let removable_roots: BTreeSet<RelativePath> = emptied_roots
         .into_iter()
@@ -741,16 +738,20 @@ mod tests {
         let entry = file("Music/tmp/clip.mp3", FileFamily::Audio);
         let id = entry.id;
         snapshot.entries.push(entry);
-        snapshot.directory_roles.push(aifs_domain::DirectoryRoleMatch {
-            root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
-            kind: aifs_domain::DirectoryRoleKind::Library,
-            reason: "library".into(),
-        });
-        snapshot.directory_roles.push(aifs_domain::DirectoryRoleMatch {
-            root: RelativePath::parse("Music/tmp").unwrap_or_else(|e| panic!("{e}")),
-            kind: aifs_domain::DirectoryRoleKind::BroadInbox,
-            reason: "dump".into(),
-        });
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "library".into(),
+            });
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Music/tmp").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::BroadInbox,
+                reason: "dump".into(),
+            });
         let revision = propose(&snapshot, &ProposalPolicy::default());
         let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "Music/tmp/clip.mp3");
@@ -898,15 +899,18 @@ mod tests {
     #[test]
     fn whitelist_rewrites_disallowed_top_level_and_drops_unknown_subs() {
         let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
-        snapshot
-            .entries
-            .push(file("clip.mp3", FileFamily::Audio));
-        let mut policy = ProposalPolicy::default();
-        policy.style = FolderStyle::Refined;
-        policy.use_subfolders = true;
-        policy.rename_media = false;
-        policy.whitelist.main = vec!["Documents".into(), "Pictures".into()];
-        policy.whitelist.global_subcategories = vec!["Reports".into()];
+        snapshot.entries.push(file("clip.mp3", FileFamily::Audio));
+        let policy = ProposalPolicy {
+            style: FolderStyle::Refined,
+            use_subfolders: true,
+            rename_media: false,
+            whitelist: CategoryWhitelist {
+                main: vec!["Documents".into(), "Pictures".into()],
+                global_subcategories: vec!["Reports".into()],
+                ..CategoryWhitelist::default()
+            },
+            ..ProposalPolicy::default()
+        };
         snapshot.evidence.push(
             Evidence::new(
                 snapshot.entries[0].id,
@@ -938,11 +942,16 @@ mod tests {
                 .with_fact(keys::MEDIA_GENRE, "Podcast"),
         );
         snapshot.entries.push(entry);
-        let mut policy = ProposalPolicy::default();
-        policy.style = FolderStyle::Refined;
-        policy.use_subfolders = true;
-        policy.rename_media = false;
-        policy.whitelist.main = vec!["Podcasts".into()];
+        let policy = ProposalPolicy {
+            style: FolderStyle::Refined,
+            use_subfolders: true,
+            rename_media: false,
+            whitelist: CategoryWhitelist {
+                main: vec!["Podcasts".into()],
+                ..CategoryWhitelist::default()
+            },
+            ..ProposalPolicy::default()
+        };
         let revision = propose(&snapshot, &policy);
         let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
         assert!(
