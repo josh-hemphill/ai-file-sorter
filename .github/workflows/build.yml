@@ -26,8 +26,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          # Ubuntu's libmediainfo-dev depends on libcurl4-gnutls-dev, which
+          # Conflicts with libcurl4-openssl-dev. Either curl -dev package
+          # satisfies find_package(CURL); keep libssl-dev for OpenSSL itself.
           sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-            libcurl4-openssl-dev libjsoncpp-dev libsqlite3-dev libssl-dev \
+            libcurl4-gnutls-dev libjsoncpp-dev libsqlite3-dev libssl-dev \
             libfmt-dev libspdlog-dev libmediainfo-dev
 
       - name: Configure
