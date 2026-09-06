@@ -42,8 +42,9 @@ cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
-The toolchain is pinned to `stable` (`rust/rust-toolchain.toml`). `unsafe_code` is
-forbidden in the workspace; crash-prone native libraries belong in worker processes.
+The toolchain is pinned to `stable` (`rust/rust-toolchain.toml`, edition 2024).
+`unsafe_code` is forbidden in the workspace; crash-prone native libraries belong in
+worker processes. The desktop shell uses pnpm 12 and Node.js 24 LTS.
 
 ## License
 

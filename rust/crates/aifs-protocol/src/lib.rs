@@ -13,9 +13,9 @@ pub mod models;
 pub mod options;
 pub mod worker;
 
-pub use codec::{decode_line, encode_line, CodecError};
+pub use codec::{CodecError, decode_line, encode_line};
 pub use models::{
-    probe_backend, ModelBackend, ModelInventory, ModelSlot, BUILTIN_CATALOG, MODEL_SLOT_IDS,
+    BUILTIN_CATALOG, MODEL_SLOT_IDS, ModelBackend, ModelInventory, ModelSlot, probe_backend,
 };
 pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 

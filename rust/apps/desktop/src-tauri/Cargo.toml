@@ -3,7 +3,7 @@ name = "aifs-desktop"
 version = "0.1.0"
 description = "AI File Sorter workspace (Tauri shell)"
 authors = ["AI File Sorter"]
-edition = "2021"
+edition.workspace = true
 license = "AGPL-3.0-only"
 
 [lib]

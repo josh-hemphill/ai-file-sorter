@@ -2,9 +2,9 @@
 
 use aifs_domain::{Evidence, ObservedEntry};
 use aifs_protocol::worker::{
-    WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest, WORKER_PROTOCOL_VERSION,
+    WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
-use aifs_protocol::{decode_line, encode_line, ErrorCode};
+use aifs_protocol::{ErrorCode, decode_line, encode_line};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 

@@ -3,7 +3,7 @@
 //! Workers never open SQLite and never mutate the user's files. They receive an
 //! observed entry, return evidence or artifacts, and exit on `shutdown`.
 
-use crate::{decode_line, encode_line, CodecError, ErrorCode, RequestId, PROTOCOL_VERSION};
+use crate::{CodecError, ErrorCode, PROTOCOL_VERSION, RequestId, decode_line, encode_line};
 use aifs_domain::{Evidence, ObservedEntry};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

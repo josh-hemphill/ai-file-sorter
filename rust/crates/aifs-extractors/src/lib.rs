@@ -5,8 +5,8 @@
 //! size-capped so a corrupt tag cannot pull a multi-gigabyte file into memory.
 
 use aifs_domain::{
-    evidence::keys, Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, LockState,
-    ObservedEntry, WorkspaceSnapshot,
+    Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, LockState, ObservedEntry,
+    WorkspaceSnapshot, evidence::keys,
 };
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -94,12 +94,11 @@ impl MediaFields {
     }
 
     fn assign_if_missing(target: &mut Option<String>, value: Option<String>) {
-        if target.is_none() {
-            if let Some(value) = value {
-                if !value.is_empty() {
-                    *target = Some(value);
-                }
-            }
+        if target.is_none()
+            && let Some(value) = value
+            && !value.is_empty()
+        {
+            *target = Some(value);
         }
     }
 }
@@ -128,11 +127,7 @@ fn read_media_fields(path: &Path, extension: &str) -> Option<MediaFields> {
         }
         _ => return None,
     }
-    if fields.has_any() {
-        Some(fields)
-    } else {
-        None
-    }
+    if fields.has_any() { Some(fields) } else { None }
 }
 
 fn normalize_year(value: &str) -> String {
@@ -595,16 +590,16 @@ fn parse_mp4_atoms(
             }
             payload_start += 4;
         }
-        if atom_type == DATA {
-            if let Some(tag) = current_tag {
-                let payload_size = payload_end - payload_start;
-                if (8..=MAX_MP4_TEXT_BYTES).contains(&payload_size) {
-                    let mut data = vec![0u8; payload_size as usize];
-                    file.seek(SeekFrom::Start(payload_start))?;
-                    file.read_exact(&mut data)?;
-                    if let Some(text) = parse_mp4_data_text(&data) {
-                        assign_mp4_field(tag, text, fields);
-                    }
+        if atom_type == DATA
+            && let Some(tag) = current_tag
+        {
+            let payload_size = payload_end - payload_start;
+            if (8..=MAX_MP4_TEXT_BYTES).contains(&payload_size) {
+                let mut data = vec![0u8; payload_size as usize];
+                file.seek(SeekFrom::Start(payload_start))?;
+                file.read_exact(&mut data)?;
+                if let Some(text) = parse_mp4_data_text(&data) {
+                    assign_mp4_field(tag, text, fields);
                 }
             }
         }

@@ -214,10 +214,11 @@ pub fn probe_backend(backend: &ModelBackend) -> (bool, String) {
             if !std::path::Path::new(path).is_file() {
                 return (false, format!("{path} was not found"));
             }
-            if let Some(proj) = mmproj {
-                if !proj.is_empty() && !std::path::Path::new(proj).is_file() {
-                    return (false, format!("{proj} was not found"));
-                }
+            if let Some(proj) = mmproj
+                && !proj.is_empty()
+                && !std::path::Path::new(proj).is_file()
+            {
+                return (false, format!("{proj} was not found"));
             }
             (
                 true,

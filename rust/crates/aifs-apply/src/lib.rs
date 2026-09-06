@@ -521,9 +521,11 @@ mod tests {
             Some(ReviewState::Accepted)
         );
         let (plan, issues) = validate(&snapshot, &revision);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != aifs_domain::PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != aifs_domain::PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
 
         let dry = apply_plan(&snapshot, &plan, true);

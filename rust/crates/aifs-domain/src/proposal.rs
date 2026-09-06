@@ -383,8 +383,8 @@ mod tests {
             ),
             "rename must reject a multi-segment name, got {nested:?}"
         );
-        assert!(base
-            .with_patches(
+        assert!(
+            base.with_patches(
                 RevisionAuthor::User,
                 "dot",
                 &[RevisionPatch::Rename {
@@ -392,7 +392,8 @@ mod tests {
                     file_name: ".".into(),
                 }],
             )
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]

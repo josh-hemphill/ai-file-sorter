@@ -4,7 +4,7 @@ use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, ProposalRevision, RevisionId, SessionId,
     WorkspaceSnapshot,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use thiserror::Error;
 

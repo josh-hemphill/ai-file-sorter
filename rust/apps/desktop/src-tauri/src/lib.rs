@@ -5,7 +5,7 @@ use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, PlanIssue, ProposalRevision, RevisionAuthor,
     RevisionId, RevisionPatch, SessionId, WorkspaceSnapshot,
 };
-use aifs_engine_client::{discover_engine_binary, EngineClient};
+use aifs_engine_client::{EngineClient, discover_engine_binary};
 use aifs_protocol::{
     AppSettings, Event, FolderStyle, LogLevel, ModelBackend, ModelInventory, ProposalPolicy,
     ScanOptions,

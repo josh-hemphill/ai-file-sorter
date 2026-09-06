@@ -1,7 +1,7 @@
 //! Line framing helpers. One JSON document per line, no embedded newlines.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 /// Maximum accepted line length; protects the engine from a runaway client.
@@ -46,7 +46,7 @@ pub fn decode_line<T: DeserializeOwned>(line: &str) -> Result<T, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Command, Request, PROTOCOL_VERSION};
+    use crate::{Command, PROTOCOL_VERSION, Request};
 
     #[test]
     fn round_trips_requests() {

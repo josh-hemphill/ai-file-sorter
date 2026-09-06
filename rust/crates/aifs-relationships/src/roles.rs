@@ -202,10 +202,11 @@ mod tests {
             file("Music/Ada/night.mp3", FileFamily::Audio),
         ];
         classify_directories(&mut snapshot);
-        assert!(snapshot
-            .directory_roles
-            .iter()
-            .any(|role| role.kind == DirectoryRoleKind::Library && role.root.as_str() == "Music"));
+        assert!(
+            snapshot.directory_roles.iter().any(
+                |role| role.kind == DirectoryRoleKind::Library && role.root.as_str() == "Music"
+            )
+        );
         assert!(snapshot.bundles.iter().any(|bundle| {
             bundle.kind == BundleKind::Folder
                 && matches!(bundle.constraint, BundleConstraint::PreserveLayout { .. })
@@ -221,10 +222,12 @@ mod tests {
             file("old/2019/invoice.txt", FileFamily::Document),
         ];
         classify_directories(&mut snapshot);
-        assert!(snapshot
-            .directory_roles
-            .iter()
-            .any(|role| role.kind == DirectoryRoleKind::WeakArchive));
+        assert!(
+            snapshot
+                .directory_roles
+                .iter()
+                .any(|role| role.kind == DirectoryRoleKind::WeakArchive)
+        );
     }
 
     #[test]

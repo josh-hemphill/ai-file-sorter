@@ -51,9 +51,11 @@ fn media_worker_extracts_id3_tags() {
         is_hidden: false,
         lock: LockState::Readable,
     };
-    assert!(client
-        .extract(dir.path(), &text)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .is_none());
+    assert!(
+        client
+            .extract(dir.path(), &text)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .is_none()
+    );
     client.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }

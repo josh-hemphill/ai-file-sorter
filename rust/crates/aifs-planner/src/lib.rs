@@ -2,13 +2,13 @@
 
 pub mod compare;
 
-pub use compare::{destination_map, diff_plan, ExpectedPlan};
+pub use compare::{ExpectedPlan, destination_map, diff_plan};
 
 use aifs_domain::{
-    evidence::keys, AssetId, BundleConstraint, EntryKind, FileFamily, ObservedEntry, Operation,
-    OperationPlan, Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation,
-    ProposalRevision, RelativePath, RelativePathError, ReviewState, RevisionAuthor,
-    SuggestionOrigin, Timestamp, WorkspaceSnapshot,
+    AssetId, BundleConstraint, EntryKind, FileFamily, ObservedEntry, Operation, OperationPlan,
+    Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation, ProposalRevision,
+    RelativePath, RelativePathError, ReviewState, RevisionAuthor, SuggestionOrigin, Timestamp,
+    WorkspaceSnapshot, evidence::keys,
 };
 use aifs_protocol::{CategoryWhitelist, FolderStyle, ProposalPolicy};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -74,17 +74,17 @@ fn destination_for(
             Some("protected project member".to_owned()),
         );
     }
-    if let Some(role) = covering_role(snapshot, &entry.path) {
-        if matches!(
+    if let Some(role) = covering_role(snapshot, &entry.path)
+        && matches!(
             role.kind,
             aifs_domain::DirectoryRoleKind::Library | aifs_domain::DirectoryRoleKind::WeakArchive
-        ) {
-            return (
-                entry.path.clone(),
-                SuggestionOrigin::Unchanged,
-                Some(role.reason.clone()),
-            );
-        }
+        )
+    {
+        return (
+            entry.path.clone(),
+            SuggestionOrigin::Unchanged,
+            Some(role.reason.clone()),
+        );
     }
 
     let Some(folder) = folder_for(snapshot, entry, policy) else {
@@ -153,12 +153,11 @@ fn folder_for(
             folder = "Screenshots".to_owned();
         }
     }
-    if policy.use_subfolders {
-        if let Some(artist) = evidence_text(snapshot, entry.id, keys::MEDIA_ARTIST) {
-            if matches!(entry.family, FileFamily::Audio | FileFamily::Video) {
-                folder = format!("{folder}/{}", sanitize_segment(&artist, "Unknown"));
-            }
-        }
+    if policy.use_subfolders
+        && let Some(artist) = evidence_text(snapshot, entry.id, keys::MEDIA_ARTIST)
+        && matches!(entry.family, FileFamily::Audio | FileFamily::Video)
+    {
+        folder = format!("{folder}/{}", sanitize_segment(&artist, "Unknown"));
     }
     folder = apply_category_whitelist(folder, entry.family, &policy.whitelist);
     if folder.is_empty() {
@@ -218,10 +217,10 @@ fn apply_category_whitelist(
         } else {
             None
         };
-        if let Some(allowed) = allowed_subs {
-            if allowed.is_empty() || !allowed.iter().any(|name| name.eq_ignore_ascii_case(&sub)) {
-                parts.truncate(1);
-            }
+        if let Some(allowed) = allowed_subs
+            && (allowed.is_empty() || !allowed.iter().any(|name| name.eq_ignore_ascii_case(&sub)))
+        {
+            parts.truncate(1);
         }
     }
     parts.join("/")
@@ -234,19 +233,20 @@ fn file_name_for(
 ) -> String {
     let original = entry.path.file_name().to_owned();
     let ext = entry.extension().unwrap_or_default();
-    if policy.rename_media && matches!(entry.family, FileFamily::Audio | FileFamily::Video) {
-        if let Some(title) = evidence_text(snapshot, entry.id, keys::MEDIA_TITLE) {
-            let artist = evidence_text(snapshot, entry.id, keys::MEDIA_ARTIST);
-            let stem = match artist {
-                Some(artist) => format!(
-                    "{} - {}",
-                    sanitize_segment(&artist, "Unknown"),
-                    sanitize_segment(&title, "Untitled")
-                ),
-                None => sanitize_segment(&title, "Untitled"),
-            };
-            return with_extension(&stem, &ext, &original);
-        }
+    if policy.rename_media
+        && matches!(entry.family, FileFamily::Audio | FileFamily::Video)
+        && let Some(title) = evidence_text(snapshot, entry.id, keys::MEDIA_TITLE)
+    {
+        let artist = evidence_text(snapshot, entry.id, keys::MEDIA_ARTIST);
+        let stem = match artist {
+            Some(artist) => format!(
+                "{} - {}",
+                sanitize_segment(&artist, "Unknown"),
+                sanitize_segment(&title, "Untitled")
+            ),
+            None => sanitize_segment(&title, "Untitled"),
+        };
+        return with_extension(&stem, &ext, &original);
     }
     original
 }
@@ -436,14 +436,14 @@ pub fn validate(
             .entries
             .iter()
             .find(|entry| entry.path.case_fold() == dest.case_fold())
+            && occupant.id != *asset
+            && !moving_from.contains(&occupant.path.case_fold())
         {
-            if occupant.id != *asset && !moving_from.contains(&occupant.path.case_fold()) {
-                issues.push(PlanIssue::error(
-                    "destination_occupied",
-                    format!("{dest} already exists and is not moving away"),
-                    vec![*asset, occupant.id],
-                ));
-            }
+            issues.push(PlanIssue::error(
+                "destination_occupied",
+                format!("{dest} already exists and is not moving away"),
+                vec![*asset, occupant.id],
+            ));
         }
     }
 
@@ -587,14 +587,14 @@ fn check_protected_member(
     let Some(bundle) = snapshot.hard_bundle_for(entry.id) else {
         return;
     };
-    if let BundleConstraint::Protected { reason } = &bundle.constraint {
-        if placement.destination != entry.path {
-            issues.push(PlanIssue::error(
-                "protected_member",
-                reason.clone(),
-                vec![entry.id],
-            ));
-        }
+    if let BundleConstraint::Protected { reason } = &bundle.constraint
+        && placement.destination != entry.path
+    {
+        issues.push(PlanIssue::error(
+            "protected_member",
+            reason.clone(),
+            vec![entry.id],
+        ));
     }
 }
 
@@ -788,9 +788,11 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.code == "nothing_accepted"));
         let accepted = accept_all(&revision).unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &accepted);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(plan.move_count() == 1);
     }
@@ -829,9 +831,11 @@ mod tests {
 
         let both = accept_all(&revision).unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &both);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         assert!(plan.is_some());
     }
 
@@ -861,9 +865,11 @@ mod tests {
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &revision);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         let removed: Vec<String> = plan
             .operations
@@ -979,9 +985,11 @@ mod tests {
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &revision);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(
             !plan.operations.iter().any(|planned| matches!(
@@ -1014,9 +1022,11 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &only_text);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(
             !plan.operations.iter().any(|planned| matches!(
@@ -1049,9 +1059,11 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{e}"));
         let (plan, issues) = validate(&snapshot, &only_text);
-        assert!(issues
-            .iter()
-            .all(|issue| issue.severity != PlanIssueSeverity::Error));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(
             !plan.operations.iter().any(|planned| matches!(
