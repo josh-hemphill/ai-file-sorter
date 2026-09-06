@@ -35,9 +35,11 @@ import {
   acceptedCount,
   constraintLabel,
   currentWorkflowStep,
+  itemRows,
   loadRecentRoots,
   persistRecentRoots,
   rememberRoot,
+  roleKindLabel,
   skippedReasonLabel,
 } from "../workflow";
 
@@ -90,6 +92,7 @@ const filteredFiles = computed(() => {
     );
   });
 });
+const rows = computed(() => itemRows(filteredFiles.value, snapshot.value));
 const selectedEntry = computed(
   () => files.value.find((entry) => entry.id === selectedAsset.value) ?? null,
 );
@@ -180,7 +183,14 @@ async function runScan() {
 }
 
 async function setReview(asset: string, review: "accepted" | "rejected" | "proposed") {
-  if (!snapshot.value || !revision.value) {
+  return setReviewAssets([asset], review);
+}
+
+async function setReviewAssets(
+  assets: string[],
+  review: "accepted" | "rejected" | "proposed",
+) {
+  if (!snapshot.value || !revision.value || assets.length === 0) {
     return;
   }
   const op =
@@ -190,8 +200,8 @@ async function setReview(asset: string, review: "accepted" | "rejected" | "propo
     revision.value = await patchRevision(
       snapshot.value.session,
       revision.value.id,
-      `${op} ${asset}`,
-      [{ op, assets: [asset] }],
+      `${op} ${assets.length} items`,
+      [{ op, assets }],
     );
     plan.value = null;
     issues.value = [];
@@ -420,6 +430,13 @@ function familyOf(entry: ObservedEntry): string {
       >
         <pre v-if="revision">{{ renderTree(tree) || "(empty proposal)" }}</pre>
         <p v-else class="muted">Scan a source to see the proposed folder tree.</p>
+        <section v-if="snapshot?.directory_roles?.length" class="roles">
+          <h2>Folder roles</h2>
+          <article v-for="role in snapshot.directory_roles" :key="role.root" class="card">
+            <strong>{{ role.root }}</strong>
+            <span class="muted">{{ roleKindLabel(role.kind) }} · {{ role.reason }}</span>
+          </article>
+        </section>
         <section v-if="snapshot?.skipped.length" class="skipped">
           <h2>Skipped</h2>
           <p class="muted">
@@ -452,34 +469,70 @@ function familyOf(entry: ObservedEntry): string {
           </thead>
           <tbody>
             <tr
-              v-for="entry in filteredFiles"
-              :key="entry.id"
-              :class="{ selected: selectedAsset === entry.id }"
-              @click="selectedAsset = entry.id"
+              v-for="row in rows"
+              :key="row.type === 'file' ? row.entry.id : row.bundle.id"
+              :class="{ selected: row.type === 'file' && selectedAsset === row.entry.id }"
+              @click="
+                selectedAsset =
+                  row.type === 'file' ? row.entry.id : (row.members[0]?.id ?? null)
+              "
             >
-              <td :title="entry.path">{{ entry.path }}</td>
-              <td>{{ familyOf(entry) }}</td>
-              <td>{{ placementFor(entry.id)?.destination ?? "—" }}</td>
-              <td>
-                <select
-                  :value="placementFor(entry.id)?.review ?? 'proposed'"
-                  :aria-label="`Review ${entry.path}`"
-                  @click.stop
-                  @change="
-                    setReview(
-                      entry.id,
-                      ($event.target as HTMLSelectElement).value as
-                        | 'accepted'
-                        | 'rejected'
-                        | 'proposed',
-                    )
-                  "
-                >
-                  <option value="proposed">Proposed</option>
-                  <option value="accepted">Accepted</option>
-                  <option value="rejected">Rejected</option>
-                </select>
-              </td>
+              <template v-if="row.type === 'file'">
+                <td :title="row.entry.path">{{ row.entry.path }}</td>
+                <td>{{ familyOf(row.entry) }}</td>
+                <td>{{ placementFor(row.entry.id)?.destination ?? "—" }}</td>
+                <td>
+                  <select
+                    :value="placementFor(row.entry.id)?.review ?? 'proposed'"
+                    :aria-label="`Review ${row.entry.path}`"
+                    @click.stop
+                    @change="
+                      setReview(
+                        row.entry.id,
+                        ($event.target as HTMLSelectElement).value as
+                          | 'accepted'
+                          | 'rejected'
+                          | 'proposed',
+                      )
+                    "
+                  >
+                    <option value="proposed">Proposed</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </td>
+              </template>
+              <template v-else>
+                <td :title="row.members.map((member) => member.path).join(', ')">
+                  {{ row.bundle.label || row.bundle.kind }}
+                  <span class="muted">
+                    · {{ constraintLabel(row.bundle.constraint) }} ·
+                    {{ row.members.map((member) => member.path).join(", ") }}
+                  </span>
+                </td>
+                <td>bundle</td>
+                <td>{{ placementFor(row.members[0]?.id ?? "")?.destination ?? "—" }}</td>
+                <td>
+                  <select
+                    :value="placementFor(row.members[0]?.id ?? '')?.review ?? 'proposed'"
+                    :aria-label="`Review bundle ${row.bundle.label}`"
+                    @click.stop
+                    @change="
+                      setReviewAssets(
+                        row.members.map((member) => member.id),
+                        ($event.target as HTMLSelectElement).value as
+                          | 'accepted'
+                          | 'rejected'
+                          | 'proposed',
+                      )
+                    "
+                  >
+                    <option value="proposed">Proposed</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </td>
+              </template>
             </tr>
           </tbody>
         </table>

@@ -59,6 +59,31 @@ pub enum SkipReason {
     },
 }
 
+/// How a directory should be treated during organisation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryRoleKind {
+    /// Existing media/music library layout; do not flatten.
+    Library,
+    /// Generic dump folder; children may be organised independently.
+    BroadInbox,
+    /// Partial/old archive whose path still carries meaning; keep internals.
+    WeakArchive,
+    /// Mixed contents without a stronger signal.
+    Mixed,
+}
+
+/// A classified directory under the session root.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryRoleMatch {
+    /// Directory relative to the session root.
+    pub root: RelativePath,
+    /// Role.
+    pub kind: DirectoryRoleKind,
+    /// Why this role was assigned.
+    pub reason: String,
+}
+
 /// An entry the scanner saw but excluded, so the UI can show what was ignored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkippedEntry {
@@ -94,6 +119,9 @@ pub struct WorkspaceSnapshot {
     /// Extracted evidence.
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    /// Directory roles for mixed trees (libraries, weak archives, inboxes).
+    #[serde(default)]
+    pub directory_roles: Vec<DirectoryRoleMatch>,
 }
 
 impl WorkspaceSnapshot {
@@ -109,6 +137,7 @@ impl WorkspaceSnapshot {
             bundles: Vec::new(),
             relationships: Vec::new(),
             evidence: Vec::new(),
+            directory_roles: Vec::new(),
         }
     }
 

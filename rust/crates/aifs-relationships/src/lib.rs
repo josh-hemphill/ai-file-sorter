@@ -3,6 +3,7 @@
 pub mod archives;
 pub mod hardlinks;
 pub mod projects;
+pub mod roles;
 pub mod series;
 pub mod sidecars;
 
@@ -17,6 +18,7 @@ use aifs_domain::{
 /// already happened during the scan.
 pub fn enrich(snapshot: &mut WorkspaceSnapshot, protect_projects: bool) {
     add_project_bundles(snapshot, protect_projects);
+    roles::classify_directories(snapshot);
     sidecars::detect_sidecars(snapshot);
     archives::detect_archive_parts(snapshot);
     series::detect_series(snapshot);

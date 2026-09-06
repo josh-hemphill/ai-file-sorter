@@ -997,6 +997,66 @@ mod tests {
         assert!(stages.contains(&"relationships"), "stages={stages:?}");
     }
 
+    #[test]
+    fn junk_drawer_keeps_library_and_archive_paths() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/junk-drawer");
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let scan_events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root,
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let snapshot = match terminal(scan_events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(
+            !snapshot.directory_roles.is_empty(),
+            "expected directory roles, got none; entries={:?}",
+            snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_owned())
+                .collect::<Vec<_>>()
+        );
+        let revision = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let map = aifs_planner::destination_map(&snapshot, &revision);
+        assert_eq!(
+            map.get("Music/Ada/night.mp3").map(String::as_str),
+            Some("Music/Ada/night.mp3"),
+            "library file flattened: {map:?}"
+        );
+        assert_eq!(
+            map.get("old/2019/client-a/invoice.txt").map(String::as_str),
+            Some("old/2019/client-a/invoice.txt"),
+            "archive file flattened: {map:?}"
+        );
+    }
+
     fn terminal(events: Vec<Envelope>) -> Event {
         events
             .into_iter()

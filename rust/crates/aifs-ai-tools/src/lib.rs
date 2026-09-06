@@ -339,6 +339,7 @@ fn bundle_kind_label(kind: BundleKind) -> &'static str {
         BundleKind::SidecarGroup => "sidecar group",
         BundleKind::Series => "series",
         BundleKind::ArchiveParts => "archive parts",
+        BundleKind::Folder => "folder",
         BundleKind::Manual => "manual",
     }
 }
