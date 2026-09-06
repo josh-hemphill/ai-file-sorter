@@ -63,6 +63,10 @@ fn document_worker_extracts_pdf_docx_and_text() {
         .unwrap_or_else(|error| panic!("{error}"))
         .unwrap_or_else(|| panic!("docx evidence"));
     assert_eq!(docx.fact(keys::DOCUMENT_TITLE), Some("Staff Memo"));
+    assert!(
+        docx.fact(keys::DOCUMENT_TEXT)
+            .is_some_and(|text| text.contains("Please file this."))
+    );
 
     let text = client
         .extract(dir.path(), &file_entry("notes.txt", FileFamily::Document))

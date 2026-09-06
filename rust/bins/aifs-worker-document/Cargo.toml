@@ -18,7 +18,6 @@ aifs-worker-runtime = { workspace = true }
 
 [dev-dependencies]
 aifs-domain = { workspace = true }
-aifs-extractors = { workspace = true }
 aifs-worker-client = { workspace = true }
 tempfile = { workspace = true }
 

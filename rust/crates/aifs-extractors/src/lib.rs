@@ -1,8 +1,9 @@
-//! Bounded readers for embedded audio/video tags.
+//! Bounded readers for embedded audio/video tags and document text.
 //!
-//! Ports the MediaInfo-free path from the Qt `MediaRenameMetadataService`: ID3v1/v2,
-//! FLAC Vorbis comments, Ogg Vorbis/Opus comments, and MP4/M4A `ilst` atoms. Reads are
-//! size-capped so a corrupt tag cannot pull a multi-gigabyte file into memory.
+//! Media: ID3v1/v2, FLAC Vorbis comments, Ogg Vorbis/Opus comments, and MP4/M4A
+//! `ilst` atoms. Documents: PDF strings, Office/EPUB zip members, and plain text.
+//! Reads are size-capped so a corrupt file cannot pull a multi-gigabyte payload
+//! into memory.
 
 use aifs_domain::{
     Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, LockState, ObservedEntry,

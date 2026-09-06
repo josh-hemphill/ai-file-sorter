@@ -10,6 +10,7 @@ use std::path::Path;
 
 const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ZIP_ENTRY_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_ZIP_MEMBERS: usize = 256;
 const MAX_TEXT_CHARS: usize = 16_384;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 280;
@@ -34,16 +35,18 @@ pub fn extract_document_entry(root: &Path, entry: &ObservedEntry) -> Option<Evid
     let extension = entry.extension()?;
     let path = entry.path.resolve(root);
     let fields = read_document_fields(&path, &extension)?;
+    let title = fields.title.map(|value| truncate(&value, MAX_TITLE_CHARS));
+    let text = fields.text.map(|value| truncate(&value, MAX_TEXT_CHARS));
     let mut evidence = Evidence::new(
         entry.id,
         EvidenceSource::DocumentMetadata,
         Confidence::CERTAIN,
     );
-    if let Some(title) = &fields.title {
+    if let Some(title) = &title {
         evidence = evidence.with_fact(keys::DOCUMENT_TITLE, title.clone());
         evidence = evidence.with_fact(keys::DESCRIPTION, truncate(title, MAX_DESCRIPTION_CHARS));
     }
-    if let Some(text) = &fields.text {
+    if let Some(text) = &text {
         evidence = evidence.with_fact(keys::DOCUMENT_TEXT, text.clone());
         if evidence.fact(keys::DESCRIPTION).is_none() {
             evidence = evidence.with_fact(keys::DESCRIPTION, truncate(text, MAX_DESCRIPTION_CHARS));
@@ -79,6 +82,49 @@ fn read_document_fields(path: &Path, extension: &str) -> Option<DocumentFields> 
         "epub" => read_epub(path),
         _ => None,
     }
+}
+
+fn open_capped_zip(path: &Path) -> Option<zip::ZipArchive<File>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_DOCUMENT_BYTES {
+        return None;
+    }
+    zip::ZipArchive::new(File::open(path).ok()?).ok()
+}
+
+fn zip_member_names(
+    archive: &mut zip::ZipArchive<File>,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let limit = archive.len().min(MAX_ZIP_MEMBERS);
+    let mut names = Vec::new();
+    for index in 0..limit {
+        let Ok(entry) = archive.by_index(index) else {
+            continue;
+        };
+        let name = entry.name().to_owned();
+        if keep(&name) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names
+}
+
+fn xml_attr_value(xml: &str, attr: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let marker = format!("{attr}={quote}");
+        if let Some(start) = xml.find(&marker) {
+            let rest = &xml[start + marker.len()..];
+            if let Some(end) = rest.find(quote) {
+                let value = rest[..end].trim();
+                if !value.is_empty() {
+                    return Some(value.to_owned());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn read_capped_file(path: &Path) -> io::Result<Vec<u8>> {
@@ -136,7 +182,7 @@ fn read_pdf(path: &Path) -> Option<DocumentFields> {
     for stream in pdf_streams(&bytes) {
         let decoded = decode_pdf_stream(stream);
         collect_pdf_strings(&decoded, &mut text);
-        if text.len() >= MAX_TEXT_CHARS {
+        if text.chars().count() >= MAX_TEXT_CHARS {
             break;
         }
     }
@@ -160,8 +206,7 @@ fn read_office_zip(
     meta_member: Option<&str>,
     text_tag: &str,
 ) -> Option<DocumentFields> {
-    let file = File::open(path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut archive = open_capped_zip(path)?;
     let title = meta_member.and_then(|name| zip_xml_text(&mut archive, name, "title"));
     let mut text = String::new();
     for name in text_members {
@@ -171,7 +216,7 @@ fn read_office_zip(
             }
             text.push_str(&chunk);
         }
-        if text.len() >= MAX_TEXT_CHARS {
+        if text.chars().count() >= MAX_TEXT_CHARS {
             break;
         }
     }
@@ -180,29 +225,17 @@ fn read_office_zip(
         return None;
     }
     Some(DocumentFields {
-        title: title.map(|value| truncate(&value, MAX_TITLE_CHARS)),
-        text: if text.is_empty() {
-            None
-        } else {
-            Some(truncate(&text, MAX_TEXT_CHARS))
-        },
+        title,
+        text: if text.is_empty() { None } else { Some(text) },
     })
 }
 
 fn read_pptx(path: &Path) -> Option<DocumentFields> {
-    let file = File::open(path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut archive = open_capped_zip(path)?;
     let title = zip_xml_text(&mut archive, "docProps/core.xml", "title");
-    let mut names: Vec<String> = (0..archive.len())
-        .filter_map(|index| {
-            archive
-                .by_index(index)
-                .ok()
-                .map(|entry| entry.name().to_owned())
-        })
-        .filter(|name| name.starts_with("ppt/slides/slide") && name.ends_with(".xml"))
-        .collect();
-    names.sort();
+    let names = zip_member_names(&mut archive, |name| {
+        name.starts_with("ppt/slides/slide") && name.ends_with(".xml")
+    });
     let mut text = String::new();
     for name in names {
         if let Some(chunk) = zip_xml_text(&mut archive, &name, "t") {
@@ -211,7 +244,7 @@ fn read_pptx(path: &Path) -> Option<DocumentFields> {
             }
             text.push_str(&chunk);
         }
-        if text.len() >= MAX_TEXT_CHARS {
+        if text.chars().count() >= MAX_TEXT_CHARS {
             break;
         }
     }
@@ -220,33 +253,22 @@ fn read_pptx(path: &Path) -> Option<DocumentFields> {
         return None;
     }
     Some(DocumentFields {
-        title: title.map(|value| truncate(&value, MAX_TITLE_CHARS)),
-        text: if text.is_empty() {
-            None
-        } else {
-            Some(truncate(&text, MAX_TEXT_CHARS))
-        },
+        title,
+        text: if text.is_empty() { None } else { Some(text) },
     })
 }
 
 fn read_epub(path: &Path) -> Option<DocumentFields> {
-    let file = File::open(path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
-    let title = zip_xml_text(&mut archive, "OEBPS/content.opf", "title")
+    let mut archive = open_capped_zip(path)?;
+    let title = zip_member_string(&mut archive, "META-INF/container.xml")
+        .and_then(|container| xml_attr_value(&container, "full-path"))
+        .and_then(|opf| zip_xml_text(&mut archive, &opf, "title"))
+        .or_else(|| zip_xml_text(&mut archive, "OEBPS/content.opf", "title"))
         .or_else(|| zip_xml_text(&mut archive, "EPUB/content.opf", "title"));
-    let mut names: Vec<String> = (0..archive.len())
-        .filter_map(|index| {
-            archive
-                .by_index(index)
-                .ok()
-                .map(|entry| entry.name().to_owned())
-        })
-        .filter(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
-        })
-        .collect();
-    names.sort();
+    let names = zip_member_names(&mut archive, |name| {
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
+    });
     let mut text = String::new();
     for name in names {
         if let Some(raw) = zip_member_string(&mut archive, &name) {
@@ -259,7 +281,7 @@ fn read_epub(path: &Path) -> Option<DocumentFields> {
             }
             text.push_str(&chunk);
         }
-        if text.len() >= MAX_TEXT_CHARS {
+        if text.chars().count() >= MAX_TEXT_CHARS {
             break;
         }
     }
@@ -268,12 +290,8 @@ fn read_epub(path: &Path) -> Option<DocumentFields> {
         return None;
     }
     Some(DocumentFields {
-        title: title.map(|value| truncate(&value, MAX_TITLE_CHARS)),
-        text: if text.is_empty() {
-            None
-        } else {
-            Some(truncate(&text, MAX_TEXT_CHARS))
-        },
+        title,
+        text: if text.is_empty() { None } else { Some(text) },
     })
 }
 
