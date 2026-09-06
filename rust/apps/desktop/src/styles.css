@@ -208,6 +208,15 @@ tr.selected {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  white-space: pre-wrap;
+}
+
+.chat .you {
+  color: var(--fg);
+}
+
+.chat .assistant {
+  color: var(--muted);
 }
 
 dl {

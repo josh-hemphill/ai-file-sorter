@@ -1,8 +1,9 @@
 //! Isolated workspace engine used by the `aifs-engine` stdio binary.
 //!
 //! This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-//! `undo`, `cancel`, and `shutdown`.
+//! `undo`, `chat`, `cancel`, and `shutdown`.
 
+use aifs_ai_tools::{execute, interpret, MOCK_ASSISTANT_MODEL};
 use aifs_apply::{apply_plan_with_hooks, undo_journal_with_hooks, ApplyHook};
 use aifs_domain::{JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, WorkspaceSnapshot};
 use aifs_extractors::extract_into_with_progress;
@@ -29,6 +30,7 @@ pub fn capabilities() -> Vec<String> {
         "plan".to_owned(),
         "apply".to_owned(),
         "undo".to_owned(),
+        "chat".to_owned(),
     ]
 }
 
@@ -124,6 +126,15 @@ impl Engine {
             } => self.handle_apply(&request.id, session, plan, dry_run, emit),
             Command::Undo { session, journal } => {
                 self.handle_undo(&request.id, session, journal, emit)
+            }
+            Command::Chat {
+                session,
+                revision,
+                utterance,
+            } => {
+                for envelope in self.handle_chat(&request.id, session, revision, utterance) {
+                    emit(envelope);
+                }
             }
             Command::Shutdown => {
                 self.shutdown = true;
@@ -500,6 +511,87 @@ impl Engine {
         emit_journal_outcome(emit, id, session, &self.store, journal, persist_error);
     }
 
+    fn handle_chat(
+        &mut self,
+        id: &RequestId,
+        session: SessionId,
+        revision: RevisionId,
+        utterance: String,
+    ) -> Vec<Envelope> {
+        if let Some(failed) = self.require_hello(id) {
+            return vec![failed];
+        }
+        let trimmed = utterance.trim();
+        if trimmed.is_empty() {
+            return vec![Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::InvalidRequest,
+                    message: "chat utterance is empty".to_owned(),
+                    issues: vec![],
+                },
+            )];
+        }
+        let snapshot = match self.store.get_snapshot(session) {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return vec![not_found(id, "session snapshot")],
+            Err(error) => return vec![store_failed(id, error)],
+        };
+        let base = match self.store.get_revision(revision) {
+            Ok(Some(revision)) => revision,
+            Ok(None) => return vec![not_found(id, "revision")],
+            Err(error) => return vec![store_failed(id, error)],
+        };
+        if base.session != session {
+            return vec![Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::InvalidRequest,
+                    message: "revision does not belong to this session".to_owned(),
+                    issues: vec![],
+                },
+            )];
+        }
+        let output = execute(&snapshot, &base, &interpret(trimmed));
+        if output.patches.is_empty() {
+            return vec![Envelope::reply(
+                id,
+                Event::ChatReply {
+                    message: output.message,
+                    revision: None,
+                },
+            )];
+        }
+        match base.with_patches(
+            RevisionAuthor::Assistant {
+                model: MOCK_ASSISTANT_MODEL.to_owned(),
+            },
+            trimmed,
+            &output.patches,
+        ) {
+            Ok(revision) => {
+                if let Err(error) = self.store.put_revision(&revision) {
+                    return vec![store_failed(id, error)];
+                }
+                vec![Envelope::reply(
+                    id,
+                    Event::ChatReply {
+                        message: output.message,
+                        revision: Some(revision),
+                    },
+                )]
+            }
+            Err(error) => vec![Envelope::reply(
+                id,
+                Event::Failed {
+                    code: ErrorCode::InvalidRequest,
+                    message: error.to_string(),
+                    issues: vec![],
+                },
+            )],
+        }
+    }
+
     fn require_hello(&self, id: &RequestId) -> Option<Envelope> {
         if self.hello_ok {
             None
@@ -783,5 +875,84 @@ mod tests {
         };
         assert!(journal.dry_run);
         assert!(dir.path().join("note.txt").exists());
+    }
+
+    #[test]
+    fn chat_moves_audio_into_podcasts_and_search_is_read_only() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let scan_events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let snapshot = match terminal(scan_events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let search = match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "find show.mp3".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => {
+                assert!(message.contains("show.mp3"), "{message}");
+                assert!(revision.is_none());
+                message
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(search.contains("Found"));
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Podcasts"), "{message}");
+        let next = next.unwrap_or_else(|| panic!("expected child revision"));
+        assert_eq!(next.parent, Some(revision.id));
+        let dest = next
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_default();
+        assert!(
+            dest.starts_with("Podcasts/"),
+            "expected Podcasts destination, got {dest}"
+        );
     }
 }

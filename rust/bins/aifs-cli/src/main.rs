@@ -55,6 +55,19 @@ enum Commands {
         #[arg(long)]
         include_hidden: bool,
     },
+    /// Scan, propose, then run a revision-based assistant turn.
+    Chat {
+        /// Folder to scan first.
+        folder: PathBuf,
+        /// Utterance interpreted into tools (search, group, rename, validate, …).
+        utterance: String,
+        /// Dump the reply as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include hidden files.
+        #[arg(long)]
+        include_hidden: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -166,6 +179,40 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     journal.dry_run
                 );
                 println!("  session {}  journal {}", snapshot.session, journal.id);
+            }
+            let _ = client.shutdown();
+            Ok(())
+        }
+        Commands::Chat {
+            folder,
+            utterance,
+            json,
+            include_hidden,
+        } => {
+            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let snapshot = client.scan(
+                &folder,
+                ScanOptions {
+                    include_hidden,
+                    ..ScanOptions::default()
+                },
+                None,
+            )?;
+            let revision = client.propose(snapshot.session, ProposalPolicy::default())?;
+            let reply = client.chat(snapshot.session, revision.id, utterance)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "message": reply.message,
+                        "revision": reply.revision,
+                    }))?
+                );
+            } else {
+                println!("{}", reply.message);
+                if let Some(next) = reply.revision {
+                    println!("  revision {} (parent {})", next.id, revision.id);
+                }
             }
             let _ = client.shutdown();
             Ok(())

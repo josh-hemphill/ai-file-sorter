@@ -259,6 +259,30 @@ fn undo_journal(
     })
 }
 
+#[derive(Serialize)]
+struct ChatResult {
+    message: String,
+    revision: Option<ProposalRevision>,
+}
+
+#[tauri::command]
+fn chat_revision(
+    state: State<EngineState>,
+    session: SessionId,
+    revision: RevisionId,
+    utterance: String,
+) -> Result<ChatResult, String> {
+    with_client(&state, |client| {
+        let reply = client
+            .chat(session, revision, utterance)
+            .map_err(|error| error.to_string())?;
+        Ok(ChatResult {
+            message: reply.message,
+            revision: reply.revision,
+        })
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -275,7 +299,8 @@ pub fn run() {
             patch_revision,
             plan_revision,
             apply_plan,
-            undo_journal
+            undo_journal,
+            chat_revision
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   applyPlan,
+  chatRevision,
   connectEngine,
   onEngineProgress,
   patchRevision,
@@ -15,6 +16,7 @@ import { destinationTree } from "./tree";
 import type {
   ApplyJournal,
   CenterView,
+  ChatLine,
   IntentPreset,
   ObservedEntry,
   OperationPlan,
@@ -39,8 +41,8 @@ const issues = ref<PlanIssue[]>([]);
 const journal = ref<ApplyJournal | null>(null);
 const selectedAsset = ref<string | null>(null);
 const query = ref("");
-const mockChat = ref("");
-const chatLog = ref<string[]>([]);
+const draft = ref("");
+const chatLog = ref<ChatLine[]>([]);
 
 const presets: { id: IntentPreset; label: string; hint: string }[] = [
   { id: "inbox", label: "Tidy inbox", hint: "Broad folders, protect projects" },
@@ -221,16 +223,39 @@ async function runUndo() {
   }
 }
 
-function applyMockChat() {
-  const text = mockChat.value.trim();
-  if (!text || !revision.value) {
+async function sendChat() {
+  const text = draft.value.trim();
+  if (!text) {
     return;
   }
-  chatLog.value.push(`You: ${text}`);
-  chatLog.value.push(
-    "Assistant (mock): I can only edit revisions through tools. Next slice wires search, grouping, and naming templates. For now, accept or reject rows in Items.",
-  );
-  mockChat.value = "";
+  if (!snapshot.value || !revision.value) {
+    engineError.value = "Scan a source before chatting.";
+    return;
+  }
+  busy.value = true;
+  engineError.value = null;
+  chatLog.value.push({ role: "you", text });
+  draft.value = "";
+  try {
+    const reply = await chatRevision(
+      snapshot.value.session,
+      revision.value.id,
+      text,
+    );
+    chatLog.value.push({ role: "assistant", text: reply.message });
+    if (reply.revision) {
+      revision.value = reply.revision;
+      plan.value = null;
+    }
+  } catch (error) {
+    engineError.value = String(error);
+    chatLog.value.push({
+      role: "assistant",
+      text: `That turn failed: ${String(error)}`,
+    });
+  } finally {
+    busy.value = false;
+  }
 }
 
 function renderTree(node: ReturnType<typeof destinationTree>, depth = 0): string {
@@ -442,11 +467,24 @@ function familyOf(entry: ObservedEntry): string {
       <p v-else class="muted">Select an item to inspect evidence.</p>
       <h2>Assistant</h2>
       <div class="chat">
-        <p v-for="(line, index) in chatLog" :key="index">{{ line }}</p>
+        <p
+          v-for="(line, index) in chatLog"
+          :key="index"
+          :class="line.role"
+        >
+          {{ line.text }}
+        </p>
+        <p v-if="!chatLog.length" class="muted">
+          Tools can search, inspect bundles, group podcasts, rename from tags, and validate.
+        </p>
       </div>
-      <form class="row" @submit.prevent="applyMockChat">
-        <input v-model="mockChat" placeholder="Keep RAW and JPEG pairs together…" />
-        <button type="submit">Send</button>
+      <form class="row" @submit.prevent="sendChat">
+        <input
+          v-model="draft"
+          :disabled="busy || !revision"
+          placeholder="Keep RAW and JPEG pairs together…"
+        />
+        <button type="submit" :disabled="busy || !revision">Send</button>
       </form>
     </aside>
   </div>

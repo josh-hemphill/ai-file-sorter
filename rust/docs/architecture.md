@@ -44,9 +44,10 @@ Rules:
 | `aifs-store` | SQLite WAL store for snapshots, revisions, plans, journals | domain |
 | `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
 | `aifs-apply` | Journaled local apply + undo | domain, scanner |
-| `aifs-engine` | Request dispatch (`hello` … `undo`) | all of the above |
+| `aifs-ai-tools` | Keyword tools that emit `RevisionPatch`es (never SQL or FS ops) | domain, planner |
+| `aifs-engine` | Request dispatch (`hello` … `chat`) | all of the above |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
-| `bins/aifs-cli` (`aifs`) | `aifs scan` / `aifs organize` via the engine process | engine-client |
+| `bins/aifs-cli` (`aifs`) | `aifs scan` / `organize` / `chat` via the engine process | engine-client |
 | `apps/desktop` | Tauri 2 shell + Vue 3 workspace; JSONL to the engine | engine-client, protocol |
 
 ## Data flow
@@ -54,7 +55,8 @@ Rules:
 1. `scan` → `WorkspaceSnapshot` (entries, skipped, projects, bundles, relationships,
    evidence). Persisted; never mutated.
 2. `propose` → root `ProposalRevision` from heuristics.
-3. `patch` (user or assistant) → child revision. The chain is the review history.
+3. `patch` (user) or `chat` (assistant tools) → child revision. The chain is the
+   review history. Chat never mutates disk; it only patches the proposal.
 4. `plan` → `OperationPlan` or a list of `PlanIssue`s. Hard-bundle splits, protected
    members, collisions, and path escapes are errors.
 5. `apply` → `ApplyJournal`, written before each operation. Dry run produces a journal

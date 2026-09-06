@@ -22,6 +22,15 @@ const ENGINE_BINARY: &str = if cfg!(windows) {
     "aifs-engine"
 };
 
+/// Assistant reply from a `chat` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatReply {
+    /// Tool summary shown to the user.
+    pub message: String,
+    /// Child revision when tools produced patches.
+    pub revision: Option<aifs_domain::ProposalRevision>,
+}
+
 /// Failures talking to the engine process.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -265,6 +274,39 @@ impl EngineClient {
         journal: aifs_domain::JournalId,
     ) -> Result<aifs_domain::ApplyJournal, ClientError> {
         self.expect_journal(Command::Undo { session, journal })
+    }
+
+    /// Runs assistant tools against a revision. Returns a child revision when patches land.
+    pub fn chat(
+        &mut self,
+        session: aifs_domain::SessionId,
+        revision: aifs_domain::RevisionId,
+        utterance: impl Into<String>,
+    ) -> Result<ChatReply, ClientError> {
+        let envelopes = self.request(Command::Chat {
+            session,
+            revision,
+            utterance: utterance.into(),
+        })?;
+        for envelope in envelopes {
+            match envelope.event {
+                Event::ChatReply { message, revision } => {
+                    return Ok(ChatReply { message, revision })
+                }
+                Event::Failed { code, message, .. } => {
+                    return Err(ClientError::Engine { code, message })
+                }
+                Event::Progress { .. } | Event::Log { .. } => {}
+                other => {
+                    return Err(ClientError::Unexpected(format!(
+                        "unexpected chat event {other:?}"
+                    )))
+                }
+            }
+        }
+        Err(ClientError::Unexpected(
+            "chat ended without chat_reply".to_owned(),
+        ))
     }
 
     fn expect_revision(

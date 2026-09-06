@@ -21,6 +21,7 @@ aifs-planner = { path = "crates/aifs-planner" }
 aifs-apply = { path = "crates/aifs-apply" }
 aifs-engine = { path = "crates/aifs-engine" }
 aifs-engine-client = { path = "crates/aifs-engine-client" }
+aifs-ai-tools = { path = "crates/aifs-ai-tools" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,0 +1,15 @@
+[package]
+name = "aifs-ai-tools"
+description = "Revision-based assistant tools (search, structure, naming, grouping)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aifs-domain = { workspace = true }
+aifs-planner = { workspace = true }
+
+[lints]
+workspace = true

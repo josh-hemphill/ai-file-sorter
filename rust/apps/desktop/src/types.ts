@@ -105,3 +105,13 @@ export interface ProgressEvent {
 
 export type CenterView = "structure" | "items" | "relationships" | "activity";
 export type IntentPreset = "inbox" | "archive" | "media" | "custom";
+
+export interface ChatReply {
+  message: string;
+  revision: ProposalRevision | null;
+}
+
+export interface ChatLine {
+  role: "you" | "assistant";
+  text: string;
+}

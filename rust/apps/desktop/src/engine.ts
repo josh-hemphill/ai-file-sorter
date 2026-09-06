@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ApplyJournal,
+  ChatReply,
   Id,
   OperationPlan,
   PlanIssue,
@@ -66,6 +67,14 @@ export async function undoJournal(
   journal: Id,
 ): Promise<ApplyJournal> {
   return invoke("undo_journal", { session, journal });
+}
+
+export async function chatRevision(
+  session: Id,
+  revision: Id,
+  utterance: string,
+): Promise<ChatReply> {
+  return invoke("chat_revision", { session, revision, utterance });
 }
 
 export function onEngineProgress(

@@ -30,6 +30,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aifs-ai-tools"
+version = "0.1.0"
+dependencies = [
+ "aifs-domain",
+ "aifs-planner",
+]
+
+[[package]]
 name = "aifs-apply"
 version = "0.1.0"
 dependencies = [
@@ -82,6 +90,7 @@ dependencies = [
 name = "aifs-engine"
 version = "0.1.0"
 dependencies = [
+ "aifs-ai-tools",
  "aifs-apply",
  "aifs-domain",
  "aifs-extractors",

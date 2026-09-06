@@ -23,6 +23,7 @@ diagnostic only.
 | `plan` | `session`, `revision` | `planned { plan, issues }` or `failed { plan_rejected, issues }` |
 | `apply` | `session`, `plan`, `dry_run` | `journal` |
 | `undo` | `session`, `journal` | `journal` |
+| `chat` | `session`, `revision`, `utterance` | `chat_reply { message, revision? }` |
 | `cancel` | `target` | `cancelled` on the target request |
 | `shutdown` | — | `shutdown` |
 
@@ -33,8 +34,8 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 
 - `progress { stage, current, total?, message }` — may repeat; never terminal.
 - `log { level, message }` — never terminal.
-- `ready`, `scan_completed`, `revision`, `planned`, `journal`, `cancelled`, `failed`,
-  `shutdown` — terminal for their request.
+- `ready`, `scan_completed`, `revision`, `planned`, `journal`, `chat_reply`,
+  `cancelled`, `failed`, `shutdown` — terminal for their request.
 
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
 
@@ -54,5 +55,9 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 ```
 
 This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
-`undo`, `cancel`, and `shutdown`. `plan` requires accepted placements (the CLI
-`organize` command accepts all heuristic placements, then dry-runs by default).
+`undo`, `chat`, `cancel`, and `shutdown`. `chat` interprets the utterance into
+deterministic tools (`search`, `inspect`, `structure`, `group`, `rename`,
+`validate`) and, when those tools emit patches, stores a child revision authored
+by the mock assistant. The assistant never receives SQL or raw filesystem
+operations. `plan` requires accepted placements (the CLI `organize` command
+accepts all heuristic placements, then dry-runs by default).
