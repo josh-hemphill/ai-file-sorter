@@ -1,17 +1,23 @@
 <script setup lang="ts">
+import { mdiCheckCircleOutline, mdiDownloadOutline } from "@mdi/js";
 import { computed, ref, watch } from "vue";
 import { probeEndpoint } from "../engine";
 import { BUILTIN_CATALOG, slotBackend, withSlotKind } from "../models";
 import type { ModelBackend, ModelSlot } from "../types";
+import Icon from "./Icon.vue";
 
 const props = defineProps<{
   assignment: ModelSlot;
   label: string;
   hint: string;
+  downloaded?: boolean;
+  downloading?: boolean;
+  busy?: boolean;
 }>();
 
 const emit = defineEmits<{
   change: [slot: ModelSlot];
+  download: [catalogId: string];
 }>();
 
 const probeMessage = ref<string | null>(null);
@@ -53,6 +59,14 @@ async function probe() {
   } finally {
     probing.value = false;
   }
+}
+
+function requestDownload() {
+  const catalogId = props.assignment.catalog_id;
+  if (!catalogId) {
+    return;
+  }
+  emit("download", catalogId);
 }
 </script>
 
@@ -130,7 +144,17 @@ async function probe() {
       />
     </label>
     <div class="row">
-      <button type="button" :disabled="probing || kind === 'off'" @click="probe">
+      <button
+        v-if="kind === 'catalog'"
+        type="button"
+        class="primary"
+        :disabled="busy || downloading || !assignment.catalog_id"
+        @click="requestDownload"
+      >
+        <Icon :path="downloaded ? mdiCheckCircleOutline : mdiDownloadOutline" :size="18" />
+        {{ downloaded ? "Already downloaded" : downloading ? "Downloading…" : "Download now" }}
+      </button>
+      <button type="button" :disabled="probing || kind === 'off' || busy" @click="probe">
         Probe
       </button>
       <span v-if="probeMessage" class="muted">{{ probeMessage }}</span>

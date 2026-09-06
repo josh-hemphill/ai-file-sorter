@@ -1,13 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import ModelSlotCard from "../components/ModelSlotCard.vue";
-import { connectEngine, getModels, putModels } from "../engine";
 import {
+  mdiArrowLeft,
+  mdiCheckCircleOutline,
+  mdiContentSaveOutline,
+  mdiDownloadOutline,
+  mdiInformationOutline,
+} from "@mdi/js";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import Icon from "../components/Icon.vue";
+import ModelSlotCard from "../components/ModelSlotCard.vue";
+import { connectEngine, downloadModel, getModels, onEngineProgress, putModels } from "../engine";
+import {
+  catalogArtifacts,
+  catalogIsDownloaded,
   defaultInventory,
+  formatBytes,
   GPU_PREFERENCES,
   MODEL_SLOT_META,
 } from "../models";
-import type { ModelInventory, ModelSlot } from "../types";
+import type { ModelInventory, ModelSlot, ProgressEvent } from "../types";
 
 const emit = defineEmits<{
   back: [];
@@ -18,6 +29,23 @@ const error = ref<string | null>(null);
 const saved = ref(false);
 const busy = ref(false);
 const loaded = ref(false);
+const downloadingId = ref<string | null>(null);
+const downloadProgress = ref<ProgressEvent | null>(null);
+let stopProgress: (() => void) | undefined;
+
+const gpuHint = computed(() => {
+  return GPU_PREFERENCES.find((item) => item.id === inventory.value.gpu_preference)?.hint ?? "";
+});
+
+const artifacts = computed(() => catalogArtifacts(inventory.value));
+
+const downloadPercent = computed(() => {
+  const progress = downloadProgress.value;
+  if (!progress?.total || progress.total === 0) {
+    return 0;
+  }
+  return Math.min(100, Math.round((progress.current / progress.total) * 100));
+});
 
 function metaFor(id: string) {
   return MODEL_SLOT_META.find((slot) => slot.id === id) ?? {
@@ -62,42 +90,134 @@ async function save() {
   }
 }
 
+async function download(catalogId: string) {
+  busy.value = true;
+  error.value = null;
+  downloadingId.value = catalogId;
+  downloadProgress.value = {
+    stage: "download",
+    current: 0,
+    total: null,
+    message: "Starting download…",
+  };
+  try {
+    const result = await downloadModel(catalogId);
+    inventory.value = {
+      ...inventory.value,
+      storage_dir: result.storage_dir || inventory.value.storage_dir,
+      artifacts: result.artifacts,
+    };
+  } catch (cause) {
+    error.value = String(cause);
+  } finally {
+    busy.value = false;
+    downloadingId.value = null;
+  }
+}
+
 onMounted(() => {
   void load();
+  void onEngineProgress((event) => {
+    if (event.stage === "download") {
+      downloadProgress.value = event;
+    }
+  }).then((stop) => {
+    stopProgress = stop;
+  });
+});
+
+onUnmounted(() => {
+  stopProgress?.();
 });
 </script>
 
 <template>
-  <section class="settings">
+  <section class="settings page" aria-labelledby="setup-title">
+    <nav class="crumb" aria-label="Breadcrumb">
+      <button type="button" class="crumb-link" @click="emit('back')">Workspace</button>
+      <span aria-hidden="true">/</span>
+      <span aria-current="page">Setup</span>
+    </nav>
     <header class="settings-head">
       <div>
-        <h1>Setup</h1>
+        <h1 id="setup-title">Setup</h1>
         <p class="muted">
-          Each analysis slot can be off, a downloaded local model, or a remote/custom endpoint.
-          The workspace stays usable with every slot off. Keys are stored by the engine, not
-          in this window. Assignments are recorded now; the model runtime is not connected yet.
+          This page records which local or remote model each analysis slot should use. Saving
+          does not start a model. Scan and propose still use heuristics until analysis workers
+          exist. Several slots can share one downloaded GGUF — it is fetched once.
         </p>
       </div>
       <div class="row">
-        <button type="button" :disabled="busy || !loaded" @click="save">Save</button>
-        <button type="button" class="primary" @click="emit('back')">Back to workspace</button>
+        <button type="button" :disabled="busy || !loaded" @click="save">
+          <Icon :path="mdiContentSaveOutline" :size="18" />
+          Save assignments
+        </button>
+        <button type="button" class="primary" @click="emit('back')">
+          <Icon :path="mdiArrowLeft" :size="18" />
+          Back to workspace
+        </button>
       </div>
     </header>
     <p v-if="error" class="error">{{ error }}</p>
-    <p v-else-if="saved" class="muted">Saved. Scan still uses heuristics until workers exist.</p>
+    <p v-else-if="saved" class="ok">
+      Assignments saved. Scan still uses heuristics until analysis workers exist.
+    </p>
 
     <article class="card">
       <h2>Storage</h2>
       <label class="field">
         Model directory
         <input v-model="inventory.storage_dir" placeholder="/path/to/models" />
+        <span class="muted">Leave blank to use the engine default (`…/aifs/models`).</span>
       </label>
       <label class="field">
         Accelerator
         <select v-model="inventory.gpu_preference">
-          <option v-for="item in GPU_PREFERENCES" :key="item" :value="item">{{ item }}</option>
+          <option v-for="item in GPU_PREFERENCES" :key="item.id" :value="item.id">
+            {{ item.label }}
+          </option>
         </select>
+        <span class="muted">{{ gpuHint }}</span>
       </label>
+      <p class="callout">
+        <Icon :path="mdiInformationOutline" :size="18" />
+        CUDA is not live in this rewrite. Matching the upstream Qt CUDA build needs NVIDIA
+        drivers, a llama.cpp worker compiled with GGML_CUDA, and this accelerator set to CUDA
+        (or Auto, which will prefer CUDA). The preference is stored now; the worker is later.
+      </p>
+    </article>
+
+    <article class="card">
+      <h2>Downloaded files</h2>
+      <p class="muted">
+        Catalog slots share these GGUF files. Download now fetches only what is missing.
+      </p>
+      <ul class="artifact-list">
+        <li v-for="artifact in artifacts" :key="artifact.id">
+          <div class="artifact-head">
+            <Icon
+              :path="artifact.present ? mdiCheckCircleOutline : mdiDownloadOutline"
+              :size="18"
+            />
+            <strong>{{ artifact.filename }}</strong>
+            <span v-if="artifact.present" class="badge ok-badge">Already downloaded</span>
+            <span v-else class="badge">Not downloaded</span>
+          </div>
+          <p class="muted">
+            {{
+              artifact.present
+                ? formatBytes(artifact.bytes_on_disk)
+                : `about ${formatBytes(artifact.expected_bytes)}`
+            }}
+            · used by {{ artifact.used_by.join(", ") }}
+          </p>
+        </li>
+      </ul>
+      <p v-if="!artifacts.length" class="muted">Connect the engine to see catalog files.</p>
+      <div v-if="downloadingId" class="download-progress">
+        <progress :value="downloadPercent" max="100" />
+        <span class="muted">{{ downloadProgress?.message }} ({{ downloadPercent }}%)</span>
+      </div>
     </article>
 
     <ModelSlotCard
@@ -106,7 +226,11 @@ onMounted(() => {
       :assignment="slot"
       :label="metaFor(slot.id).label"
       :hint="metaFor(slot.id).hint"
+      :downloaded="catalogIsDownloaded(inventory, slot.catalog_id ?? '')"
+      :downloading="downloadingId === (slot.catalog_id ?? '')"
+      :busy="busy"
       @change="replaceSlot"
+      @download="download"
     />
   </section>
 </template>

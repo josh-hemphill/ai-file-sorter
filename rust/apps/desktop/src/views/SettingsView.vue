@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { mdiArrowLeft, mdiContentSaveOutline, mdiDownloadOutline } from "@mdi/js";
 import { onMounted, ref } from "vue";
+import Icon from "../components/Icon.vue";
 import WhitelistEditor from "../components/WhitelistEditor.vue";
 import { connectEngine, getSettings, putSettings } from "../engine";
 import {
@@ -83,19 +85,33 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="settings">
+  <section class="settings page" aria-labelledby="settings-title">
+    <nav class="crumb" aria-label="Breadcrumb">
+      <button type="button" class="crumb-link" @click="emit('back')">Workspace</button>
+      <span aria-hidden="true">/</span>
+      <span aria-current="page">Settings</span>
+    </nav>
     <header class="settings-head">
       <div>
-        <h1>Settings</h1>
+        <h1 id="settings-title">Settings</h1>
         <p class="muted">
-          Custom intent uses these options. Other intents keep their presets. Nothing is moved
+          This page is for the Custom intent. Other intents keep their presets. Nothing is moved
           until you Apply on the workspace.
         </p>
       </div>
       <div class="row">
-        <button type="button" @click="emit('setup')">Set up models</button>
-        <button type="button" :disabled="busy" @click="save">Save</button>
-        <button type="button" class="primary" @click="emit('back')">Back to workspace</button>
+        <button type="button" @click="emit('setup')">
+          <Icon :path="mdiDownloadOutline" :size="18" />
+          Open Setup
+        </button>
+        <button type="button" :disabled="busy" @click="save">
+          <Icon :path="mdiContentSaveOutline" :size="18" />
+          Save
+        </button>
+        <button type="button" class="primary" @click="emit('back')">
+          <Icon :path="mdiArrowLeft" :size="18" />
+          Back to workspace
+        </button>
       </div>
     </header>
     <p v-if="error" class="error">{{ error }}</p>
@@ -144,8 +160,8 @@ onMounted(() => {
     <article class="card">
       <h2>Analysis</h2>
       <p class="muted">
-        Models themselves are chosen in Setup. Enabling a slot here records the intent;
-        scan will say the runtime is not connected until Setup is complete.
+        Models themselves are chosen on the Setup page. Enabling a slot here records the intent;
+        scan still uses heuristics until analysis workers exist.
       </p>
       <label class="choice">
         <input v-model="settings.analyze_images" type="checkbox" />

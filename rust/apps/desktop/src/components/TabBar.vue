@@ -1,6 +1,20 @@
 <script setup lang="ts">
+import {
+  mdiChartTimelineVariant,
+  mdiFileTreeOutline,
+  mdiFormatListBulleted,
+  mdiLinkVariant,
+} from "@mdi/js";
 import { CENTER_TABS } from "../workflow";
 import type { CenterView } from "../types";
+import Icon from "./Icon.vue";
+
+const TAB_ICONS: Record<CenterView, string> = {
+  structure: mdiFileTreeOutline,
+  items: mdiFormatListBulleted,
+  relationships: mdiLinkVariant,
+  activity: mdiChartTimelineVariant,
+};
 
 const props = defineProps<{
   view: CenterView;
@@ -60,6 +74,7 @@ function onTabsKey(event: KeyboardEvent) {
       :class="{ active: view === tab.id }"
       @click="selectTab(tab.id)"
     >
+      <Icon :path="TAB_ICONS[tab.id]" :size="16" />
       {{ tab.label }}
       <span v-if="counts?.[tab.id] != null" class="tab-count">{{ counts[tab.id] }}</span>
     </button>
