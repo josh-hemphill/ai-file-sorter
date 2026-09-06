@@ -5,6 +5,7 @@ use aifs_domain::{
     ObservedEntry, Placement, ProposalRevision, RelativePath, RevisionPatch, WorkspaceSnapshot,
 };
 use aifs_planner::validate;
+use std::collections::BTreeSet;
 
 /// Model id recorded on assistant-authored revisions produced by these tools.
 pub const MOCK_ASSISTANT_MODEL: &str = "mock-tools";
@@ -390,7 +391,9 @@ fn group_family(
             Vec::new(),
         );
     };
-    let mut assets: Vec<AssetId> = Vec::new();
+    let mut chosen: BTreeSet<AssetId> = BTreeSet::new();
+    let mut skipped_protected = 0usize;
+    let mut skipped_layout = 0usize;
     for placement in revision.placements.values() {
         let Some(entry) = snapshot.entry(placement.asset) else {
             continue;
@@ -401,23 +404,74 @@ fn group_family(
         if !family_matches(family, entry) {
             continue;
         }
-        assets.push(placement.asset);
+        match snapshot.hard_bundle_for(placement.asset) {
+            Some(bundle) if bundle.is_protected() => {
+                skipped_protected += 1;
+            }
+            Some(bundle)
+                if matches!(bundle.constraint, BundleConstraint::PreserveLayout { .. }) =>
+            {
+                skipped_layout += 1;
+            }
+            Some(bundle) if matches!(bundle.constraint, BundleConstraint::MoveTogether) => {
+                for member in &bundle.members {
+                    if revision.placement(*member).is_some() {
+                        chosen.insert(*member);
+                    }
+                }
+            }
+            _ => {
+                chosen.insert(placement.asset);
+            }
+        }
+    }
+    let mut assets: Vec<AssetId> = Vec::new();
+    let mut skipped_noop = 0usize;
+    for asset in chosen {
+        let Some(placement) = revision.placement(asset) else {
+            continue;
+        };
+        if already_in_folder(placement, &dest_folder) {
+            skipped_noop += 1;
+            continue;
+        }
+        assets.push(asset);
     }
     if assets.is_empty() {
-        return (
-            format!("No {family} assets to move into `{folder}`."),
-            Vec::new(),
-        );
+        let message = if skipped_protected > 0 || skipped_layout > 0 {
+            format!(
+                "No {family} assets moved into `{folder}` ({} protected, {} layout-preserving, {} already there).",
+                skipped_protected, skipped_layout, skipped_noop
+            )
+        } else if skipped_noop > 0 {
+            format!("Those files are already in `{folder}`.")
+        } else {
+            format!("No {family} assets to move into `{folder}`.")
+        };
+        return (message, Vec::new());
     }
     let moved = assets.len();
+    let mut message = format!("Moved {moved} {family} asset(s) into `{folder}`.");
+    if skipped_protected > 0 {
+        message.push_str(&format!(
+            " Skipped {skipped_protected} protected bundle member(s)."
+        ));
+    }
     (
-        format!("Moved {moved} {family} asset(s) into `{folder}`."),
+        message,
         vec![RevisionPatch::MoveToFolder {
             assets,
             folder: dest_folder,
             rationale: Some(format!("chat: group {family}")),
         }],
     )
+}
+
+fn already_in_folder(placement: &Placement, folder: &RelativePath) -> bool {
+    match placement.destination.parent() {
+        Some(parent) => parent == *folder,
+        None => folder.is_session_root(),
+    }
 }
 
 fn family_matches(family: &str, entry: &ObservedEntry) -> bool {
@@ -483,15 +537,20 @@ fn name_from_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> Op
 }
 
 fn sanitize_filename(value: &str) -> String {
+    // Same hostile-character rules as the planner, plus whitespace → `_`.
     let mut out = String::new();
     for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else if ch.is_whitespace() && !out.ends_with('_') {
+        if ch.is_control() || "<>:\"/\\|?*".contains(ch) {
             out.push('_');
+        } else if ch.is_whitespace() {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+        } else {
+            out.push(ch);
         }
     }
-    let trimmed = out.trim_matches('_');
+    let trimmed = out.trim_matches(|c: char| c == '_' || c == '.');
     if trimmed.is_empty() {
         "untitled".into()
     } else {
@@ -630,5 +689,125 @@ mod tests {
         let output = execute(&snapshot, &revision, &calls);
         assert!(output.message.contains("must move together"));
         assert!(output.patches.is_empty());
+    }
+
+    #[test]
+    fn grouping_skips_files_already_in_the_folder() {
+        let (snapshot, mut revision) = snapshot_with_audio();
+        let asset = snapshot.entries[0].id;
+        revision.place(Placement {
+            asset,
+            destination: RelativePath::parse("Podcasts/show.mp3").unwrap_or_else(|e| panic!("{e}")),
+            rationale: None,
+            origin: SuggestionOrigin::Heuristic,
+            review: ReviewState::Accepted,
+        });
+        let output = execute(
+            &snapshot,
+            &revision,
+            &[ToolCall::GroupFamily {
+                family: "audio".into(),
+                folder: "Podcasts".into(),
+            }],
+        );
+        assert!(output.patches.is_empty(), "{:?}", output.patches);
+        assert!(output.message.contains("already"));
+    }
+
+    #[test]
+    fn grouping_does_not_move_protected_members() {
+        let (mut snapshot, revision) = snapshot_with_audio();
+        let asset = snapshot.entries[0].id;
+        snapshot.bundles.push(Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: BundleKind::Project,
+            label: "repo".into(),
+            members: vec![asset],
+            anchor: Some(asset),
+            constraint: BundleConstraint::Protected {
+                reason: "git".into(),
+            },
+            reason: "git".into(),
+        });
+        let output = execute(
+            &snapshot,
+            &revision,
+            &[ToolCall::GroupFamily {
+                family: "audio".into(),
+                folder: "Podcasts".into(),
+            }],
+        );
+        assert!(output.patches.is_empty(), "{:?}", output.patches);
+        assert!(output.message.contains("protected"));
+    }
+
+    #[test]
+    fn grouping_keeps_move_together_sidecars_intact() {
+        let (mut snapshot, mut revision) = snapshot_with_audio();
+        let audio = snapshot.entries[0].id;
+        let cue = AssetId::new();
+        snapshot.entries.push(ObservedEntry {
+            id: cue,
+            path: RelativePath::parse("inbox/show.cue").unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::File,
+            family: FileFamily::Sidecar,
+            identity: FileIdentity::default(),
+            is_hidden: false,
+            lock: LockState::Readable,
+        });
+        revision.place(Placement {
+            asset: cue,
+            destination: RelativePath::parse("Music/show.cue").unwrap_or_else(|e| panic!("{e}")),
+            rationale: None,
+            origin: SuggestionOrigin::Heuristic,
+            review: ReviewState::Proposed,
+        });
+        snapshot.bundles.push(Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: BundleKind::SidecarGroup,
+            label: "show".into(),
+            members: vec![audio, cue],
+            anchor: Some(audio),
+            constraint: BundleConstraint::MoveTogether,
+            reason: "cue".into(),
+        });
+        let output = execute(
+            &snapshot,
+            &revision,
+            &[ToolCall::GroupFamily {
+                family: "audio".into(),
+                folder: "Podcasts".into(),
+            }],
+        );
+        match &output.patches[0] {
+            RevisionPatch::MoveToFolder { assets, folder, .. } => {
+                assert_eq!(folder.as_str(), "Podcasts");
+                assert_eq!(assets.len(), 2);
+                assert!(assets.contains(&audio));
+                assert!(assets.contains(&cue));
+            }
+            other => panic!("unexpected patch {other:?}"),
+        }
+    }
+
+    #[test]
+    fn naming_keeps_unicode_letters() {
+        let (mut snapshot, revision) = snapshot_with_audio();
+        snapshot.evidence[0]
+            .facts
+            .insert(keys::MEDIA_TITLE.into(), "夜ドライブ".into());
+        let output = execute(
+            &snapshot,
+            &revision,
+            &[ToolCall::ApplyNamingTemplate {
+                template: "year_subject".into(),
+            }],
+        );
+        match &output.patches[0] {
+            RevisionPatch::Rename { file_name, .. } => {
+                assert_eq!(file_name, "2024_夜ドライブ.mp3");
+            }
+            other => panic!("unexpected patch {other:?}"),
+        }
     }
 }

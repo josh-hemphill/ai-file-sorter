@@ -246,6 +246,7 @@ async function sendChat() {
     if (reply.revision) {
       revision.value = reply.revision;
       plan.value = null;
+      issues.value = [];
     }
   } catch (error) {
     engineError.value = String(error);
