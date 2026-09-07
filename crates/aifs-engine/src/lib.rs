@@ -1350,7 +1350,7 @@ fn slot_runtime_notice(
         )),
         SlotRuntime::MissingFiles { .. } => Some((
             LogLevel::Warn,
-            format!("{label} slot is assigned but the GGUF is not on disk."),
+            format!("{label} slot is assigned but the GGUF is missing or failed SHA-256 verify."),
         )),
     }
 }
@@ -3262,6 +3262,48 @@ mod tests {
         let dest = models.path().join(aifs_protocol::GEMMA_TEXT_FILENAME);
         assert!(!dest.exists(), "{}", dest.display());
         assert!(!dest.with_extension("gguf.part").exists());
+    }
+
+    #[test]
+    fn download_model_replaces_unverified_dest_with_matching_bytes() {
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dest = models.path().join(aifs_protocol::GEMMA_TEXT_FILENAME);
+        std::fs::write(&dest, b"junk-on-disk").unwrap_or_else(|error| panic!("{error}"));
+        let good = b"replacement-weights";
+        let files = [(aifs_protocol::GEMMA_TEXT_FILENAME, good.as_slice())];
+        let (base, hits) = spawn_catalog_http(&files);
+        let _fixture = aifs_protocol::CatalogTestGuard::pin(&base, &files);
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels {
+                inventory: ModelInventory {
+                    storage_dir: models.path().display().to_string(),
+                    ..ModelInventory::default()
+                },
+            },
+        }));
+        match terminal(engine.handle(Request {
+            id: "dl".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+        })) {
+            Event::Models { inventory: stored } => {
+                assert!(
+                    stored
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.id == "gemma-text-q4" && artifact.present),
+                    "{stored:?}"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 1);
+        let saved = std::fs::read(&dest).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(saved, good);
     }
 
     #[test]
