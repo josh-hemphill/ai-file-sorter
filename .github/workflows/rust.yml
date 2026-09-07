@@ -17,9 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v7
 
@@ -35,8 +32,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
 
       - name: rustfmt
         run: cargo fmt --all --check
@@ -52,15 +47,15 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rust/apps/desktop
+        working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v2
         with:
           version: 12.3.4
           runtime: node@24
-          package-json-file: rust/apps/desktop/package.json
+          package-json-file: apps/desktop/package.json
           cache: true
-          cache-dependency-path: rust/apps/desktop/pnpm-lock.yaml
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm test
       - run: pnpm exec vue-tsc --noEmit

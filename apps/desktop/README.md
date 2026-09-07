@@ -5,13 +5,21 @@ commands that forward JSONL to `aifs-engine`.
 
 Requires pnpm 12 (pinned in `package.json` as `packageManager`) and Node.js 24 LTS.
 
+From the **repository root**:
+
 ```bash
-cd rust
-cargo build -p aifs-engine
+make desktop
+```
+
+Or:
+
+```bash
+cargo engine-bins
 cd apps/desktop
 pnpm install
 pnpm test
 pnpm tauri dev
 ```
 
-If the engine binary is not next to the desktop executable, set `AIFS_ENGINE`.
+`tauri dev` also builds the engine and workers via `beforeDevCommand`. If the
+engine binary is not next to the desktop executable, set `AIFS_ENGINE`.

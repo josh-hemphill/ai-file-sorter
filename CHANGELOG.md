@@ -2,6 +2,8 @@
 
 ## Unreleased (Rust rewrite fork)
 
+- Promoted the Cargo workspace, fixtures, docs, and desktop app to the repository
+  root so `cargo`, `make`, and rust-analyzer work without a nested `rust/` directory.
 - Removed the C++/Qt application, vendored native dependencies, and Qt CI from this
   fork. Development continues as the isolated Rust engine, CLI, and Tauri/Vue workspace.
 - Historical 1.9.x notes below describe the upstream Qt product.

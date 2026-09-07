@@ -5,7 +5,7 @@
 //! request they belong to so several requests can be in flight (for example a long
 //! `scan` plus a `cancel`).
 //!
-//! The protocol is the stable boundary described in `rust/docs/protocol.md`. Breaking
+//! The protocol is the stable boundary described in `docs/protocol.md`. Breaking
 //! changes bump [`PROTOCOL_VERSION`]; additive changes must keep old fields working.
 
 pub mod catalog;
