@@ -94,7 +94,10 @@ media worker and falls back to in-process Rust tag readers when that binary is
 missing. The document worker extracts PDF/Office/text (with an in-process
 fallback). The vision worker reads EXIF (`image.captured_on`, `image.camera`,
 and GPS when present) with an in-process fallback; image *description* is an
-LLM `describe` later. The LLM worker accepts `load` / `unload` / `categorize` /
-`describe` / `chat` and currently returns stub `local_model` evidence; llama.cpp
-is not linked yet. `api_key` on `load` is never written to logs.
+LLM `describe` later. After extract, scan loads the LLM worker once per distinct
+slot backend and runs `categorize` / `describe` when those slots are not off.
+Model `category` is a whitelist hint for propose, not a trusted path. The LLM
+worker accepts `load` / `unload` / `categorize` / `describe` / `chat` and
+currently returns stub `local_model` evidence; llama.cpp is not linked yet.
+`api_key` on `load` is never written to logs.
 

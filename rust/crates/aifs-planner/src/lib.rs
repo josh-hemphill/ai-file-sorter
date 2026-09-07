@@ -153,6 +153,9 @@ fn folder_for(
             folder = "Screenshots".to_owned();
         }
     }
+    if let Some(hinted) = model_folder_hint(snapshot, entry, policy) {
+        folder = hinted;
+    }
     if policy.use_subfolders
         && let Some(artist) = evidence_text(snapshot, entry.id, keys::MEDIA_ARTIST)
         && matches!(entry.family, FileFamily::Audio | FileFamily::Video)
@@ -170,6 +173,31 @@ fn folder_for(
             .next()
             .filter(|top| !top.is_empty())
             .and_then(|top| RelativePath::parse(top).ok()),
+    }
+}
+
+fn model_folder_hint(
+    snapshot: &WorkspaceSnapshot,
+    entry: &ObservedEntry,
+    policy: &ProposalPolicy,
+) -> Option<String> {
+    let category = evidence_text(snapshot, entry.id, keys::CATEGORY)?;
+    let top = sanitize_segment(&category, "");
+    if top.is_empty() {
+        return None;
+    }
+    let mut folder = top;
+    if let Some(sub) = evidence_text(snapshot, entry.id, keys::CATEGORY_SUB) {
+        let sub = sanitize_segment(&sub, "");
+        if !sub.is_empty() {
+            folder = format!("{folder}/{sub}");
+        }
+    }
+    let allowed = apply_category_whitelist(folder, entry.family, &policy.whitelist);
+    if allowed.is_empty() {
+        None
+    } else {
+        Some(allowed)
     }
 }
 
@@ -730,6 +758,50 @@ mod tests {
             .unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "Documents/note.txt");
         assert_eq!(placement.review, ReviewState::Proposed);
+    }
+
+    #[test]
+    fn model_category_hint_is_whitelisted() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("clip.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                id,
+                EvidenceSource::LocalModel {
+                    model: "stub".into(),
+                },
+                Confidence::new(0.4),
+            )
+            .with_fact(keys::CATEGORY, "Documents"),
+        );
+        snapshot.entries.push(entry);
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Documents/clip.mp3");
+    }
+
+    #[test]
+    fn model_category_outside_whitelist_falls_back() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("clip.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                id,
+                EvidenceSource::LocalModel {
+                    model: "stub".into(),
+                },
+                Confidence::new(0.4),
+            )
+            .with_fact(keys::CATEGORY, "../Etc"),
+        );
+        snapshot.entries.push(entry);
+        let mut policy = ProposalPolicy::default();
+        policy.whitelist.main = vec!["Music".into(), "Documents".into()];
+        let revision = propose(&snapshot, &policy);
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Music/clip.mp3");
     }
 
     #[test]
