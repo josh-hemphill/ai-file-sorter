@@ -279,9 +279,9 @@ pub enum Event {
         /// Resulting journal.
         journal: ApplyJournal,
     },
-    /// `chat` finished. `revision` is present when tools produced a child revision.
+    /// `chat` finished. `revision` is present when patches produced a child revision.
     ChatReply {
-        /// Assistant summary of tool results.
+        /// Assistant summary (model JSON `message`, or keyword-tool text).
         message: String,
         /// Child revision when patches were applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]

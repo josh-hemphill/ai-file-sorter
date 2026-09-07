@@ -6,6 +6,7 @@
 
 mod analyze;
 mod cancel;
+mod chat;
 mod checkpoint;
 mod download;
 mod extract;
@@ -15,7 +16,7 @@ mod http_stub;
 
 use crate::analyze::AnalyzeNotice;
 use crate::cancel::{CancelGate, CancelScope, WorkStatus};
-use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
+use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, ToolOutput, execute, interpret};
 use aifs_apply::{ApplyHook, apply_plan_with_hooks, undo_journal_with_hooks};
 use aifs_domain::{
     BundleConstraint, JournalId, PlanId, RevisionAuthor, RevisionId, SessionId, SkipReason,
@@ -943,28 +944,24 @@ impl Engine {
                 },
             )];
         }
-        let output = execute(&snapshot, &base, &interpret(trimmed));
+        let keyword = execute(&snapshot, &base, &interpret(trimmed));
         let inventory = load_models(&self.store).unwrap_or_default();
-        let (message, model_id) = assistant_chat(
-            &inventory,
-            trimmed,
-            &snapshot,
-            &base,
-            output.message.clone(),
-        );
-        if output.patches.is_empty() {
+        let turn = assistant_turn(&inventory, trimmed, &snapshot, &base, &keyword);
+        if turn.patches.is_empty() {
             return vec![Envelope::reply(
                 id,
                 Event::ChatReply {
-                    message,
+                    message: turn.message,
                     revision: None,
                 },
             )];
         }
         match base.with_patches(
-            RevisionAuthor::Assistant { model: model_id },
+            RevisionAuthor::Assistant {
+                model: turn.model_id,
+            },
             trimmed,
-            &output.patches,
+            &turn.patches,
         ) {
             Ok(revision) => {
                 if let Err(error) = self.store.put_revision(&revision) {
@@ -973,7 +970,7 @@ impl Engine {
                 vec![Envelope::reply(
                     id,
                     Event::ChatReply {
-                        message,
+                        message: turn.message,
                         revision: Some(revision),
                     },
                 )]
@@ -1018,28 +1015,63 @@ fn stored_api_key_for(inventory: &ModelInventory, backend: &ModelBackend) -> Opt
         .filter(|key| !key.trim().is_empty())
 }
 
-fn assistant_chat(
+fn assistant_turn(
     inventory: &ModelInventory,
     utterance: &str,
     snapshot: &WorkspaceSnapshot,
     revision: &aifs_domain::ProposalRevision,
-    tools_message: String,
-) -> (String, String) {
+    keyword: &ToolOutput,
+) -> ChatTurn {
     let Some(slot) = inventory
         .slots
         .iter()
         .find(|slot| slot.id == "chat" && !matches!(slot.backend, ModelBackend::Off))
     else {
-        return (tools_message, MOCK_ASSISTANT_MODEL.to_owned());
+        return ChatTurn {
+            message: keyword.message.clone(),
+            model_id: MOCK_ASSISTANT_MODEL.to_owned(),
+            patches: keyword.patches.clone(),
+        };
     };
     match chat_via_worker(slot, inventory, utterance, snapshot, revision) {
-        Ok(text) if !text.trim().is_empty() => (text, slot_model_id(&slot.backend)),
-        Ok(_) => (tools_message, MOCK_ASSISTANT_MODEL.to_owned()),
-        Err(_) => (
-            format!("{tools_message}\n(Chat model skipped.)"),
-            MOCK_ASSISTANT_MODEL.to_owned(),
-        ),
+        Ok(text) if !text.trim().is_empty() => match chat::parse_chat_reply(&text) {
+            Some(parsed) => {
+                let (patches, skipped) = chat::drop_blocked_moves(snapshot, parsed.patches);
+                let mut message = parsed.message.unwrap_or_else(|| text.clone());
+                if skipped > 0 {
+                    message.push_str(&format!(
+                        " Skipped {skipped} protected or layout-preserving item(s)."
+                    ));
+                }
+                ChatTurn {
+                    message,
+                    model_id: slot_model_id(&slot.backend),
+                    patches,
+                }
+            }
+            None => ChatTurn {
+                message: text,
+                model_id: slot_model_id(&slot.backend),
+                patches: keyword.patches.clone(),
+            },
+        },
+        Ok(_) => ChatTurn {
+            message: keyword.message.clone(),
+            model_id: MOCK_ASSISTANT_MODEL.to_owned(),
+            patches: keyword.patches.clone(),
+        },
+        Err(_) => ChatTurn {
+            message: format!("{}\n(Chat model skipped.)", keyword.message),
+            model_id: MOCK_ASSISTANT_MODEL.to_owned(),
+            patches: keyword.patches.clone(),
+        },
     }
+}
+
+struct ChatTurn {
+    message: String,
+    model_id: String,
+    patches: Vec<aifs_domain::RevisionPatch>,
 }
 
 fn slot_model_id(backend: &ModelBackend) -> String {
@@ -1059,11 +1091,7 @@ fn chat_via_worker(
 ) -> Result<String, String> {
     let mut llm = WorkerClient::try_connect(WorkerKind::Llm)
         .ok_or_else(|| "LLM worker is not installed".to_owned())?;
-    let context = format!(
-        "entries={} placements={}",
-        snapshot.entries.len(),
-        revision.placements.len()
-    );
+    let context = chat::chat_context(snapshot, revision);
     let result = (|| {
         llm.load(
             slot.backend.clone(),
@@ -2538,6 +2566,191 @@ mod tests {
         assert!(!message.contains("Chat model skipped"), "{message}");
         let next = next.unwrap_or_else(|| panic!("expected child revision"));
         assert_eq!(next.parent, Some(revision.id));
+        let _ = server.join();
+    }
+
+    #[test]
+    fn chat_model_json_patches_win_over_keywords() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let snapshot = match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let asset = *revision
+            .placements
+            .keys()
+            .next()
+            .unwrap_or_else(|| panic!("expected a placement"));
+        let content = serde_json::json!({
+            "message": "Filing under Broadcasts.",
+            "patches": [{
+                "op": "move_to_folder",
+                "assets": [asset],
+                "folder": "Broadcasts"
+            }]
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": content } }]
+        })
+        .to_string();
+        let (base, server) = crate::http_stub::serve_json_once_owned("200 OK", body);
+        let mut inventory = ModelInventory::default();
+        if let Some(slot) = inventory.slots.iter_mut().find(|slot| slot.id == "chat") {
+            slot.backend = ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            };
+        }
+        engine.handle(Request {
+            id: "4".into(),
+            command: Command::PutModels { inventory },
+        });
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Broadcasts"), "{message}");
+        assert!(!message.contains("Podcasts"), "{message}");
+        let next = next.unwrap_or_else(|| panic!("expected child revision"));
+        let dest = next
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_default();
+        assert!(
+            dest.starts_with("Broadcasts/"),
+            "model JSON must win over keyword Podcasts, got {dest}"
+        );
+        let _ = server.join();
+    }
+
+    #[test]
+    fn chat_empty_model_patches_do_not_run_keywords() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let snapshot = match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let before = revision
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_default();
+        let content = serde_json::json!({
+            "message": "Just thinking.",
+            "patches": []
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": content } }]
+        })
+        .to_string();
+        let (base, server) = crate::http_stub::serve_json_once_owned("200 OK", body);
+        let mut inventory = ModelInventory::default();
+        if let Some(slot) = inventory.slots.iter_mut().find(|slot| slot.id == "chat") {
+            slot.backend = ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            };
+        }
+        engine.handle(Request {
+            id: "4".into(),
+            command: Command::PutModels { inventory },
+        });
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Just thinking."), "{message}");
+        assert!(
+            next.is_none(),
+            "empty model patches must not keyword-move, got {next:?}"
+        );
+        assert!(
+            !before.starts_with("Podcasts/"),
+            "fixture destination already under Podcasts: {before}"
+        );
         let _ = server.join();
     }
 

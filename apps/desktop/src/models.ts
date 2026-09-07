@@ -19,7 +19,7 @@ export const MODEL_SLOT_META = [
   {
     id: "chat",
     label: "Assistant chat",
-    hint: "Natural-language patches. Heuristic tools still work when this is off.",
+    hint: "Model JSON patches when this slot is on; keyword tools run if the slot is off or the reply is not parseable JSON with a patches key.",
   },
 ] as const;
 

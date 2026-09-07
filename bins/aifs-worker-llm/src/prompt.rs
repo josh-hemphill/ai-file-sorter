@@ -17,9 +17,12 @@ pub const DESCRIBE_SYSTEM: &str = "You describe an image for a desktop organizer
 and any EXIF facts. Reply with one JSON object only: {\"description\":\"short caption\"}. \
 Do not invent SQL or filesystem commands.";
 
-/// System prompt for assistant chat (tools still run in the engine).
-pub const CHAT_SYSTEM: &str = "You help organize files. Speak briefly. Do not emit SQL, shell, \
-or filesystem operations. The engine applies its own revision tools.";
+/// System prompt for assistant chat. Patches are JSON; the engine applies them.
+pub const CHAT_SYSTEM: &str = "You help organize files. Reply with one JSON object only: \
+{\"message\":\"brief\",\"patches\":[{\"op\":\"move_to_folder\",\"assets\":[\"uuid\"],\"folder\":\"Folder\"}]}. \
+ops: set_destination, move_to_folder, rename, accept, reject, reopen. \
+folder and destination are root-relative, never '..', never absolute, never SQL or shell. \
+Use \"patches\":[] when you are only answering. Do not emit filesystem operations.";
 
 /// Builds the user turn for categorize.
 pub fn categorize_user(entry: &ObservedEntry, evidence: &[Evidence]) -> String {
@@ -92,6 +95,7 @@ mod tests {
         assert!(CATEGORIZE_SYSTEM.contains("JSON"));
         assert!(DESCRIBE_SYSTEM.contains("EXIF"));
         assert!(CHAT_SYSTEM.contains("SQL"));
+        assert!(CHAT_SYSTEM.contains("patches"));
         let described = describe_user(&entry, &[]);
         assert!(described.contains("notes.txt"));
     }

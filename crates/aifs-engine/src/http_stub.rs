@@ -14,7 +14,15 @@ pub(crate) fn serve_json_once(
     status: &'static str,
     body: &'static str,
 ) -> (String, std::thread::JoinHandle<String>) {
-    serve_once(status, "application/json", body.as_bytes(), "/v1")
+    serve_once(status, "application/json", body.as_bytes().to_vec(), "/v1")
+}
+
+/// Serves one JSON response from an owned body (dynamic asset ids in tests).
+pub(crate) fn serve_json_once_owned(
+    status: &'static str,
+    body: String,
+) -> (String, std::thread::JoinHandle<String>) {
+    serve_once(status, "application/json", body.into_bytes(), "/v1")
 }
 
 /// Serves one 302 after reading the inbound request. URL is the GET target.
@@ -38,7 +46,7 @@ pub(crate) fn serve_redirect_once(location: String) -> (String, std::thread::Joi
 fn serve_once(
     status: &'static str,
     content_type: &'static str,
-    body: &'static [u8],
+    body: Vec<u8>,
     path: &'static str,
 ) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
@@ -53,7 +61,7 @@ fn serve_once(
             body.len()
         );
         let mut bytes = response.into_bytes();
-        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(&body);
         graceful_close(&mut stream, &bytes);
         request
     });
