@@ -55,7 +55,7 @@ pub fn parse_infer_json(text: &str) -> Option<ParsedInfer> {
 
 fn sanitize_label(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
-    if value.is_empty() {
+    if value.is_empty() || value.contains('/') || value.contains('\\') {
         return None;
     }
     let mut out = String::new();
@@ -158,6 +158,9 @@ mod tests {
         .unwrap_or_else(|| panic!("expected json"));
         assert!(parsed.category.is_none(), "{parsed:?}");
         assert_eq!(parsed.suggested_name.as_deref(), Some("pwned.txt"));
+        let nested = parse_infer_json(r#"{"category":"Documents/Notes","description":"ok"}"#)
+            .unwrap_or_else(|| panic!("expected json"));
+        assert!(nested.category.is_none(), "{nested:?}");
     }
 
     #[test]

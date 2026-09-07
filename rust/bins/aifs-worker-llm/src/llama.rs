@@ -71,10 +71,7 @@ impl WorkerHandler for LlamaHandler {
         }
         self.loaded = None;
         let llama = self.ensure_backend()?;
-        let mut params = LlamaModelParams::default();
-        if device != "cpu" {
-            params = params.with_n_gpu_layers(n_gpu_layers);
-        }
+        let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model = LlamaModel::load_from_file(llama, &files.weights, &params)
             .map_err(|error| error.to_string())?;
         let mut info = LoadedModel {

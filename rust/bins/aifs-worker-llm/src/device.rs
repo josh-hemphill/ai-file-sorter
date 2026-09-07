@@ -60,14 +60,7 @@ fn cuda_available() -> bool {
 }
 
 fn vulkan_available() -> bool {
-    if !cfg!(feature = "vulkan") {
-        return false;
-    }
-    if cfg!(target_os = "linux") {
-        Path::new("/dev/dri").exists()
-    } else {
-        true
-    }
+    cfg!(feature = "vulkan") && cfg!(target_os = "linux") && Path::new("/dev/dri").exists()
 }
 
 fn metal_available() -> bool {
@@ -113,6 +106,20 @@ mod tests {
             fallback
                 .as_deref()
                 .is_some_and(|text| text.contains("CUDA"))
+        );
+    }
+
+    #[test]
+    fn vulkan_preference_falls_back_without_a_probed_device() {
+        if cfg!(all(feature = "vulkan", target_os = "linux")) && Path::new("/dev/dri").exists() {
+            return;
+        }
+        let (device, fallback) = resolve_device("vulkan");
+        assert_eq!(device, "cpu");
+        assert!(
+            fallback
+                .as_deref()
+                .is_some_and(|text| text.contains("Vulkan"))
         );
     }
 }
