@@ -4,7 +4,9 @@ use aifs_domain::{Evidence, ObservedEntry};
 use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
-use aifs_protocol::{ErrorCode, ModelBackend, RequestId, decode_line, encode_line};
+use aifs_protocol::{
+    ErrorCode, ModelBackend, RequestId, decode_line, encode_line, first_process_binary,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -468,7 +470,7 @@ impl Drop for WorkerClient {
 }
 
 /// Resolves a worker binary from its env var, then a sibling of the current
-/// executable, then well-known Cargo target directories.
+/// executable (plain name or Tauri sidecar suffix), then Cargo target directories.
 pub fn discover_worker_binary(kind: WorkerKind) -> Result<PathBuf, WorkerClientError> {
     let name = worker_file_name(kind);
     if let Ok(explicit) = std::env::var(kind.env_var()) {
@@ -480,23 +482,21 @@ pub fn discover_worker_binary(kind: WorkerKind) -> Result<PathBuf, WorkerClientE
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
+        && let Some(sibling) = first_process_binary(dir, kind.binary_stem())
     {
-        let sibling = dir.join(&name);
-        if sibling.exists() {
-            return Ok(sibling);
-        }
+        return Ok(sibling);
     }
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
         let mut dir = PathBuf::from(manifest);
         for _ in 0..6 {
             for profile in ["debug", "release"] {
-                let candidate = dir.join("target").join(profile).join(&name);
-                if candidate.exists() {
+                let candidate_dir = dir.join("target").join(profile);
+                if let Some(candidate) = first_process_binary(&candidate_dir, kind.binary_stem()) {
                     return Ok(candidate);
                 }
-                let nested = dir.join("rust").join("target").join(profile).join(&name);
-                if nested.exists() {
-                    return Ok(nested);
+                let nested = dir.join("rust").join("target").join(profile);
+                if let Some(candidate) = first_process_binary(&nested, kind.binary_stem()) {
+                    return Ok(candidate);
                 }
             }
             if !dir.pop() {

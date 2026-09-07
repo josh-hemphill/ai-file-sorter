@@ -2,8 +2,9 @@
 
 use aifs_domain::WorkspaceSnapshot;
 use aifs_protocol::{
-    AppSettings, Command, Envelope, ErrorCode, Event, ModelBackend, ModelInventory,
-    PROTOCOL_VERSION, Request, RequestId, ScanOptions, decode_line, encode_line,
+    AppSettings, Command, ENGINE_PROCESS_STEM, Envelope, ErrorCode, Event, ModelBackend,
+    ModelInventory, PROTOCOL_VERSION, Request, RequestId, ScanOptions, decode_line, encode_line,
+    first_process_binary,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -21,11 +22,6 @@ use thiserror::Error;
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const MUTATING_SHUTDOWN_WAIT: Duration = Duration::from_secs(30 * 60);
-const ENGINE_BINARY: &str = if cfg!(windows) {
-    "aifs-engine.exe"
-} else {
-    "aifs-engine"
-};
 
 /// Assistant reply from a `chat` request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -656,7 +652,8 @@ fn command_mutates_disk(command: &Command) -> bool {
 }
 
 /// Resolves the engine binary from `AIFS_ENGINE`, then a sibling of the current
-/// executable, then well-known Cargo target directories.
+/// executable (plain name or Tauri `{stem}-{target-triple}` sidecar), then
+/// well-known Cargo target directories.
 pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
     if let Ok(explicit) = std::env::var("AIFS_ENGINE") {
         let path = PathBuf::from(explicit);
@@ -668,28 +665,22 @@ pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
 
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
+        && let Some(sibling) = first_process_binary(dir, ENGINE_PROCESS_STEM)
     {
-        let sibling = dir.join(ENGINE_BINARY);
-        if sibling.exists() {
-            return Ok(sibling);
-        }
+        return Ok(sibling);
     }
 
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
         let mut dir = PathBuf::from(manifest);
         for _ in 0..6 {
             for profile in ["debug", "release"] {
-                let candidate = dir.join("target").join(profile).join(ENGINE_BINARY);
-                if candidate.exists() {
+                let candidate_dir = dir.join("target").join(profile);
+                if let Some(candidate) = first_process_binary(&candidate_dir, ENGINE_PROCESS_STEM) {
                     return Ok(candidate);
                 }
-                let nested = dir
-                    .join("rust")
-                    .join("target")
-                    .join(profile)
-                    .join(ENGINE_BINARY);
-                if nested.exists() {
-                    return Ok(nested);
+                let nested = dir.join("rust").join("target").join(profile);
+                if let Some(candidate) = first_process_binary(&nested, ENGINE_PROCESS_STEM) {
+                    return Ok(candidate);
                 }
             }
             if !dir.pop() {

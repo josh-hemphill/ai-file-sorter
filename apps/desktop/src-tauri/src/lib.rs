@@ -96,7 +96,13 @@ fn ensure_client(state: &EngineState) -> Result<(), String> {
     if guard.is_some() {
         return Ok(());
     }
-    let binary = discover_engine_binary().map_err(|error| error.to_string())?;
+    let binary = discover_engine_binary().map_err(|error| {
+        if cfg!(debug_assertions) {
+            error.to_string()
+        } else {
+            format!("aifs-engine sidecar is missing from this bundle ({error})")
+        }
+    })?;
     let client =
         EngineClient::connect(binary, "aifs-desktop").map_err(|error| error.to_string())?;
     *guard = Some(Arc::new(client));
@@ -455,4 +461,100 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundle_embeds_engine_workers_and_sets_csp() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            !conf["app"]["security"]["csp"].is_null(),
+            "csp must not be null"
+        );
+        let csp = conf["app"]["security"]["csp"]
+            .as_object()
+            .unwrap_or_else(|| panic!("csp must be an object allow-list"));
+        for key in [
+            "default-src",
+            "connect-src",
+            "img-src",
+            "style-src",
+            "script-src",
+        ] {
+            let value = csp
+                .get(key)
+                .and_then(|item| item.as_str())
+                .unwrap_or_else(|| panic!("csp.{key}"));
+            match key {
+                "default-src" | "script-src" => {
+                    assert!(value.contains("'self'"), "{key}={value}");
+                }
+                "connect-src" => {
+                    assert!(value.contains("ipc:"), "{key}={value}");
+                }
+                "img-src" => {
+                    assert!(
+                        value.contains("'self'") && value.contains("asset:"),
+                        "{key}={value}"
+                    );
+                }
+                "style-src" => {
+                    assert!(
+                        value.contains("'self'") && value.contains("'unsafe-inline'"),
+                        "{key}={value}"
+                    );
+                }
+                _ => {}
+            }
+        }
+        let bins = conf["bundle"]["externalBin"]
+            .as_array()
+            .unwrap_or_else(|| panic!("externalBin"));
+        let expected = [
+            "binaries/aifs-engine",
+            "binaries/aifs-worker-media",
+            "binaries/aifs-worker-document",
+            "binaries/aifs-worker-vision",
+            "binaries/aifs-worker-llm",
+        ];
+        assert_eq!(bins.len(), expected.len(), "{bins:?}");
+        for name in expected {
+            assert!(
+                bins.iter().any(|value| value.as_str() == Some(name)),
+                "missing {name} in {bins:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_bins_builds_the_engine_binary_package() {
+        let alias = include_str!("../../../../.cargo/config.toml")
+            .lines()
+            .find(|line| line.starts_with("engine-bins"))
+            .unwrap_or_else(|| panic!("engine-bins alias"));
+        assert!(
+            alias.contains("-p aifs-engine-bin"),
+            "engine-bins must build bins/aifs-engine, not the library crate: {alias}"
+        );
+        assert!(
+            !alias.split_whitespace().any(|token| token == "aifs-engine"),
+            "engine-bins must not pass -p aifs-engine: {alias}"
+        );
+        let packages = include_str!("../../../../Makefile")
+            .lines()
+            .find(|line| line.starts_with("ENGINE_PACKAGES"))
+            .unwrap_or_else(|| panic!("ENGINE_PACKAGES"));
+        assert!(
+            packages.contains("aifs-engine-bin"),
+            "make build must compile the engine binary crate: {packages}"
+        );
+        assert!(
+            !packages
+                .split_whitespace()
+                .any(|token| token == "aifs-engine"),
+            "make build must not select the library crate: {packages}"
+        );
+    }
 }

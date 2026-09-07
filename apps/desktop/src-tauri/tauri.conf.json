@@ -20,7 +20,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost https://ipc.localhost",
+        "img-src": "'self' asset: http://asset.localhost https://asset.localhost data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'"
+      }
     }
   },
   "bundle": {
@@ -30,6 +36,13 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/henry.w@example.net"
+    ],
+    "externalBin": [
+      "binaries/aifs-engine",
+      "binaries/aifs-worker-media",
+      "binaries/aifs-worker-document",
+      "binaries/aifs-worker-vision",
+      "binaries/aifs-worker-llm"
     ]
   }
 }

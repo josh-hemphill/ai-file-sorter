@@ -9,7 +9,7 @@ use crate::{
 use aifs_domain::{Evidence, ObservedEntry};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// API key on the wire. `Debug` never prints the value.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +80,32 @@ impl WorkerKind {
             Self::Llm => "AIFS_WORKER_LLM",
         }
     }
+}
+
+/// Engine stdio binary stem (no target-triple suffix).
+pub const ENGINE_PROCESS_STEM: &str = "aifs-engine";
+
+/// Compile-time rustc `TARGET` triple, when the build script set it.
+pub fn target_triple() -> Option<&'static str> {
+    option_env!("AIFS_TARGET_TRIPLE")
+}
+
+/// Candidate file names for `stem` including Windows `.exe` and Tauri sidecar triples.
+pub fn process_binary_names(stem: &str, target_triple: Option<&str>) -> Vec<String> {
+    let mut names = vec![stem.to_owned(), format!("{stem}.exe")];
+    if let Some(triple) = target_triple.filter(|triple| !triple.is_empty()) {
+        names.push(format!("{stem}-{triple}"));
+        names.push(format!("{stem}-{triple}.exe"));
+    }
+    names
+}
+
+/// First existing process binary for `stem` in `dir` (plain name, then sidecar suffix).
+pub fn first_process_binary(dir: &Path, stem: &str) -> Option<PathBuf> {
+    process_binary_names(stem, target_triple())
+        .into_iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 /// Something the engine asks a worker to do.
@@ -337,6 +363,34 @@ mod tests {
         let encoded = serde_json::to_string(&inferred).unwrap_or_default();
         assert!(!encoded.contains("evidence"), "{encoded}");
         assert!(inferred.is_terminal());
+    }
+
+    #[test]
+    fn process_binary_names_include_plain_and_sidecar_suffix() {
+        let names = process_binary_names("aifs-engine", Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(
+            names,
+            [
+                "aifs-engine",
+                "aifs-engine.exe",
+                "aifs-engine-x86_64-unknown-linux-gnu",
+                "aifs-engine-x86_64-unknown-linux-gnu.exe",
+            ]
+        );
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
+        let sidecar = dir.path().join(format!("aifs-worker-llm-{triple}"));
+        std::fs::write(&sidecar, b"").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            Some(sidecar.as_path())
+        );
+        let plain = dir.path().join("aifs-worker-llm");
+        std::fs::write(&plain, b"").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            Some(plain.as_path())
+        );
     }
 
     fn load_command(api_key: Option<RedactedString>) -> WorkerCommand {
