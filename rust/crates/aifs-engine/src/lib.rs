@@ -1712,6 +1712,8 @@ mod tests {
 
     #[test]
     fn scan_categorizes_when_llm_slot_is_assigned() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
         let mut engine = Engine::new();
@@ -1759,9 +1761,14 @@ mod tests {
                 && bag.fact(aifs_domain::evidence::keys::CATEGORY) == Some("Documents")
         });
         assert!(
-            categorized || logs.iter().any(|message| message.contains("not installed")),
-            "expected categorize evidence or a missing-worker log, evidence={:?} logs={logs:?}",
+            categorized,
+            "expected stub categorize evidence, evidence={:?} logs={logs:?}",
             snapshot.evidence
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("categorized") && message.contains("note.txt")),
+            "expected categorize log, logs={logs:?}"
         );
         let revision = match terminal(engine.handle(Request {
             id: "4".into(),

@@ -17,7 +17,12 @@ pub fn analyze_into_supervised(
     let categorize = slot(models, "categorize").filter(|slot| !is_off(&slot.backend));
     let vision = slot(models, "vision").filter(|slot| !is_off(&slot.backend));
     let document = slot(models, "document").filter(|slot| !is_off(&slot.backend));
-    let run_categorize = categorize.is_some() || document.is_some();
+    let categorize_slot = categorize.or(if settings.analyze_documents {
+        document
+    } else {
+        None
+    });
+    let run_categorize = categorize_slot.is_some();
     let run_describe = settings.analyze_images && vision.is_some();
     if !run_categorize && !run_describe {
         return;
@@ -36,96 +41,94 @@ pub fn analyze_into_supervised(
 
     let storage_dir = models.storage_dir.trim().to_owned();
     let mut loaded: Option<String> = None;
-    let mut bags = Vec::new();
     let document_only = categorize.is_none() && document.is_some();
 
-    if let Some(slot) = categorize.or(document)
-        && let Err(message) = ensure_loaded(
+    if run_categorize && let Some(slot) = categorize_slot {
+        match ensure_loaded(
             &mut llm,
             &mut loaded,
             slot,
             models,
             &storage_dir,
             &mut on_log,
-        )
-    {
-        on_log(format!(
-            "Categorize load failed ({message}); folder labels stay heuristic."
-        ));
-    }
-
-    for entry in snapshot.entries.iter() {
-        if entry.kind != EntryKind::File {
-            continue;
-        }
-        let prior = prior_evidence(snapshot, entry);
-        if run_categorize
-            && loaded.is_some()
-            && should_categorize(
-                entry,
-                categorize.is_some(),
-                document_only,
-                settings.analyze_documents,
-            )
-        {
-            match llm.categorize(&snapshot.root, entry, prior.clone()) {
-                Ok(Some(evidence)) => {
-                    log_category(&mut on_log, entry, &evidence);
-                    bags.push(evidence);
+        ) {
+            Ok(()) => {
+                let mut bags = Vec::new();
+                for entry in snapshot.entries.iter() {
+                    if entry.kind != EntryKind::File
+                        || !should_categorize(entry, categorize.is_some(), document_only)
+                    {
+                        continue;
+                    }
+                    let prior = prior_evidence(snapshot, entry);
+                    match llm.categorize(&snapshot.root, entry, prior) {
+                        Ok(Some(evidence)) => {
+                            log_category(&mut on_log, entry, &evidence);
+                            bags.push(evidence);
+                        }
+                        Ok(None) => {}
+                        Err(error) => on_log(format!(
+                            "categorize skipped {}: {error}",
+                            entry.path.as_str()
+                        )),
+                    }
                 }
-                Ok(None) => {}
-                Err(error) => on_log(format!(
-                    "categorize skipped {}: {error}",
-                    entry.path.as_str()
-                )),
+                snapshot.evidence.extend(bags);
             }
-        }
-        if run_describe
-            && matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
-            && let Some(slot) = vision
-        {
-            if let Err(message) = ensure_loaded(
-                &mut llm,
-                &mut loaded,
-                slot,
-                models,
-                &storage_dir,
-                &mut on_log,
-            ) {
-                on_log(format!(
-                    "Vision load failed ({message}); image description skipped."
-                ));
-                continue;
-            }
-            match llm.describe(&snapshot.root, entry, prior) {
-                Ok(Some(evidence)) => {
-                    on_log(format!("described {}", entry.path.as_str()));
-                    bags.push(evidence);
-                }
-                Ok(None) => {}
-                Err(error) => on_log(format!("describe skipped {}: {error}", entry.path.as_str())),
-            }
+            Err(message) => on_log(format!(
+                "Categorize load failed ({message}); folder labels stay heuristic."
+            )),
         }
     }
 
-    snapshot.evidence.extend(bags);
+    if run_describe && let Some(slot) = vision {
+        match ensure_loaded(
+            &mut llm,
+            &mut loaded,
+            slot,
+            models,
+            &storage_dir,
+            &mut on_log,
+        ) {
+            Ok(()) => {
+                let mut bags = Vec::new();
+                for entry in snapshot.entries.iter() {
+                    if entry.kind != EntryKind::File
+                        || !matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
+                    {
+                        continue;
+                    }
+                    let prior = prior_evidence(snapshot, entry);
+                    match llm.describe(&snapshot.root, entry, prior) {
+                        Ok(Some(evidence)) => {
+                            on_log(format!("described {}", entry.path.as_str()));
+                            bags.push(evidence);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            on_log(format!("describe skipped {}: {error}", entry.path.as_str()))
+                        }
+                    }
+                }
+                snapshot.evidence.extend(bags);
+            }
+            Err(message) => on_log(format!(
+                "Vision load failed ({message}); image description skipped."
+            )),
+        }
+    }
+
     if loaded.is_some() {
         let _ = llm.unload();
     }
     let _ = llm.shutdown();
 }
 
-fn should_categorize(
-    entry: &ObservedEntry,
-    categorize_on: bool,
-    document_only: bool,
-    analyze_documents: bool,
-) -> bool {
+fn should_categorize(entry: &ObservedEntry, categorize_on: bool, document_only: bool) -> bool {
     if categorize_on {
         return true;
     }
     document_only
-        && analyze_documents
         && matches!(
             entry.family,
             FileFamily::Document
