@@ -174,6 +174,14 @@ export type ModelBackend =
   | { kind: "gemini"; model: string }
   | { kind: "custom_endpoint"; base_url: string; model: string };
 
+export type SlotRuntime =
+  | { kind: "off"; detail: string }
+  | { kind: "stub"; detail: string }
+  | { kind: "hosted"; detail: string }
+  | { kind: "llama"; detail: string }
+  | { kind: "missing_worker"; detail: string }
+  | { kind: "missing_files"; detail: string };
+
 export interface ModelSlot {
   id: string;
   kind: ModelBackend["kind"];
@@ -184,6 +192,7 @@ export interface ModelSlot {
   base_url?: string;
   api_key?: string;
   api_key_set?: boolean;
+  runtime?: SlotRuntime;
 }
 
 export interface ModelInventory {

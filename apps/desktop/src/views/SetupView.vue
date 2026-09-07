@@ -17,6 +17,7 @@ import {
   formatBytes,
   GPU_PREFERENCES,
   MODEL_SLOT_META,
+  withPresentedRuntime,
 } from "../models";
 import type { ModelInventory, ModelSlot, ProgressEvent } from "../types";
 
@@ -102,11 +103,7 @@ async function download(catalogId: string) {
   };
   try {
     const result = await downloadModel(catalogId);
-    inventory.value = {
-      ...inventory.value,
-      storage_dir: result.storage_dir || inventory.value.storage_dir,
-      artifacts: result.artifacts,
-    };
+    inventory.value = withPresentedRuntime(inventory.value, result);
   } catch (cause) {
     error.value = String(cause);
   } finally {

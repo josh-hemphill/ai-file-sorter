@@ -25,9 +25,9 @@ use aifs_domain::{
 use aifs_planner::{propose, validate};
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
-    AppSettings, Command, Envelope, ErrorCode, Event, LogLevel, ModelBackend, ModelInventory,
-    PROTOCOL_VERSION, ProposalPolicy, Request, RequestId, ScanOptions, decode_line, encode_line,
-    hosted_model_label, is_hosted_backend,
+    AppSettings, Command, Envelope, ErrorCode, Event, LlmWorkerStatus, LogLevel, ModelBackend,
+    ModelInventory, PROTOCOL_VERSION, ProposalPolicy, Request, RequestId, ScanOptions, SlotRuntime,
+    decode_line, encode_line, hosted_model_label, is_hosted_backend, slot_runtime,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{ScanError, scan};
@@ -1199,17 +1199,35 @@ fn save_models(
 ) -> Result<(), aifs_store::StoreError> {
     let mut stored = inventory.clone();
     stored.artifacts.clear();
+    for slot in &mut stored.slots {
+        slot.runtime = None;
+    }
     let json = serde_json::to_string(&stored)?;
     store.put_meta(MODELS_META_KEY, &json)
 }
 
 fn present_models(inventory: ModelInventory) -> ModelInventory {
+    present_models_with(inventory, probe_llm_worker())
+}
+
+fn present_models_with(inventory: ModelInventory, worker: LlmWorkerStatus) -> ModelInventory {
     let dir = resolved_models_dir(&inventory.storage_dir);
     let mut next = inventory.redacted();
     if next.storage_dir.trim().is_empty() {
         next.storage_dir = dir.display().to_string();
     }
-    next.with_disk_status(&dir)
+    next.with_disk_status(&dir).with_slot_runtime(&worker, &dir)
+}
+
+fn probe_llm_worker() -> LlmWorkerStatus {
+    match WorkerClient::try_connect(WorkerKind::Llm) {
+        None => LlmWorkerStatus::Missing,
+        Some(mut client) => {
+            let capabilities = client.capabilities().to_vec();
+            let _ = client.shutdown();
+            LlmWorkerStatus::Ready { capabilities }
+        }
+    }
 }
 
 fn resolved_models_dir(storage_dir: &str) -> PathBuf {
@@ -1237,50 +1255,80 @@ fn emit_model_runtime_notices(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<(), aifs_store::StoreError> {
+    emit_model_runtime_notices_with(store, id, emit, probe_llm_worker())
+}
+
+fn emit_model_runtime_notices_with(
+    store: &aifs_store::WorkspaceStore,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
+    worker: LlmWorkerStatus,
+) -> Result<(), aifs_store::StoreError> {
     let settings = load_settings(store)?;
     let models = load_models(store)?;
-    let slot_off = |id: &str| {
+    let dir = resolved_models_dir(&models.storage_dir);
+    let runtime_for = |slot_id: &str| {
         models
             .slots
             .iter()
-            .find(|slot| slot.id == id)
-            .is_none_or(|slot| matches!(slot.backend, ModelBackend::Off))
+            .find(|slot| slot.id == slot_id)
+            .map(|slot| slot_runtime(&slot.backend, &worker, Some(dir.as_path())))
+            .unwrap_or_else(|| slot_runtime(&ModelBackend::Off, &worker, Some(dir.as_path())))
     };
+    emit_slot_runtime_notice(emit, id, "Categorize", &runtime_for("categorize"), false);
     if settings.analyze_images {
-        if slot_off("vision") {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Warn,
-                "Image analysis is enabled but the vision slot is off — set up a model.",
-            );
-        } else {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Info,
-                "Vision slot assigned; images will be described after extract.",
-            );
-        }
+        emit_slot_runtime_notice(emit, id, "Vision", &runtime_for("vision"), true);
     }
     if settings.analyze_documents {
-        if slot_off("document") {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Warn,
-                "Document analysis is enabled but the document slot is off — set up a model.",
-            );
-        } else {
-            emit_log(
-                emit,
-                id,
-                LogLevel::Info,
-                "Document slot assigned; documents will be categorized after extract.",
-            );
-        }
+        emit_slot_runtime_notice(emit, id, "Document", &runtime_for("document"), true);
     }
     Ok(())
+}
+
+fn emit_slot_runtime_notice(
+    emit: &mut impl FnMut(Envelope),
+    id: &RequestId,
+    label: &str,
+    runtime: &SlotRuntime,
+    warn_when_off: bool,
+) {
+    let Some((level, message)) = slot_runtime_notice(label, runtime, warn_when_off) else {
+        return;
+    };
+    emit_log(emit, id, level, message);
+}
+
+/// Scan log copy for one slot. `warn_when_off` is for vision/document analysis flags.
+fn slot_runtime_notice(
+    label: &str,
+    runtime: &SlotRuntime,
+    warn_when_off: bool,
+) -> Option<(LogLevel, String)> {
+    match runtime {
+        SlotRuntime::Off { .. } if warn_when_off => Some((
+            LogLevel::Warn,
+            format!("{label} analysis is enabled but the slot is off — set up a model."),
+        )),
+        SlotRuntime::Off { .. } => None,
+        SlotRuntime::Stub { .. } => Some((
+            LogLevel::Info,
+            format!("{label} slot uses stub infer; not llama.cpp or hosted HTTP."),
+        )),
+        SlotRuntime::Hosted { .. } => {
+            Some((LogLevel::Info, format!("{label} slot uses hosted infer.")))
+        }
+        SlotRuntime::Llama { .. } => {
+            Some((LogLevel::Info, format!("{label} slot uses llama.cpp.")))
+        }
+        SlotRuntime::MissingWorker { .. } => Some((
+            LogLevel::Warn,
+            format!("{label} slot is assigned but the LLM worker is not installed."),
+        )),
+        SlotRuntime::MissingFiles { .. } => Some((
+            LogLevel::Warn,
+            format!("{label} slot is assigned but the GGUF is not on disk."),
+        )),
+    }
 }
 
 fn default_store_path() -> Option<std::path::PathBuf> {
@@ -3130,6 +3178,222 @@ mod tests {
             Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn present_models_with_reports_stub_hosted_and_missing_files() {
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[1].backend = ModelBackend::OpenAi {
+            model: "gpt-4.1-mini".into(),
+        };
+        let stub = LlmWorkerStatus::Ready {
+            capabilities: vec!["stub".into(), "hosted".into()],
+        };
+        let presented = present_models_with(inventory.clone(), stub);
+        assert_eq!(
+            presented.slots[0]
+                .runtime
+                .as_ref()
+                .map(SlotRuntime::kind_id),
+            Some("stub")
+        );
+        assert_eq!(
+            presented.slots[1]
+                .runtime
+                .as_ref()
+                .map(SlotRuntime::kind_id),
+            Some("hosted")
+        );
+        assert_eq!(
+            presented.slots[2]
+                .runtime
+                .as_ref()
+                .map(SlotRuntime::kind_id),
+            Some("off")
+        );
+
+        let llama = LlmWorkerStatus::Ready {
+            capabilities: vec!["llama".into(), "hosted".into()],
+        };
+        let missing = present_models_with(inventory.clone(), llama);
+        assert_eq!(
+            missing.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
+            Some("missing_files")
+        );
+        let no_worker = present_models_with(inventory, LlmWorkerStatus::Missing);
+        assert_eq!(
+            no_worker.slots[0]
+                .runtime
+                .as_ref()
+                .map(SlotRuntime::kind_id),
+            Some("missing_worker")
+        );
+    }
+
+    #[test]
+    fn slot_runtime_notice_does_not_claim_live_describe_for_stub() {
+        let stub = SlotRuntime::Stub {
+            detail: "stub".into(),
+        };
+        let (level, message) =
+            slot_runtime_notice("Vision", &stub, true).unwrap_or_else(|| panic!("notice"));
+        assert_eq!(level, LogLevel::Info);
+        assert!(message.contains("stub infer"), "{message}");
+        assert!(!message.contains("will be described"), "{message}");
+        assert!(!message.contains("will be categorized"), "{message}");
+
+        let hosted = SlotRuntime::Hosted {
+            detail: "hosted".into(),
+        };
+        let (_, message) =
+            slot_runtime_notice("Vision", &hosted, true).unwrap_or_else(|| panic!("notice"));
+        assert!(message.contains("hosted infer"), "{message}");
+
+        let off = SlotRuntime::Off {
+            detail: "off".into(),
+        };
+        let (level, message) =
+            slot_runtime_notice("Vision", &off, true).unwrap_or_else(|| panic!("notice"));
+        assert_eq!(level, LogLevel::Warn);
+        assert!(message.contains("slot is off"), "{message}");
+        assert!(slot_runtime_notice("Categorize", &off, false).is_none());
+    }
+
+    #[test]
+    fn get_models_fills_runtime_and_does_not_persist_it() {
+        let db = tempfile::NamedTempFile::new().unwrap_or_else(|error| panic!("{error}"));
+        let mut engine =
+            Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
+        hello_ok(&mut engine);
+        let models_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let mut inventory = ModelInventory {
+            storage_dir: models_dir.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[0].runtime = Some(SlotRuntime::Llama {
+            detail: "client should not persist this".into(),
+        });
+        let presented = match terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels { inventory },
+        })) {
+            Event::Models { inventory } => inventory,
+            other => panic!("unexpected {other:?}"),
+        };
+        let kind = presented.slots[0]
+            .runtime
+            .as_ref()
+            .map(SlotRuntime::kind_id)
+            .unwrap_or("missing");
+        assert!(
+            matches!(kind, "stub" | "missing_files" | "missing_worker"),
+            "catalog runtime was {kind}"
+        );
+        drop(engine);
+        let stored = aifs_store::WorkspaceStore::open(db.path())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .get_meta("model_inventory")
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("models meta"));
+        assert!(
+            !stored.contains("runtime"),
+            "persisted inventory must not keep computed runtime: {stored}"
+        );
+        assert!(
+            stored.contains("gemma-3-4b-it"),
+            "assignment must still be stored: {stored}"
+        );
+        let mut reloaded =
+            Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
+        hello_ok(&mut reloaded);
+        let loaded = match terminal(reloaded.handle(Request {
+            id: "get".into(),
+            command: Command::GetModels,
+        })) {
+            Event::Models { inventory } => inventory,
+            other => panic!("unexpected {other:?}"),
+        };
+        let loaded_kind = loaded.slots[0]
+            .runtime
+            .as_ref()
+            .map(SlotRuntime::kind_id)
+            .unwrap_or("missing");
+        assert_eq!(loaded_kind, kind);
+    }
+
+    #[test]
+    fn scan_logs_honest_stub_and_hosted_slot_status() {
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        let settings = AppSettings {
+            analyze_images: true,
+            analyze_documents: true,
+            ..AppSettings::default()
+        };
+        terminal(engine.handle(Request {
+            id: "settings".into(),
+            command: Command::PutSettings { settings },
+        }));
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[1].backend = ModelBackend::CustomEndpoint {
+            base_url: "http://127.0.0.1:9/v1".into(),
+            model: "vision-test".into(),
+        };
+        inventory.slots[2].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        terminal(engine.handle(Request {
+            id: "models".into(),
+            command: Command::PutModels { inventory },
+        }));
+        let stub = LlmWorkerStatus::Ready {
+            capabilities: vec!["stub".into(), "hosted".into()],
+        };
+        let mut events = Vec::new();
+        emit_model_runtime_notices_with(
+            &engine.store,
+            &"scan".into(),
+            &mut |envelope| events.push(envelope),
+            stub,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let logs: Vec<String> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter()
+                .any(|message| { message.contains("Categorize slot uses stub infer") }),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("Vision slot uses hosted infer")),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("Document slot uses stub infer")),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .all(|message| !message.contains("will be described")
+                    && !message.contains("will be categorized after extract")),
+            "{logs:?}"
+        );
     }
 
     fn hello_ok(engine: &mut Engine) {

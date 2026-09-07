@@ -400,7 +400,7 @@ impl EngineClient {
         ))
     }
 
-    /// Loads redacted model slot assignments.
+    /// Loads redacted model slot assignments, including per-slot `runtime`.
     pub fn get_models(&self) -> Result<ModelInventory, ClientError> {
         self.expect_models(Command::GetModels)
     }

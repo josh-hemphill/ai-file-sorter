@@ -5,6 +5,7 @@ import {
   formatBytes,
   inventorySummary,
   slotBackend,
+  withPresentedRuntime,
   withSlotKind,
 } from "./models.ts";
 
@@ -27,17 +28,111 @@ test("inventorySummary treats off slots as unused", () => {
       storage_dir: "",
       gpu_preference: "auto",
       slots: [
+        { id: "categorize", kind: "open_ai", model: "gpt-4.1-mini", runtime: { kind: "hosted", detail: "hosted" } },
+        { id: "vision", kind: "off", runtime: { kind: "off", detail: "off" } },
+        { id: "document", kind: "off", runtime: { kind: "off", detail: "off" } },
+        { id: "chat", kind: "off", runtime: { kind: "off", detail: "off" } },
+      ],
+    }),
+    "1 hosted · 3 off",
+  );
+});
+
+test("inventorySummary does not claim heuristics when infer is stub or llama", () => {
+  assert.equal(
+    inventorySummary({
+      storage_dir: "",
+      gpu_preference: "auto",
+      slots: [
+        { id: "categorize", kind: "catalog", catalog_id: "gemma-3-4b-it", runtime: { kind: "stub", detail: "stub" } },
+        { id: "vision", kind: "catalog", catalog_id: "gemma-3-4b-it", runtime: { kind: "stub", detail: "stub" } },
+        { id: "document", kind: "off", runtime: { kind: "off", detail: "off" } },
+        { id: "chat", kind: "off", runtime: { kind: "off", detail: "off" } },
+      ],
+    }),
+    "2 stub · 2 off",
+  );
+  assert.equal(
+    inventorySummary({
+      storage_dir: "",
+      gpu_preference: "auto",
+      slots: [
+        { id: "categorize", kind: "catalog", catalog_id: "gemma-3-4b-it", runtime: { kind: "llama", detail: "llama" } },
+        { id: "vision", kind: "local_gguf", path: "/missing.gguf", runtime: { kind: "missing_files", detail: "missing" } },
+        { id: "document", kind: "open_ai", model: "x", runtime: { kind: "missing_worker", detail: "missing" } },
+        { id: "chat", kind: "off", runtime: { kind: "off", detail: "off" } },
+      ],
+    }),
+    "1 llama · 1 no worker · 1 missing files · 1 off",
+  );
+  assert.equal(
+    inventorySummary({
+      storage_dir: "",
+      gpu_preference: "auto",
+      slots: [
         { id: "categorize", kind: "open_ai", model: "gpt-4.1-mini" },
         { id: "vision", kind: "off" },
       ],
     }),
-    "1 slot assigned · scan still uses heuristics",
+    "1 assigned · 1 off",
   );
+});
+
+test("withPresentedRuntime refreshes slot runtime after download", () => {
+  const current = {
+    storage_dir: "/old",
+    gpu_preference: "auto",
+    slots: [
+      {
+        id: "categorize",
+        kind: "catalog" as const,
+        catalog_id: "gemma-3-4b-it",
+        runtime: { kind: "missing_files" as const, detail: "missing" },
+      },
+      { id: "vision", kind: "off" as const, runtime: { kind: "off" as const, detail: "off" } },
+    ],
+    artifacts: [],
+  };
+  const presented = {
+    storage_dir: "/models",
+    gpu_preference: "auto",
+    slots: [
+      {
+        id: "categorize",
+        kind: "catalog" as const,
+        catalog_id: "gemma-3-4b-it",
+        runtime: { kind: "llama" as const, detail: "llama.cpp" },
+      },
+      { id: "vision", kind: "off" as const, runtime: { kind: "off" as const, detail: "off" } },
+    ],
+    artifacts: [
+      {
+        id: "gemma-text-q4",
+        filename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+        path: "/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+        expected_bytes: 1,
+        bytes_on_disk: 1,
+        present: true,
+        used_by: ["gemma-3-4b-it"],
+      },
+    ],
+  };
+  const next = withPresentedRuntime(current, presented);
+  assert.equal(next.storage_dir, "/models");
+  assert.equal(next.slots[0].runtime?.kind, "llama");
+  assert.equal(next.slots[0].kind, "catalog");
+  assert.equal(next.artifacts?.[0].present, true);
 });
 
 test("withSlotKind clears foreign fields", () => {
   const next = withSlotKind(
-    { id: "vision", kind: "open_ai", model: "x", api_key_set: true },
+    {
+      id: "vision",
+      kind: "open_ai",
+      model: "x",
+      api_key_set: true,
+      runtime: { kind: "hosted", detail: "hosted" },
+    },
     "catalog",
   );
   assert.equal(next.kind, "catalog");
@@ -45,6 +140,7 @@ test("withSlotKind clears foreign fields", () => {
   assert.equal(next.api_key, undefined);
   assert.equal(next.api_key_set, false);
   assert.deepEqual(slotBackend(next), { kind: "catalog", catalog_id: "gemma-3-4b-it" });
+  assert.equal(next.runtime, undefined);
 });
 
 test("withSlotKind round-trip to hosted omits a blank key", () => {

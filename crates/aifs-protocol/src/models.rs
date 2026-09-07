@@ -61,6 +61,95 @@ pub enum ModelBackend {
     },
 }
 
+/// How infer will actually run. Computed on `get_models`; never persisted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlotRuntime {
+    /// Slot is off; scan and propose stay heuristic.
+    Off {
+        /// Human explanation.
+        detail: String,
+    },
+    /// Default `aifs-worker-llm` canned infer (no llama.cpp).
+    Stub {
+        /// Human explanation.
+        detail: String,
+    },
+    /// OpenAI, Gemini, or custom HTTP through the LLM worker.
+    Hosted {
+        /// Human explanation.
+        detail: String,
+    },
+    /// Local GGUF loaded via llama.cpp.
+    Llama {
+        /// Human explanation.
+        detail: String,
+    },
+    /// Slot is assigned but `aifs-worker-llm` is not installed.
+    MissingWorker {
+        /// Human explanation.
+        detail: String,
+    },
+    /// Local GGUF assignment whose files are not on disk.
+    MissingFiles {
+        /// Human explanation.
+        detail: String,
+    },
+}
+
+impl SlotRuntime {
+    /// Wire `kind` for this runtime.
+    pub fn kind_id(&self) -> &'static str {
+        match self {
+            Self::Off { .. } => "off",
+            Self::Stub { .. } => "stub",
+            Self::Hosted { .. } => "hosted",
+            Self::Llama { .. } => "llama",
+            Self::MissingWorker { .. } => "missing_worker",
+            Self::MissingFiles { .. } => "missing_files",
+        }
+    }
+
+    /// Human explanation.
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Off { detail }
+            | Self::Stub { detail }
+            | Self::Hosted { detail }
+            | Self::Llama { detail }
+            | Self::MissingWorker { detail }
+            | Self::MissingFiles { detail } => detail,
+        }
+    }
+
+    /// True when scan/chat will call a real model (hosted HTTP or llama.cpp).
+    pub fn is_live_infer(&self) -> bool {
+        matches!(self, Self::Hosted { .. } | Self::Llama { .. })
+    }
+}
+
+/// LLM worker hello result used to compute [`SlotRuntime`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LlmWorkerStatus {
+    /// No `aifs-worker-llm` binary was found.
+    Missing,
+    /// Worker answered `hello` with these capability strings.
+    Ready {
+        /// Values such as `stub`, `llama`, and `hosted`.
+        capabilities: Vec<String>,
+    },
+}
+
+impl LlmWorkerStatus {
+    /// True when the worker advertises llama.cpp infer.
+    pub fn has_llama(&self) -> bool {
+        match self {
+            Self::Missing => false,
+            Self::Ready { capabilities } => capabilities.iter().any(|cap| cap == "llama"),
+        }
+    }
+}
+
 /// One analysis slot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -76,6 +165,9 @@ pub struct ModelSlot {
     /// True when the engine has a key stored for this slot.
     #[serde(default)]
     pub api_key_set: bool,
+    /// Filled by `get_models` / `put_models` / `download_model`. Not stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<SlotRuntime>,
 }
 
 impl Default for ModelSlot {
@@ -85,6 +177,7 @@ impl Default for ModelSlot {
             backend: ModelBackend::Off,
             api_key: None,
             api_key_set: false,
+            runtime: None,
         }
     }
 }
@@ -106,6 +199,7 @@ impl ModelSlot {
             api_key: None,
             api_key_set: self.api_key.as_ref().is_some_and(|key| !key.is_empty())
                 || self.api_key_set,
+            runtime: self.runtime.clone(),
         }
     }
 }
@@ -225,6 +319,14 @@ impl ModelInventory {
         self
     }
 
+    /// Fills per-slot [`SlotRuntime`] from worker hello and files on disk.
+    pub fn with_slot_runtime(mut self, worker: &LlmWorkerStatus, storage_dir: &Path) -> Self {
+        for slot in &mut self.slots {
+            slot.runtime = Some(slot_runtime(&slot.backend, worker, Some(storage_dir)));
+        }
+        self
+    }
+
     fn normalized_slots(slots: &[ModelSlot]) -> Vec<ModelSlot> {
         MODEL_SLOT_IDS
             .iter()
@@ -331,6 +433,68 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
     }
 }
 
+/// Resolves how infer will run for `backend` given worker hello and files on disk.
+pub fn slot_runtime(
+    backend: &ModelBackend,
+    worker: &LlmWorkerStatus,
+    storage_dir: Option<&Path>,
+) -> SlotRuntime {
+    if matches!(backend, ModelBackend::Off) {
+        return SlotRuntime::Off {
+            detail: "Slot is off. Scan and propose still use heuristics.".to_owned(),
+        };
+    }
+    if matches!(worker, LlmWorkerStatus::Missing) {
+        return SlotRuntime::MissingWorker {
+            detail: "Slot is assigned but the LLM worker is not installed.".to_owned(),
+        };
+    }
+    if matches!(
+        backend,
+        ModelBackend::OpenAi { .. }
+            | ModelBackend::Gemini { .. }
+            | ModelBackend::CustomEndpoint { .. }
+    ) {
+        return SlotRuntime::Hosted {
+            detail: "Hosted infer via the LLM worker (OpenAI, Gemini, or custom HTTP).".to_owned(),
+        };
+    }
+    if worker.has_llama() {
+        if local_weights_present(backend, storage_dir) {
+            return SlotRuntime::Llama {
+                detail: "llama.cpp will load this GGUF when scan or chat runs.".to_owned(),
+            };
+        }
+        return SlotRuntime::MissingFiles {
+            detail: "Local slot assigned but the GGUF is not on disk.".to_owned(),
+        };
+    }
+    SlotRuntime::Stub {
+        detail: "Default LLM worker stubs infer. Rebuild aifs-worker-llm with `--features llama` to load GGUFs.".to_owned(),
+    }
+}
+
+fn local_weights_present(backend: &ModelBackend, storage_dir: Option<&Path>) -> bool {
+    match backend {
+        ModelBackend::Catalog { catalog_id } => {
+            storage_dir.is_some_and(|dir| catalog_id_is_downloaded(dir, catalog_id))
+        }
+        ModelBackend::LocalGguf { path, mmproj } => {
+            if !Path::new(path).is_file() {
+                return false;
+            }
+            match mmproj.as_deref().filter(|proj| !proj.is_empty()) {
+                None => true,
+                Some(proj) => Path::new(proj).is_file(),
+            }
+        }
+        ModelBackend::Off
+        | ModelBackend::OpenAi { .. }
+        | ModelBackend::Gemini { .. }
+        | ModelBackend::CustomEndpoint { .. } => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +526,7 @@ mod tests {
                 },
                 api_key: None,
                 api_key_set: true,
+                runtime: None,
             }],
             ..ModelInventory::default()
         };
@@ -384,6 +549,7 @@ mod tests {
                 },
                 api_key: Some(String::new()),
                 api_key_set: true,
+                runtime: None,
             }],
             ..ModelInventory::default()
         };
@@ -397,6 +563,7 @@ mod tests {
                 backend: ModelBackend::Off,
                 api_key: None,
                 api_key_set: true,
+                runtime: None,
             }],
             ..ModelInventory::default()
         };
@@ -422,5 +589,122 @@ mod tests {
         assert!(ready.contains("already downloaded"), "{ready}");
         let status = ModelInventory::default().with_disk_status(dir.path());
         assert!(status.artifacts.iter().any(|artifact| artifact.present));
+    }
+
+    fn stub_worker() -> LlmWorkerStatus {
+        LlmWorkerStatus::Ready {
+            capabilities: vec!["stub".into(), "hosted".into()],
+        }
+    }
+
+    fn llama_worker() -> LlmWorkerStatus {
+        LlmWorkerStatus::Ready {
+            capabilities: vec!["llama".into(), "hosted".into()],
+        }
+    }
+
+    #[test]
+    fn slot_runtime_is_off_for_heuristics() {
+        let runtime = slot_runtime(&ModelBackend::Off, &LlmWorkerStatus::Missing, None);
+        assert_eq!(runtime.kind_id(), "off");
+        assert!(!runtime.is_live_infer());
+    }
+
+    #[test]
+    fn slot_runtime_hosted_needs_the_worker() {
+        let backend = ModelBackend::OpenAi {
+            model: "gpt-4.1-mini".into(),
+        };
+        assert_eq!(
+            slot_runtime(&backend, &LlmWorkerStatus::Missing, None).kind_id(),
+            "missing_worker"
+        );
+        let hosted = slot_runtime(&backend, &stub_worker(), None);
+        assert_eq!(hosted.kind_id(), "hosted");
+        assert!(hosted.is_live_infer());
+    }
+
+    #[test]
+    fn slot_runtime_catalog_stays_stub_even_when_files_exist() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(
+            crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
+            b"gguf",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        let runtime = slot_runtime(&backend, &stub_worker(), Some(dir.path()));
+        assert_eq!(runtime.kind_id(), "stub");
+        assert!(!runtime.is_live_infer());
+        assert!(
+            runtime.detail().contains("stubs infer"),
+            "{}",
+            runtime.detail()
+        );
+    }
+
+    #[test]
+    fn slot_runtime_llama_needs_files_on_disk() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        assert_eq!(
+            slot_runtime(&backend, &llama_worker(), Some(dir.path())).kind_id(),
+            "missing_files"
+        );
+        std::fs::write(
+            crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
+            b"gguf",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let ready = slot_runtime(&backend, &llama_worker(), Some(dir.path()));
+        assert_eq!(ready.kind_id(), "llama");
+        assert!(ready.is_live_infer());
+    }
+
+    #[test]
+    fn slot_runtime_local_gguf_checks_weights_and_mmproj() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let weights = dir.path().join("model.gguf");
+        let proj = dir.path().join("mmproj.gguf");
+        std::fs::write(&weights, b"gguf").unwrap_or_else(|error| panic!("{error}"));
+        let missing_proj = ModelBackend::LocalGguf {
+            path: weights.display().to_string(),
+            mmproj: Some(proj.display().to_string()),
+        };
+        assert_eq!(
+            slot_runtime(&missing_proj, &llama_worker(), None).kind_id(),
+            "missing_files"
+        );
+        std::fs::write(&proj, b"proj").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            slot_runtime(&missing_proj, &llama_worker(), None).kind_id(),
+            "llama"
+        );
+        assert_eq!(
+            slot_runtime(&missing_proj, &LlmWorkerStatus::Missing, None).kind_id(),
+            "missing_worker"
+        );
+    }
+
+    #[test]
+    fn runtime_omitted_from_stored_json_when_none() {
+        let slot = ModelSlot::off("chat");
+        let json = serde_json::to_string(&slot).unwrap_or_else(|error| panic!("{error}"));
+        assert!(!json.contains("runtime"), "{json}");
+        let mut with_runtime = slot;
+        with_runtime.runtime = Some(slot_runtime(
+            &ModelBackend::Gemini {
+                model: "gemini-2.0-flash".into(),
+            },
+            &stub_worker(),
+            None,
+        ));
+        let json = serde_json::to_string(&with_runtime).unwrap_or_else(|error| panic!("{error}"));
+        assert!(json.contains("\"kind\":\"hosted\""), "{json}");
+        assert!(json.contains("runtime"), "{json}");
     }
 }
