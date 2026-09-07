@@ -19,7 +19,7 @@ use std::time::Duration;
 const INFER_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GEN_TOKENS: u32 = 128;
-const CHAT_GEN_TOKENS: u32 = 256;
+const CHAT_GEN_TOKENS: u32 = 512;
 const HOSTED_CONFIDENCE: f32 = 0.55;
 const RESPONSE_CHARS: usize = 32_768;
 

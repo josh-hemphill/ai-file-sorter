@@ -119,7 +119,8 @@ currently returns stub `local_model` evidence unless the worker is built with
 `--features llama` (optional `cuda` / `vulkan` / `metal`) or a hosted HTTP
 backend is loaded (`RemoteModel` evidence). Default
 `cargo test --workspace` does not compile llama.cpp. Hosted probes contact the
-endpoint. Chat still runs keyword `interpret()` tools that emit only
-`RevisionPatch`es.
+endpoint. Chat asks the model for `RevisionPatch` JSON and applies those
+patches; keyword `interpret()` is the fallback when the chat slot is off, the
+worker fails, or the model does not emit parseable patches.
 `api_key` on `load` is never written to logs.
 

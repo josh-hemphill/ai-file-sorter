@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 const N_CTX: u32 = 2048;
 const MAX_GEN_TOKENS: i32 = 128;
-const CHAT_GEN_TOKENS: i32 = 256;
+const CHAT_GEN_TOKENS: i32 = 512;
 const BATCH_FLOOR: usize = 512;
 const ALL_GPU_LAYERS: u32 = 999;
 const LLAMA_CONFIDENCE: f32 = 0.55;
