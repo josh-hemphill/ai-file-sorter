@@ -69,6 +69,10 @@ pub mod keys {
     pub const CATEGORY: &str = "category";
     /// Suggested subcategory from a model (untrusted).
     pub const CATEGORY_SUB: &str = "category.sub";
+    /// Document title from PDF/Office properties.
+    pub const DOCUMENT_TITLE: &str = "document.title";
+    /// Truncated extracted document text (untrusted).
+    pub const DOCUMENT_TEXT: &str = "document.text";
 }
 
 /// A bag of facts about one asset from one source.

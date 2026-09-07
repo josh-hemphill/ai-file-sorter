@@ -1,6 +1,6 @@
 [package]
 name = "aifs-worker-document"
-description = "Isolated document/PDF worker stub (evidence only)"
+description = "Isolated document/PDF worker (evidence only)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ name = "aifs-worker-document"
 path = "src/main.rs"
 
 [dependencies]
-aifs-domain = { workspace = true }
+aifs-extractors = { workspace = true }
 aifs-protocol = { workspace = true }
 aifs-worker-runtime = { workspace = true }
 

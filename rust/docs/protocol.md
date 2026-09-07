@@ -91,8 +91,9 @@ Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 `aifs-worker-llm`. Discovery uses `$AIFS_WORKER_MEDIA` (and siblings), then a
 binary next to the engine, then `target/{debug,release}/`. Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
-missing. Document and vision workers are stubs that return low-confidence
-detector evidence. The LLM worker accepts `load` / `unload` / `categorize` /
+missing. The document worker extracts PDF/Office/text (with an in-process
+fallback). Vision workers are stubs that return low-confidence detector
+evidence. The LLM worker accepts `load` / `unload` / `categorize` /
 `describe` / `chat` and currently returns stub `local_model` evidence; llama.cpp
 is not linked yet. `api_key` on `load` is never written to logs.
 

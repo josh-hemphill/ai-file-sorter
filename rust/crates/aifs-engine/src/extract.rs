@@ -1,6 +1,5 @@
 //! Supervised evidence extraction. Crash-prone work belongs in worker processes;
-//! the engine falls back to in-process Rust tag readers when no media worker is
-//! installed.
+//! the engine falls back to in-process Rust readers when a worker binary is missing.
 
 use aifs_domain::{EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot};
 use aifs_protocol::worker::WorkerKind;
@@ -64,7 +63,12 @@ fn extract_one(
         | FileFamily::Spreadsheet
         | FileFamily::Presentation
         | FileFamily::Ebook => {
-            document.and_then(|worker| worker.extract(root, entry).ok().flatten())
+            if let Some(worker) = document
+                && let Ok(evidence) = worker.extract(root, entry)
+            {
+                return evidence;
+            }
+            aifs_extractors::extract_document_entry(root, entry)
         }
         FileFamily::Image | FileFamily::RawImage => {
             vision.and_then(|worker| worker.extract(root, entry).ok().flatten())

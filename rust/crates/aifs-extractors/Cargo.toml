@@ -1,6 +1,6 @@
 [package]
 name = "aifs-extractors"
-description = "Bounded media-tag extractors for the AI File Sorter engine"
+description = "Bounded media-tag and document extractors for the AI File Sorter engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 aifs-domain = { workspace = true }
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
