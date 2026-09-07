@@ -32,6 +32,7 @@ use aifs_relationships::enrich;
 use aifs_scanner::{ScanError, scan};
 use aifs_store::WorkspaceStore;
 use aifs_worker_client::WorkerClient;
+use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -525,32 +526,48 @@ impl Engine {
         }
 
         if self.should_stop(id) {
-            emit(Envelope::reply(id, Event::Cancelled));
+            self.emit_cancelled_checkpoint(id, &snapshot, emit);
             return;
         }
+
+        let persist_error = RefCell::new(None);
+        let store = &self.store;
+        let mut persist = |snapshot: &WorkspaceSnapshot| match store.put_snapshot(snapshot) {
+            Ok(()) => true,
+            Err(error) => {
+                persist_error.replace(Some(error));
+                false
+            }
+        };
 
         if options.extract_metadata {
             last_progress = Instant::now()
                 .checked_sub(PROGRESS_INTERVAL)
                 .unwrap_or_else(Instant::now);
-            let store = &self.store;
             let gate = Arc::clone(&self.cancel);
             let cancel_id = id.clone();
-            if extract::extract_into_supervised(
+            match extract::extract_into_supervised(
                 &mut snapshot,
                 |current, total, path| {
                     if should_emit_progress(&mut last_progress, current, Some(total)) {
                         emit_progress(emit, id, "extract", current, Some(total), path);
                     }
                 },
-                |snapshot| {
-                    let _ = store.put_snapshot(snapshot);
-                },
+                &mut persist,
                 || !gate.is_cancelled(&cancel_id),
-            ) == WorkStatus::Cancelled
-            {
-                self.emit_cancelled_checkpoint(id, &snapshot, emit);
-                return;
+            ) {
+                WorkStatus::Completed => {}
+                WorkStatus::Cancelled => {
+                    self.emit_cancelled_checkpoint(id, &snapshot, emit);
+                    return;
+                }
+                WorkStatus::PersistFailed => {
+                    emit(checkpoint_store_failed(
+                        id,
+                        persist_error.borrow_mut().take(),
+                    ));
+                    return;
+                }
             }
         }
 
@@ -564,10 +581,9 @@ impl Engine {
                 last_progress = Instant::now()
                     .checked_sub(PROGRESS_INTERVAL)
                     .unwrap_or_else(Instant::now);
-                let store = &self.store;
                 let gate = Arc::clone(&self.cancel);
                 let cancel_id = id.clone();
-                if analyze::analyze_into_supervised(
+                match analyze::analyze_into_supervised(
                     &mut snapshot,
                     &models,
                     &settings,
@@ -586,14 +602,21 @@ impl Engine {
                             }
                         }
                     },
-                    |snapshot| {
-                        let _ = store.put_snapshot(snapshot);
-                    },
+                    &mut persist,
                     || !gate.is_cancelled(&cancel_id),
-                ) == WorkStatus::Cancelled
-                {
-                    self.emit_cancelled_checkpoint(id, &snapshot, emit);
-                    return;
+                ) {
+                    WorkStatus::Completed => {}
+                    WorkStatus::Cancelled => {
+                        self.emit_cancelled_checkpoint(id, &snapshot, emit);
+                        return;
+                    }
+                    WorkStatus::PersistFailed => {
+                        emit(checkpoint_store_failed(
+                            id,
+                            persist_error.borrow_mut().take(),
+                        ));
+                        return;
+                    }
                 }
             }
             (Err(error), _) | (_, Err(error)) => emit_log(
@@ -1099,6 +1122,20 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
             issues: vec![],
         },
     )
+}
+
+fn checkpoint_store_failed(id: &RequestId, error: Option<aifs_store::StoreError>) -> Envelope {
+    match error {
+        Some(error) => store_failed(id, error),
+        None => Envelope::reply(
+            id,
+            Event::Failed {
+                code: ErrorCode::Storage,
+                message: "checkpoint persist failed".to_owned(),
+                issues: vec![],
+            },
+        ),
+    }
 }
 
 fn load_settings(
@@ -1653,6 +1690,68 @@ mod tests {
         assert!(
             engine.stored_snapshot(session).is_none(),
             "walk cancel must not persist a checkpoint"
+        );
+    }
+
+    #[test]
+    fn cancel_after_relationships_persists_checkpoint() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, .. } = &envelope.event
+                    && stage == "relationships"
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "must not complete a snapshot"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("cancel after walk should persist the tree"));
+        assert!(
+            checkpoint
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt"),
+            "checkpoint entries={:?}",
+            checkpoint.entries
         );
     }
 

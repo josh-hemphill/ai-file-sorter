@@ -11,7 +11,7 @@ use aifs_worker_client::WorkerClient;
 pub fn extract_into_supervised(
     snapshot: &mut WorkspaceSnapshot,
     mut on_progress: impl FnMut(u64, u64, &str),
-    mut on_checkpoint: impl FnMut(&WorkspaceSnapshot),
+    mut on_checkpoint: impl FnMut(&WorkspaceSnapshot) -> bool,
     mut should_continue: impl FnMut() -> bool,
 ) -> WorkStatus {
     let mut media = WorkerClient::try_connect(WorkerKind::Media);
@@ -24,26 +24,27 @@ pub fn extract_into_supervised(
         if !should_continue() {
             snapshot.evidence.extend(bags);
             shutdown_extract_workers(media, document, vision);
-            on_checkpoint(snapshot);
             return WorkStatus::Cancelled;
         }
         let entry = snapshot.entries[index].clone();
         on_progress(index as u64 + 1, total, entry.path.as_str());
-        if has_extract_evidence(snapshot, &entry) {
-            continue;
-        }
-        if let Some(evidence) = extract_one(
-            &root,
-            &entry,
-            media.as_mut(),
-            document.as_mut(),
-            vision.as_mut(),
-        ) {
+        if !has_extract_evidence(snapshot, &entry)
+            && let Some(evidence) = extract_one(
+                &root,
+                &entry,
+                media.as_mut(),
+                document.as_mut(),
+                vision.as_mut(),
+            )
+        {
             bags.push(evidence);
         }
-        if (index + 1).is_multiple_of(CHECKPOINT_EVERY) {
+        if bags.len() >= CHECKPOINT_EVERY {
             snapshot.evidence.extend(std::mem::take(&mut bags));
-            on_checkpoint(snapshot);
+            if !on_checkpoint(snapshot) {
+                shutdown_extract_workers(media, document, vision);
+                return WorkStatus::PersistFailed;
+            }
         }
     }
     snapshot.evidence.extend(bags);

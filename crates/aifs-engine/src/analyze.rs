@@ -32,7 +32,7 @@ pub fn analyze_into_supervised(
     models: &ModelInventory,
     settings: &AppSettings,
     mut on_notice: impl FnMut(AnalyzeNotice<'_>),
-    mut on_checkpoint: impl FnMut(&WorkspaceSnapshot),
+    mut on_checkpoint: impl FnMut(&WorkspaceSnapshot) -> bool,
     mut should_continue: impl FnMut() -> bool,
 ) -> WorkStatus {
     let categorize = slot(models, "categorize").filter(|slot| !is_off(&slot.backend));
@@ -89,7 +89,6 @@ pub fn analyze_into_supervised(
                     if !should_continue() {
                         snapshot.evidence.extend(bags);
                         shutdown_llm(&mut llm, loaded.is_some());
-                        on_checkpoint(snapshot);
                         return WorkStatus::Cancelled;
                     }
                     on_notice(AnalyzeNotice::Progress {
@@ -110,9 +109,12 @@ pub fn analyze_into_supervised(
                                 &evidence,
                             );
                             bags.push(evidence);
-                            if bags.len().is_multiple_of(CHECKPOINT_EVERY) {
+                            if bags.len() >= CHECKPOINT_EVERY {
                                 snapshot.evidence.extend(std::mem::take(&mut bags));
-                                on_checkpoint(snapshot);
+                                if !on_checkpoint(snapshot) {
+                                    shutdown_llm(&mut llm, loaded.is_some());
+                                    return WorkStatus::PersistFailed;
+                                }
                             }
                         }
                         Ok(None) => {}
@@ -156,7 +158,6 @@ pub fn analyze_into_supervised(
                     if !should_continue() {
                         snapshot.evidence.extend(bags);
                         shutdown_llm(&mut llm, loaded.is_some());
-                        on_checkpoint(snapshot);
                         return WorkStatus::Cancelled;
                     }
                     on_notice(AnalyzeNotice::Progress {
@@ -176,9 +177,12 @@ pub fn analyze_into_supervised(
                                 entry.path.as_str()
                             )));
                             bags.push(evidence);
-                            if bags.len().is_multiple_of(CHECKPOINT_EVERY) {
+                            if bags.len() >= CHECKPOINT_EVERY {
                                 snapshot.evidence.extend(std::mem::take(&mut bags));
-                                on_checkpoint(snapshot);
+                                if !on_checkpoint(snapshot) {
+                                    shutdown_llm(&mut llm, loaded.is_some());
+                                    return WorkStatus::PersistFailed;
+                                }
                             }
                         }
                         Ok(None) => {}

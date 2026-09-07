@@ -232,7 +232,6 @@ async function runScan() {
     const next = await scanRoot(rootPath.value, preset.value, sessionFor(rootPath.value));
     snapshot.value = next;
     scanSessions.value = { ...scanSessions.value, [rootPath.value]: next.session };
-    snapshot.value = next;
     recentRoots.value = rememberRoot(recentRoots.value, rootPath.value);
     const proposed = await proposeSession(next.session, preset.value);
     revision.value = proposed;
