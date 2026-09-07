@@ -149,6 +149,7 @@ fn fetch_to_part(
         error,
     })?;
     if written == 0 {
+        drop(file);
         let _ = fs::remove_file(part);
         return Err(DownloadError::Empty {
             url: url.to_owned(),
@@ -156,6 +157,7 @@ fn fetch_to_part(
     }
     let digest = hex_lower(hasher.finalize());
     if !digest.eq_ignore_ascii_case(expected_sha256) {
+        drop(file);
         let _ = fs::remove_file(part);
         return Err(DownloadError::ChecksumMismatch {
             url: url.to_owned(),

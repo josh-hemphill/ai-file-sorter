@@ -340,6 +340,8 @@ mod tests {
 
     #[test]
     fn tiny_fixture_is_present_but_not_downloaded_until_hash_matches() {
+        // Hold the process lock with no hash pins so catalog_id_is_downloaded
+        // uses the published digest, not a parallel test's sha256(fixture).
         let _lock = ArtifactSha256Guard::pin(&[]);
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let path = artifact_path(dir.path(), GEMMA_TEXT_FILENAME);
@@ -357,10 +359,10 @@ mod tests {
     #[test]
     fn matching_fixture_hash_counts_as_downloaded() {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let body = b"gguf";
+        let body = b"matching-fixture-gguf";
+        let _pin = ArtifactSha256Guard::pin(&[(GEMMA_TEXT_FILENAME, body.as_slice())]);
         let path = artifact_path(dir.path(), GEMMA_TEXT_FILENAME);
         fs::write(&path, body).unwrap_or_else(|error| panic!("{error}"));
-        let _pin = ArtifactSha256Guard::pin(&[(GEMMA_TEXT_FILENAME, body.as_slice())]);
         assert!(catalog_id_is_downloaded(dir.path(), "gemma-3-4b-it"));
         assert!(artifact_is_verified(
             &path,
