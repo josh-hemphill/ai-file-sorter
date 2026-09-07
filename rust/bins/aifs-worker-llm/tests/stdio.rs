@@ -1,4 +1,4 @@
-//! Stdio tests for the LLM worker stub.
+//! Stdio tests for the LLM worker.
 
 use aifs_domain::{
     AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, RelativePath,
@@ -19,6 +19,7 @@ fn file_entry(path: &str, family: FileFamily) -> ObservedEntry {
     }
 }
 
+#[cfg(not(feature = "llama"))]
 #[test]
 fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
@@ -89,8 +90,67 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
 }
 
+#[cfg(feature = "llama")]
 #[test]
-fn llm_stub_refuses_extract() {
+fn llama_worker_refuses_missing_gguf() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    assert!(client.capabilities().iter().any(|cap| cap == "llama"));
+    assert!(!client.capabilities().iter().any(|cap| cap == "stub"));
+    let error = client
+        .load(
+            ModelBackend::Catalog {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("missing GGUF must fail"));
+    assert!(
+        error.to_string().contains("not fully downloaded"),
+        "{error}"
+    );
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn hosted_backend_still_stubs_infer() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    let loaded = client
+        .load(
+            ModelBackend::OpenAi {
+                model: "gpt-4.1-mini".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.model, "openai:gpt-4.1-mini");
+    assert_eq!(loaded.device, "cpu");
+    let entry = file_entry("notes.txt", FileFamily::Document);
+    let evidence = client
+        .categorize(dir.path(), &entry, vec![])
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("categorize evidence"));
+    assert_eq!(
+        evidence.fact(aifs_domain::evidence::keys::CATEGORY),
+        Some("Documents")
+    );
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn llm_worker_refuses_extract() {
     let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let mut client =

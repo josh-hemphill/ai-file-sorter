@@ -16,7 +16,7 @@ bins/aifs-engine
           ├── `aifs-worker-media` (Rust tag readers; later ffprobe)
           ├── `aifs-worker-document` (PDF/Office/text)
           ├── `aifs-worker-vision` (EXIF; describe is LLM)
-          └── `aifs-worker-llm` (session-lived; stub infer, llama.cpp later)
+          └── `aifs-worker-llm` (session-lived; stub by default, llama.cpp with `--features llama`)
 ```
 
 Rules:

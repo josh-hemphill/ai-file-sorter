@@ -32,23 +32,23 @@ export const GPU_PREFERENCES = [
   {
     id: "auto",
     label: "Auto",
-    hint: "Prefer CUDA, then Vulkan or Metal, then CPU. Recorded for the future LLM worker.",
+    hint: "Prefer CUDA, then Vulkan or Metal, then CPU, in a llama.cpp worker built with those features.",
   },
   { id: "cpu", label: "CPU only", hint: "No GPU offload." },
   {
     id: "cuda",
     label: "CUDA",
-    hint: "Needs NVIDIA drivers and a llama.cpp worker built with GGML_CUDA. Not used yet.",
+    hint: "Needs NVIDIA drivers and `aifs-worker-llm` built with `--features llama,cuda`.",
   },
   {
     id: "vulkan",
     label: "Vulkan",
-    hint: "Needs a Vulkan-capable llama.cpp worker. Not used yet.",
+    hint: "Needs `aifs-worker-llm` built with `--features llama,vulkan`.",
   },
   {
     id: "metal",
     label: "Metal",
-    hint: "Needs a Metal-capable llama.cpp worker on macOS. Not used yet.",
+    hint: "Needs `aifs-worker-llm` built with `--features llama,metal` on macOS.",
   },
 ] as const;
 

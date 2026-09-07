@@ -270,14 +270,14 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
                 (
                     true,
                     format!(
-                        "{catalog_id} is already downloaded. Scan will load the LLM worker for this slot; infer is still stubbed."
+                        "{catalog_id} is already downloaded. Scan loads the LLM worker; infer uses llama.cpp when that worker is built with `--features llama`."
                     ),
                 )
             } else {
                 (
                     true,
                     format!(
-                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan will load the LLM worker after download; infer is still stubbed."
+                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan loads the LLM worker after download; infer uses llama.cpp when that worker is built with `--features llama`."
                     ),
                 )
             }
@@ -294,7 +294,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             }
             (
                 true,
-                "Local GGUF found. Scan will load the LLM worker for this slot; infer is still stubbed."
+                "Local GGUF found. Scan loads the LLM worker; infer uses llama.cpp when that worker is built with `--features llama`."
                     .to_owned(),
             )
         }
