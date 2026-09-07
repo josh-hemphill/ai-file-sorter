@@ -5,7 +5,7 @@
 #   make desktop        build binaries, then Tauri/Vue dev
 #   make cli ARGS='scan fixtures/inbox-mixed'
 
-ENGINE_PACKAGES = aifs-engine aifs-cli aifs-worker-media aifs-worker-document aifs-worker-vision aifs-worker-llm
+ENGINE_PACKAGES = aifs-engine-bin aifs-cli aifs-worker-media aifs-worker-document aifs-worker-vision aifs-worker-llm
 ENGINE_PACKAGE_FLAGS = $(foreach pkg,$(ENGINE_PACKAGES),-p $(pkg))
 DESKTOP_DIR = apps/desktop
 
