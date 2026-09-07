@@ -3,8 +3,8 @@
 use crate::cancel::WorkStatus;
 use crate::checkpoint::{CHECKPOINT_EVERY, has_category_evidence, has_description_evidence};
 use aifs_domain::{
-    EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot,
-    description_looks_like_screenshot, evidence::keys, filename_looks_like_screenshot,
+    EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
+    looks_like_screenshot,
 };
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text};
@@ -127,12 +127,17 @@ pub fn analyze_into_supervised(
                                 }
                             }
                         }
-                        Ok(None) => {}
-                        Err(error) => on_notice(AnalyzeNotice::Log(format!(
-                            "describe skipped {}: {}",
-                            entry.path.as_str(),
-                            sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
-                        ))),
+                        Ok(None) => {
+                            maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                        }
+                        Err(error) => {
+                            maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                            on_notice(AnalyzeNotice::Log(format!(
+                                "describe skipped {}: {}",
+                                entry.path.as_str(),
+                                sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
+                            )));
+                        }
                     }
                 }
                 snapshot.evidence.extend(bags);
@@ -334,14 +339,6 @@ fn maybe_log_screenshot(
     if looks_like_screenshot(entry, evidence) {
         on_notice(AnalyzeNotice::Log(screenshot_log(entry.path.as_str())));
     }
-}
-
-fn looks_like_screenshot(entry: &ObservedEntry, evidence: &[Evidence]) -> bool {
-    filename_looks_like_screenshot(entry.path.file_name())
-        || evidence.iter().any(|bag| {
-            bag.fact(keys::DESCRIPTION)
-                .is_some_and(description_looks_like_screenshot)
-        })
 }
 
 /// Scan line for screenshot/UI captures.

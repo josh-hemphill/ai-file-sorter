@@ -246,12 +246,12 @@ fn hosted_categorize_sends_whitelist_style_and_description() {
         "categorize must send the description: {request}"
     );
     assert!(
-        request.contains("Screenshots, Pictures") || request.contains("Screenshots"),
-        "categorize must send allowed categories: {request}"
+        request.contains("Allowed categories: Screenshots, Pictures"),
+        "categorize must send the whitelist: {request}"
     );
     assert!(
-        request.contains("refined") || request.contains("Screenshots"),
-        "categorize must send refined screenshot guidance: {request}"
+        request.contains("Folder style: refined."),
+        "categorize must send refined style: {request}"
     );
 }
 

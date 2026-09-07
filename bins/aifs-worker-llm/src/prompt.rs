@@ -1,9 +1,6 @@
 //! Prompts for local infer. Model output is evidence, never a path or SQL.
 
-use aifs_domain::{
-    Evidence, ObservedEntry, description_looks_like_screenshot, evidence::keys,
-    filename_looks_like_screenshot,
-};
+use aifs_domain::{Evidence, ObservedEntry, evidence::keys, looks_like_screenshot};
 use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
@@ -36,17 +33,6 @@ pub const CHAT_SYSTEM: &str = "You help organize files. Reply with one JSON obje
 ops: set_destination, move_to_folder, rename, accept, reject, reopen. \
 folder and destination are root-relative, never '..', never absolute, never SQL or shell. \
 Use \"patches\":[] when you are only answering. Do not emit filesystem operations.";
-
-/// True when filename or description evidence looks like a screenshot or UI capture.
-pub fn looks_like_screenshot(entry: &ObservedEntry, evidence: &[Evidence]) -> bool {
-    if filename_looks_like_screenshot(entry.path.file_name()) {
-        return true;
-    }
-    evidence.iter().any(|bag| {
-        bag.fact(keys::DESCRIPTION)
-            .is_some_and(description_looks_like_screenshot)
-    })
-}
 
 /// Builds the system prompt for categorize, including whitelist and folder style.
 pub fn categorize_system(allowed_categories: &[String], style: FolderStyle) -> String {

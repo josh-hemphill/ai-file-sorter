@@ -25,7 +25,7 @@ pub mod time;
 
 pub use entry::{
     EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry,
-    description_looks_like_screenshot, filename_looks_like_screenshot,
+    description_looks_like_screenshot, filename_looks_like_screenshot, looks_like_screenshot,
 };
 pub use evidence::{Evidence, EvidenceSource};
 pub use ids::{AssetId, BundleId, JournalId, PlanId, RevisionId, SessionId};
