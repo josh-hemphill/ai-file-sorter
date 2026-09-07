@@ -5,7 +5,7 @@ use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
 const FACT_CHARS: usize = 160;
-const DOCUMENT_TEXT_CHARS: usize = 400;
+pub(crate) const DOCUMENT_TEXT_CHARS: usize = 400;
 #[cfg(any(test, feature = "llama"))]
 const DOCUMENT_TEXT_FLOOR: usize = 50;
 

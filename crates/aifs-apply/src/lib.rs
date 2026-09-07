@@ -476,8 +476,8 @@ mod tests {
     use super::*;
     use aifs_domain::{
         AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, Operation,
-        OperationPlan, PlanId, PlannedOperation, RelativePath, ReviewState, RevisionId, SessionId,
-        Timestamp,
+        OperationPlan, PlanId, PlannedOperation, ProposalRevision, RelativePath, ReviewState,
+        RevisionId, SessionId, Timestamp,
     };
     use aifs_planner::{accept_all, propose, validate};
     use aifs_protocol::ProposalPolicy;
@@ -507,6 +507,16 @@ mod tests {
         }
     }
 
+    /// Returns the first placement destination from a proposed revision.
+    fn first_destination(revision: &ProposalRevision) -> String {
+        revision
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_else(|| panic!("placement"))
+    }
+
     #[test]
     fn dry_run_does_not_move_and_apply_then_undo_restores() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -516,6 +526,7 @@ mod tests {
             .push(scan_like(dir.path(), "note.txt", b"hello"));
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
+        let dest = first_destination(&revision);
         assert_eq!(
             revision.placements.values().next().map(|p| p.review),
             Some(ReviewState::Accepted)
@@ -531,13 +542,13 @@ mod tests {
         let dry = apply_plan(&snapshot, &plan, true);
         assert!(dry.dry_run);
         assert!(dir.path().join("note.txt").exists());
-        assert!(!dir.path().join("Documents/note.txt").exists());
+        assert!(!dir.path().join(&dest).exists());
 
         let applied = apply_plan(&snapshot, &plan, false);
         assert_eq!(applied.status, JournalStatus::Completed);
         assert!(!dir.path().join("note.txt").exists());
         assert_eq!(
-            fs::read(dir.path().join("Documents/note.txt")).ok(),
+            fs::read(dir.path().join(&dest)).ok(),
             Some(b"hello".to_vec())
         );
 
@@ -577,21 +588,21 @@ mod tests {
             .push(scan_like(dir.path(), "note.txt", b"hello"));
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
+        let dest = first_destination(&revision);
         let (plan, _) = validate(&snapshot, &revision);
         let plan = plan.unwrap_or_else(|| panic!("plan"));
-        fs::create_dir_all(dir.path().join("Documents")).unwrap_or_else(|e| panic!("{e}"));
-        fs::write(dir.path().join("Documents/note.txt"), b"keep-me")
-            .unwrap_or_else(|e| panic!("{e}"));
+        let dest_abs = dir.path().join(&dest);
+        if let Some(parent) = dest_abs.parent() {
+            fs::create_dir_all(parent).unwrap_or_else(|e| panic!("{e}"));
+        }
+        fs::write(&dest_abs, b"keep-me").unwrap_or_else(|e| panic!("{e}"));
         let applied = apply_plan(&snapshot, &plan, false);
         assert_eq!(applied.status, JournalStatus::Failed);
         assert_eq!(
             fs::read(dir.path().join("note.txt")).ok(),
             Some(b"hello".to_vec())
         );
-        assert_eq!(
-            fs::read(dir.path().join("Documents/note.txt")).ok(),
-            Some(b"keep-me".to_vec())
-        );
+        assert_eq!(fs::read(&dest_abs).ok(), Some(b"keep-me".to_vec()));
     }
 
     #[test]
@@ -681,12 +692,13 @@ mod tests {
             .push(scan_like(dir.path(), "note.txt", b"hello"));
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
+        let dest = first_destination(&revision);
         let (plan, _) = validate(&snapshot, &revision);
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         let journal = apply_plan_with_hooks(&snapshot, &plan, false, |_| false);
         assert_eq!(journal.status, JournalStatus::Failed);
         assert!(dir.path().join("note.txt").exists());
-        assert!(!dir.path().join("Documents/note.txt").exists());
+        assert!(!dir.path().join(&dest).exists());
     }
 
     #[test]
@@ -707,6 +719,7 @@ mod tests {
             .push(scan_like(dir.path(), "dump/note.txt", b"hello"));
         let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
             .unwrap_or_else(|e| panic!("{e}"));
+        let dest = first_destination(&revision);
         let (plan, _) = validate(&snapshot, &revision);
         let plan = plan.unwrap_or_else(|| panic!("plan"));
         assert!(
@@ -720,7 +733,7 @@ mod tests {
         assert_eq!(applied.status, JournalStatus::Completed);
         assert!(!dir.path().join("dump").exists());
         assert_eq!(
-            fs::read(dir.path().join("Documents/note.txt")).ok(),
+            fs::read(dir.path().join(&dest)).ok(),
             Some(b"hello".to_vec())
         );
         let undone = undo_journal(&snapshot, &applied);
