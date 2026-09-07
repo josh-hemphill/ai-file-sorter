@@ -4,11 +4,10 @@ mod device;
 #[cfg(any(test, feature = "llama"))]
 mod gguf;
 mod handler;
+mod hosted;
 #[cfg(feature = "llama")]
 mod llama;
-#[cfg(any(test, feature = "llama"))]
 mod parse;
-#[cfg(any(test, feature = "llama"))]
 mod prompt;
 mod stub;
 
@@ -26,7 +25,7 @@ fn main() {
 }
 
 fn capabilities() -> Vec<&'static str> {
-    let mut caps = vec!["load", "unload", "categorize", "describe", "chat"];
+    let mut caps = vec!["load", "unload", "categorize", "describe", "chat", "hosted"];
     #[cfg(feature = "llama")]
     caps.push("llama");
     #[cfg(not(feature = "llama"))]

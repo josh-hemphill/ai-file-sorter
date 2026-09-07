@@ -99,7 +99,10 @@ slot backend and runs `categorize` / `describe` when those slots are not off.
 Model `category` is a whitelist hint for propose, not a trusted path. The LLM
 worker accepts `load` / `unload` / `categorize` / `describe` / `chat` and
 currently returns stub `local_model` evidence unless the worker is built with
-`--features llama` (optional `cuda` / `vulkan` / `metal`). Default
-`cargo test --workspace` does not compile llama.cpp.
+`--features llama` (optional `cuda` / `vulkan` / `metal`) or a hosted HTTP
+backend is loaded (`RemoteModel` evidence). Default
+`cargo test --workspace` does not compile llama.cpp. Hosted probes contact the
+endpoint. Chat still runs keyword `interpret()` tools that emit only
+`RevisionPatch`es.
 `api_key` on `load` is never written to logs.
 

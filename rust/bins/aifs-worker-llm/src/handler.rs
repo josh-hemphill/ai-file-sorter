@@ -1,8 +1,9 @@
-//! Dispatches stub infer, optional llama.cpp, and (later) hosted backends.
+//! Dispatches stub infer, optional llama.cpp, and hosted HTTP backends.
 
+use crate::hosted::HostedHandler;
 use crate::stub::StubHandler;
 use aifs_domain::{Evidence, ObservedEntry};
-use aifs_protocol::ModelBackend;
+use aifs_protocol::{ModelBackend, is_hosted_backend};
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use std::path::Path;
 
@@ -16,6 +17,7 @@ enum Active {
     #[default]
     None,
     Stub,
+    Hosted,
     #[cfg(feature = "llama")]
     Llama,
 }
@@ -24,6 +26,7 @@ enum Active {
 #[derive(Default)]
 pub struct LlmHandler {
     stub: StubHandler,
+    hosted: HostedHandler,
     #[cfg(feature = "llama")]
     llama: LlamaHandler,
     active: Active,
@@ -49,6 +52,19 @@ impl WorkerHandler for LlmHandler {
         if matches!(backend, ModelBackend::Off) {
             return Err("cannot load an off slot".to_owned());
         }
+        if is_hosted_backend(&backend) {
+            let _ = self.stub.unload();
+            #[cfg(feature = "llama")]
+            {
+                let _ = self.llama.unload();
+            }
+            let loaded =
+                self.hosted
+                    .load(backend, gpu_preference, n_gpu_layers, api_key, storage_dir)?;
+            self.active = Active::Hosted;
+            return Ok(loaded);
+        }
+        let _ = self.hosted.unload();
         #[cfg(feature = "llama")]
         if is_local_gguf(&backend) {
             let _ = self.stub.unload();
@@ -73,6 +89,7 @@ impl WorkerHandler for LlmHandler {
         match self.active {
             #[cfg(feature = "llama")]
             Active::Llama => self.llama.unload()?,
+            Active::Hosted => self.hosted.unload()?,
             Active::Stub | Active::None => self.stub.unload()?,
         }
         self.active = Active::None;
@@ -88,6 +105,7 @@ impl WorkerHandler for LlmHandler {
         match self.active {
             #[cfg(feature = "llama")]
             Active::Llama => self.llama.categorize(root, entry, evidence),
+            Active::Hosted => self.hosted.categorize(root, entry, evidence),
             Active::Stub => self.stub.categorize(root, entry, evidence),
             Active::None => Err("load a model before infer".to_owned()),
         }
@@ -102,6 +120,7 @@ impl WorkerHandler for LlmHandler {
         match self.active {
             #[cfg(feature = "llama")]
             Active::Llama => self.llama.describe(root, entry, evidence),
+            Active::Hosted => self.hosted.describe(root, entry, evidence),
             Active::Stub => self.stub.describe(root, entry, evidence),
             Active::None => Err("load a model before infer".to_owned()),
         }
@@ -111,6 +130,7 @@ impl WorkerHandler for LlmHandler {
         match self.active {
             #[cfg(feature = "llama")]
             Active::Llama => self.llama.chat(utterance, context),
+            Active::Hosted => self.hosted.chat(utterance, context),
             Active::Stub => self.stub.chat(utterance, context),
             Active::None => Err("load a model before infer".to_owned()),
         }

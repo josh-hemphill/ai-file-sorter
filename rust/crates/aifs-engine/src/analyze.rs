@@ -4,7 +4,7 @@ use aifs_domain::{
     EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
 };
 use aifs_protocol::worker::WorkerKind;
-use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot};
+use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text};
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
 /// Runs categorize/describe when slots are assigned. Heuristics still propose later.
@@ -68,8 +68,9 @@ pub fn analyze_into_supervised(
                         }
                         Ok(None) => {}
                         Err(error) => on_log(format!(
-                            "categorize skipped {}: {error}",
-                            entry.path.as_str()
+                            "categorize skipped {}: {}",
+                            entry.path.as_str(),
+                            sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
                         )),
                     }
                 }
@@ -105,9 +106,11 @@ pub fn analyze_into_supervised(
                             bags.push(evidence);
                         }
                         Ok(None) => {}
-                        Err(error) => {
-                            on_log(format!("describe skipped {}: {error}", entry.path.as_str()))
-                        }
+                        Err(error) => on_log(format!(
+                            "describe skipped {}: {}",
+                            entry.path.as_str(),
+                            sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
+                        )),
                     }
                 }
                 snapshot.evidence.extend(bags);
@@ -174,7 +177,8 @@ fn ensure_loaded(
         return Ok(());
     }
     if loaded.is_some() {
-        llm.unload().map_err(load_error)?;
+        llm.unload()
+            .map_err(|error| load_error(error, slot.api_key.as_deref()))?;
         *loaded = None;
     }
     let result = llm
@@ -185,7 +189,7 @@ fn ensure_loaded(
             slot.api_key.clone(),
             storage_dir,
         )
-        .map_err(load_error)?;
+        .map_err(|error| load_error(error, slot.api_key.as_deref()))?;
     if let Some(fallback) = &result.fallback {
         on_log(fallback.clone());
     }
@@ -197,8 +201,8 @@ fn ensure_loaded(
     Ok(())
 }
 
-fn load_error(error: WorkerClientError) -> String {
-    error.to_string()
+fn load_error(error: WorkerClientError, api_key: Option<&str>) -> String {
+    sanitize_hosted_text(&error.to_string(), api_key)
 }
 
 fn prior_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> Vec<Evidence> {

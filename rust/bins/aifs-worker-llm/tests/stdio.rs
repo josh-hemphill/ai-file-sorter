@@ -29,6 +29,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     let mut client =
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
     assert!(client.capabilities().iter().any(|cap| cap == "stub"));
+    assert!(client.capabilities().iter().any(|cap| cap == "hosted"));
     assert!(client.capabilities().iter().any(|cap| cap == "load"));
     assert!(client.capabilities().iter().any(|cap| cap == "unload"));
     let loaded = client
@@ -119,12 +120,12 @@ fn llama_worker_refuses_missing_gguf() {
 }
 
 #[test]
-fn hosted_backend_still_stubs_infer() {
+fn openai_load_requires_a_key() {
     let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let mut client =
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
-    let loaded = client
+    let error = client
         .load(
             ModelBackend::OpenAi {
                 model: "gpt-4.1-mini".into(),
@@ -134,19 +135,115 @@ fn hosted_backend_still_stubs_infer() {
             None,
             dir.path().display().to_string(),
         )
+        .err()
+        .unwrap_or_else(|| panic!("OpenAI load without a key must fail"));
+    assert!(error.to_string().contains("API key"), "{error}");
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn hosted_custom_endpoint_categorizes_as_remote_model() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let body = r#"{"choices":[{"message":{"content":"{\"category\":\"Documents\",\"description\":\"a memo\"}"}}]}"#;
+    let (base, server) = serve_json("200 OK", body);
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    client
+        .load(
+            ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(loaded.model, "openai:gpt-4.1-mini");
-    assert_eq!(loaded.device, "cpu");
     let entry = file_entry("notes.txt", FileFamily::Document);
     let evidence = client
         .categorize(dir.path(), &entry, vec![])
         .unwrap_or_else(|error| panic!("{error}"))
         .unwrap_or_else(|| panic!("categorize evidence"));
+    assert!(matches!(
+        evidence.source,
+        aifs_domain::EvidenceSource::RemoteModel { .. }
+    ));
     assert_eq!(
         evidence.fact(aifs_domain::evidence::keys::CATEGORY),
         Some("Documents")
     );
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+    let _ = server.join();
+}
+
+/// One-shot JSON stub. Reads the full request before replying (see aifs-engine http_stub).
+fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener};
+    use std::time::Duration;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
+        let _ = read_http_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        let _ = stream.shutdown(Shutdown::Write);
+        let mut sink = [0_u8; 256];
+        while stream.read(&mut sink).unwrap_or(0) > 0 {}
+    });
+    (format!("http://{addr}/v1"), handle)
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::time::Duration;
+    const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf = Vec::new();
+    let mut tmp = [0_u8; 2048];
+    loop {
+        let read = stream.read(&mut tmp)?;
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..read]);
+        if buf.len() > MAX_REQUEST_BYTES {
+            break;
+        }
+        let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = std::str::from_utf8(&buf[..header_end]).unwrap_or("");
+        let content_len = headers
+            .split("\r\n")
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap_or(0))
+            })
+            .unwrap_or(0);
+        let needed = header_end + 4 + content_len;
+        while buf.len() < needed && buf.len() <= MAX_REQUEST_BYTES {
+            let read = stream.read(&mut tmp)?;
+            if read == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..read]);
+        }
+        break;
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 #[test]

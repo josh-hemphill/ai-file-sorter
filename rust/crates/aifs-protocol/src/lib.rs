@@ -10,6 +10,7 @@
 
 pub mod catalog;
 pub mod codec;
+pub mod hosted;
 pub mod models;
 pub mod options;
 pub mod worker;
@@ -22,6 +23,10 @@ pub use catalog::{
     catalog_id_is_downloaded, catalog_ids_for_artifact, set_catalog_base_override,
 };
 pub use codec::{CodecError, decode_line, encode_line};
+pub use hosted::{
+    OPENAI_CHAT_URL, OPENAI_MODELS_URL, custom_chat_url, gemini_generate_url, gemini_model_url,
+    hosted_model_label, is_hosted_backend, sanitize_hosted_text,
+};
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS, ModelArtifactStatus, ModelBackend,
     ModelInventory, ModelSlot, probe_backend, probe_backend_at,

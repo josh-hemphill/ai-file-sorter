@@ -303,7 +303,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
         }
         ModelBackend::OpenAi { .. } => (
             true,
-            "OpenAI assignment recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
+            "OpenAI assignment recorded. Probe contacts the API; scan loads the LLM worker for hosted infer."
                 .to_owned(),
         ),
         ModelBackend::Gemini { model } if model.trim().is_empty() => {
@@ -311,7 +311,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
         }
         ModelBackend::Gemini { .. } => (
             true,
-            "Gemini assignment recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
+            "Gemini assignment recorded. Probe contacts the API; scan loads the LLM worker for hosted infer."
                 .to_owned(),
         ),
         ModelBackend::CustomEndpoint { base_url, model } => {
@@ -324,7 +324,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             }
             (
                 true,
-                "Custom endpoint recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
+                "Custom endpoint recorded. Probe contacts the URL; scan loads the LLM worker for hosted infer."
                     .to_owned(),
             )
         }
