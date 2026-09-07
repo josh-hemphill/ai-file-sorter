@@ -10,6 +10,8 @@ mod llama;
 mod parse;
 mod prompt;
 mod stub;
+#[cfg(any(test, feature = "llama"))]
+mod vision;
 
 use aifs_protocol::worker::WorkerKind;
 use handler::LlmHandler;

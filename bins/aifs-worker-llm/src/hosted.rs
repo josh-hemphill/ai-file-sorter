@@ -98,6 +98,7 @@ impl WorkerHandler for HostedHandler {
         Ok(evidence_from_text(&model_id, entry, &text, true))
     }
 
+    /// Image caption via hosted chat. Pixels are never uploaded.
     fn describe(
         &mut self,
         _root: &Path,

@@ -123,7 +123,10 @@ llama.cpp (`make desktop` / `cargo engine-llm`, optional `cuda` / `vulkan` / `me
 or a hosted HTTP backend is loaded (`RemoteModel` evidence). GPU init or OOM on
 `load` retries **once** with `n_gpu_layers=0`; scan logs `fallback` (no modal).
 The string `prompt exceeds the llama.cpp context window` is not a GPU failure.
-`AIFS_N_GPU_LAYERS` sets offload when `n_gpu_layers` is omitted. Default
+`AIFS_N_GPU_LAYERS` sets offload when `n_gpu_layers` is omitted. Local describe
+loads mmproj via libmtmd: JPEG/PNG/WebP under 8 MiB attach pixels; RAW, oversize,
+and other image types use filename + EXIF only (scan logs RAW). Hosted describe
+never uploads pixels. Default
 `cargo test --workspace` does not compile llama.cpp. Ubuntu CI has a separate
 `llama-cpu` job that compiles the worker with `--features llama` and does not
 download Gemma. `get_models` fills each slot's

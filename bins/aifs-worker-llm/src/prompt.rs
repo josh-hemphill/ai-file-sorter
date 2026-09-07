@@ -13,8 +13,10 @@ Reply with one JSON object only: \
 category is a single folder name, never a path. Do not invent SQL or filesystem commands.";
 
 /// System prompt for image captions.
-pub const DESCRIBE_SYSTEM: &str = "You describe an image for a desktop organizer using the filename \
-and any EXIF facts. Reply with one JSON object only: {\"description\":\"short caption\"}. \
+pub const DESCRIBE_SYSTEM: &str = "You describe an image for a desktop organizer. \
+When a bitmap is attached, use what you see plus filename and EXIF facts. \
+When no bitmap is attached, use only the filename and EXIF facts. \
+Reply with one JSON object only: {\"description\":\"short caption\"}. \
 Do not invent SQL or filesystem commands.";
 
 /// System prompt for assistant chat. Patches are JSON; the engine applies them.

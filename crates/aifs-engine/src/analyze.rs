@@ -172,6 +172,12 @@ pub fn analyze_into_supervised(
                         continue;
                     }
                     let prior = prior_evidence(snapshot, &entry);
+                    if entry.family == FileFamily::RawImage {
+                        on_notice(AnalyzeNotice::Log(format!(
+                            "RAW {}: describe uses EXIF and filename, not pixels",
+                            entry.path.as_str()
+                        )));
+                    }
                     match llm.describe(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
                             on_notice(AnalyzeNotice::Log(format!(
