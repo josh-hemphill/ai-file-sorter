@@ -115,8 +115,7 @@ fn drain(response: ureq::Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use crate::http_stub::{serve_json_once, serve_redirect_once};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -125,7 +124,8 @@ mod tests {
     fn probe_does_not_follow_redirects_or_leak_keys() {
         let stolen = Arc::new(AtomicBool::new(false));
         let stolen_flag = stolen.clone();
-        let sink = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+        let sink =
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
         let sink_addr = sink.local_addr().unwrap_or_else(|error| panic!("{error}"));
         let sink_thread = std::thread::spawn(move || {
             let _ = sink.set_nonblocking(true);
@@ -137,21 +137,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(25));
             }
         });
-        let source = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
-        let source_addr = source
-            .local_addr()
-            .unwrap_or_else(|error| panic!("{error}"));
-        let location = format!("http://{sink_addr}/stolen");
-        let source_thread = std::thread::spawn(move || {
-            let (mut stream, _) = source.accept().unwrap_or_else(|error| panic!("{error}"));
-            let mut buf = [0_u8; 2048];
-            let _ = stream.read(&mut buf);
-            let response = format!(
-                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            let _ = stream.write_all(response.as_bytes());
-        });
-        let url = format!("http://{source_addr}/v1/models");
+        let (url, source) = serve_redirect_once(format!("http://{sink_addr}/stolen"));
         let (ok, message) = probe_get(&url, Some("sk-secret"), AuthStyle::Gemini);
         assert!(!ok, "{message}");
         assert!(message.contains("302"), "{message}");
@@ -160,7 +146,28 @@ mod tests {
             !stolen.load(Ordering::SeqCst),
             "probe followed the redirect and forwarded the Gemini key"
         );
-        let _ = source_thread.join();
+        let _ = source.join();
         let _ = sink_thread.join();
+    }
+
+    #[test]
+    fn json_stub_reads_a_large_post_before_replying() {
+        let (base, server) = serve_json_once("200 OK", r#"{"id":"ok"}"#);
+        let url = custom_chat_url(&base);
+        let payload = "x".repeat(16_384);
+        let result = ureq::post(&url)
+            .timeout(Duration::from_secs(5))
+            .send_json(json!({
+                "model": "local-test",
+                "messages": [{"role": "user", "content": payload}],
+            }));
+        assert!(result.is_ok(), "{result:?}");
+        let request = server.join().unwrap_or_else(|error| panic!("{error:?}"));
+        assert!(request.contains("Content-Length"), "{request}");
+        assert!(
+            request.len() > 16_000,
+            "stub closed before the 16KiB body arrived ({})",
+            request.len()
+        );
     }
 }

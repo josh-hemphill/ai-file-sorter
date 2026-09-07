@@ -8,6 +8,8 @@ mod analyze;
 mod download;
 mod extract;
 mod hosted;
+#[cfg(test)]
+mod http_stub;
 
 use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
 use aifs_apply::{ApplyHook, apply_plan_with_hooks, undo_journal_with_hooks};
@@ -1806,30 +1808,8 @@ mod tests {
     fn spawn_http(
         status: &'static str,
         body: &'static str,
-    ) -> (String, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
-        let addr = listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("{error}"));
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
-            let mut buf = [0_u8; 8192];
-            let _ = stream.read(&mut buf);
-            let request = String::from_utf8_lossy(&buf);
-            let request_line = request.lines().next().unwrap_or("");
-            assert!(
-                !request_line.contains("sk-secret"),
-                "probe URL leaked the API key: {request_line}"
-            );
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-        });
-        (format!("http://{addr}/v1"), handle)
+    ) -> (String, std::thread::JoinHandle<String>) {
+        crate::http_stub::serve_json_once(status, body)
     }
 
     #[test]
@@ -1859,7 +1839,12 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
-        let _ = server.join();
+        let request = server.join().unwrap_or_else(|error| panic!("{error:?}"));
+        let request_line = request.lines().next().unwrap_or("");
+        assert!(
+            !request_line.contains("sk-secret"),
+            "probe URL leaked the API key: {request_line}"
+        );
     }
 
     #[test]

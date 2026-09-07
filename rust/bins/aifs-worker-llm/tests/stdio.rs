@@ -178,24 +178,72 @@ fn hosted_custom_endpoint_categorizes_as_remote_model() {
     let _ = server.join();
 }
 
+/// One-shot JSON stub. Reads the full request before replying (see aifs-engine http_stub).
 fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener};
+    use std::time::Duration;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
     let addr = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("{error}"));
     let handle = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
-        let mut buf = [0_u8; 8192];
-        let _ = stream.read(&mut buf);
+        let _ = read_http_request(&mut stream);
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        let _ = stream.shutdown(Shutdown::Write);
+        let mut sink = [0_u8; 256];
+        while stream.read(&mut sink).unwrap_or(0) > 0 {}
     });
     (format!("http://{addr}/v1"), handle)
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
+    use std::io::Read;
+    use std::time::Duration;
+    const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf = Vec::new();
+    let mut tmp = [0_u8; 2048];
+    loop {
+        let read = stream.read(&mut tmp)?;
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..read]);
+        if buf.len() > MAX_REQUEST_BYTES {
+            break;
+        }
+        let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = std::str::from_utf8(&buf[..header_end]).unwrap_or("");
+        let content_len = headers
+            .split("\r\n")
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap_or(0))
+            })
+            .unwrap_or(0);
+        let needed = header_end + 4 + content_len;
+        while buf.len() < needed && buf.len() <= MAX_REQUEST_BYTES {
+            let read = stream.read(&mut tmp)?;
+            if read == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..read]);
+        }
+        break;
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 #[test]
