@@ -173,10 +173,7 @@ pub fn analyze_into_supervised(
                     }
                     let prior = prior_evidence(snapshot, &entry);
                     if entry.family == FileFamily::RawImage {
-                        on_notice(AnalyzeNotice::Log(format!(
-                            "RAW {}: describe uses EXIF and filename, not pixels",
-                            entry.path.as_str()
-                        )));
+                        on_notice(AnalyzeNotice::Log(raw_describe_log(entry.path.as_str())));
                     }
                     match llm.describe(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
@@ -312,4 +309,22 @@ fn prior_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> Vec<Ev
 fn log_category(on_log: &mut impl FnMut(String), entry: &ObservedEntry, evidence: &Evidence) {
     let label = evidence.fact(keys::CATEGORY).unwrap_or("unlabeled");
     on_log(format!("categorized {} → {label}", entry.path.as_str()));
+}
+
+/// Scan line for RAW describe: EXIF and filename, never pixels.
+pub(crate) fn raw_describe_log(path: &str) -> String {
+    format!("RAW {path}: describe uses EXIF and filename, not pixels")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_describe_log_mentions_exif_and_filename_not_pixels() {
+        assert_eq!(
+            raw_describe_log("DSC_0001.CR2"),
+            "RAW DSC_0001.CR2: describe uses EXIF and filename, not pixels"
+        );
+    }
 }

@@ -2,7 +2,7 @@
 
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
-    CATEGORIZE_SYSTEM, CHAT_SYSTEM, DESCRIBE_SYSTEM, categorize_user, describe_user,
+    CATEGORIZE_SYSTEM, CHAT_SYSTEM, DESCRIBE_SYSTEM_TEXT, categorize_user, describe_user,
 };
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::{
@@ -113,7 +113,7 @@ impl WorkerHandler for HostedHandler {
             return Ok(None);
         }
         let text = self.complete(
-            DESCRIBE_SYSTEM,
+            DESCRIBE_SYSTEM_TEXT,
             &describe_user(entry, evidence),
             MAX_GEN_TOKENS,
         )?;

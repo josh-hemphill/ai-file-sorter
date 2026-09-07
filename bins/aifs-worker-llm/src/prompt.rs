@@ -12,10 +12,17 @@ Reply with one JSON object only: \
 {\"category\":\"Top\",\"sub\":\"Optional\",\"description\":\"short\",\"suggested_name\":\"file.ext\"}. \
 category is a single folder name, never a path. Do not invent SQL or filesystem commands.";
 
-/// System prompt for image captions.
+/// System prompt for local describe when a bitmap may be attached.
+#[cfg(any(test, feature = "llama"))]
 pub const DESCRIBE_SYSTEM: &str = "You describe an image for a desktop organizer. \
 When a bitmap is attached, use what you see plus filename and EXIF facts. \
 When no bitmap is attached, use only the filename and EXIF facts. \
+Reply with one JSON object only: {\"description\":\"short caption\"}. \
+Do not invent SQL or filesystem commands.";
+
+/// System prompt for hosted describe. Pixels are never uploaded.
+pub const DESCRIBE_SYSTEM_TEXT: &str = "You describe an image for a desktop organizer. \
+Use only the filename, path, and any EXIF or metadata facts. \
 Reply with one JSON object only: {\"description\":\"short caption\"}. \
 Do not invent SQL or filesystem commands.";
 
@@ -96,6 +103,9 @@ mod tests {
         assert!(!user.contains("rm "));
         assert!(CATEGORIZE_SYSTEM.contains("JSON"));
         assert!(DESCRIBE_SYSTEM.contains("EXIF"));
+        assert!(DESCRIBE_SYSTEM.contains("bitmap"));
+        assert!(DESCRIBE_SYSTEM_TEXT.contains("EXIF"));
+        assert!(!DESCRIBE_SYSTEM_TEXT.contains("bitmap"));
         assert!(CHAT_SYSTEM.contains("SQL"));
         assert!(CHAT_SYSTEM.contains("patches"));
         let described = describe_user(&entry, &[]);

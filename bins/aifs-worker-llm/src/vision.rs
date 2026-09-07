@@ -86,26 +86,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let raw = dir.path().join("DSC.CR2");
         fs::write(&raw, b"raw").unwrap_or_else(|error| panic!("{error}"));
-        assert!(matches!(
+        assert_eq!(
             pixel_plan(&raw, FileFamily::RawImage),
-            PixelPlan::TextOnly { .. }
-        ));
+            PixelPlan::TextOnly {
+                reason: "RAW describe uses EXIF and filename, not pixels"
+            }
+        );
         let big = dir.path().join("huge.jpg");
         fs::File::create(&big)
             .unwrap_or_else(|error| panic!("{error}"))
             .set_len(PIXEL_BYTES_CAP + 1)
             .unwrap_or_else(|error| panic!("{error}"));
-        assert!(matches!(
+        assert_eq!(
             pixel_plan(&big, FileFamily::Image),
             PixelPlan::TextOnly {
                 reason: "image exceeds 8 MiB pixel cap"
             }
-        ));
-        let gif = dir.path().join("anim.gif");
-        fs::write(&gif, b"gif").unwrap_or_else(|error| panic!("{error}"));
-        assert!(matches!(
-            pixel_plan(&gif, FileFamily::Image),
-            PixelPlan::TextOnly { .. }
-        ));
+        );
+        for name in ["anim.gif", "photo.heic", "scan.tiff", "scan.tif"] {
+            let path = dir.path().join(name);
+            fs::write(&path, b"xxxx").unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(
+                pixel_plan(&path, FileFamily::Image),
+                PixelPlan::TextOnly {
+                    reason: "describe pixels only for JPEG, PNG, and WebP"
+                }
+            );
+        }
+        let empty = dir.path().join("empty.jpg");
+        fs::write(&empty, b"").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            pixel_plan(&empty, FileFamily::Image),
+            PixelPlan::TextOnly {
+                reason: "image file is empty or unreadable"
+            }
+        );
+        let missing = dir.path().join("gone.jpg");
+        assert_eq!(
+            pixel_plan(&missing, FileFamily::Image),
+            PixelPlan::TextOnly {
+                reason: "image file is empty or unreadable"
+            }
+        );
+        let at_cap = dir.path().join("cap.jpg");
+        fs::File::create(&at_cap)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .set_len(PIXEL_BYTES_CAP)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(pixel_plan(&at_cap, FileFamily::Image), PixelPlan::Attach);
     }
 }

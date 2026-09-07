@@ -178,8 +178,64 @@ fn hosted_custom_endpoint_categorizes_as_remote_model() {
     let _ = server.join();
 }
 
+#[test]
+fn hosted_describe_sends_filename_text_and_never_pixels() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    const PIXEL_MARKER: &[u8] = b"PIXEL-BYTES-UNIQUE-mtmd-describe-never-upload";
+    std::fs::write(dir.path().join("shot.jpg"), PIXEL_MARKER)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let body = r#"{"choices":[{"message":{"content":"{\"description\":\"a desk photo\"}"}}]}"#;
+    let (base, server) = serve_json("200 OK", body);
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    client
+        .load(
+            ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    let image = file_entry("shot.jpg", FileFamily::Image);
+    let evidence = client
+        .describe(dir.path(), &image, vec![])
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("describe evidence"));
+    assert_eq!(
+        evidence.fact(aifs_domain::evidence::keys::DESCRIPTION),
+        Some("a desk photo")
+    );
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+    let request = server.join().unwrap_or_else(|error| panic!("{error:?}"));
+    assert!(
+        request.contains("shot.jpg"),
+        "describe must send filename text: {request}"
+    );
+    assert!(
+        request.contains("Relative path: shot.jpg"),
+        "describe must send describe_user text: {request}"
+    );
+    let marker = std::str::from_utf8(PIXEL_MARKER).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        !request.contains(marker),
+        "hosted describe must not upload pixels: {request}"
+    );
+    assert!(
+        !request.contains("image_url") && !request.contains("inline_data"),
+        "hosted describe must not attach image payloads: {request}"
+    );
+}
+
 /// One-shot JSON stub. Reads the full request before replying (see aifs-engine http_stub).
-fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+fn serve_json(
+    status: &'static str,
+    body: &'static str,
+) -> (String, std::thread::JoinHandle<String>) {
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
     use std::time::Duration;
@@ -189,7 +245,7 @@ fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread:
         .unwrap_or_else(|error| panic!("{error}"));
     let handle = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
-        let _ = read_http_request(&mut stream);
+        let request = read_http_request(&mut stream).unwrap_or_default();
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -200,6 +256,7 @@ fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread:
         let _ = stream.shutdown(Shutdown::Write);
         let mut sink = [0_u8; 256];
         while stream.read(&mut sink).unwrap_or(0) > 0 {}
+        request
     });
     (format!("http://{addr}/v1"), handle)
 }

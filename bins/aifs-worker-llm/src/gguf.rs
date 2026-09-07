@@ -16,6 +16,36 @@ pub struct GgufFiles {
     pub label: String,
 }
 
+impl GgufFiles {
+    /// True when a live session already has these instruct weights and mmproj path.
+    pub fn same_as_loaded(&self, weights: &Path, mmproj: Option<&Path>) -> bool {
+        self.weights == weights && self.mmproj.as_deref() == mmproj
+    }
+
+    /// True when `load` can keep the live GGUF instead of calling `try_load_weights`.
+    pub fn can_reuse(&self, loaded: &LoadedSession<'_>, device: &str, n_gpu_layers: u32) -> bool {
+        self.same_as_loaded(loaded.weights, loaded.mmproj)
+            && loaded.device == device
+            && loaded.n_gpu_layers == n_gpu_layers
+            && loaded.has_mtmd == self.mmproj.is_some()
+    }
+}
+
+/// Live GGUF fields that decide whether `load` can skip a reload.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedSession<'a> {
+    /// Instruct weights currently in memory.
+    pub weights: &'a Path,
+    /// Optional mmproj path from the last successful `load` request.
+    pub mmproj: Option<&'a Path>,
+    /// True when libmtmd initialized for that mmproj.
+    pub has_mtmd: bool,
+    /// Device the live session was loaded on.
+    pub device: &'a str,
+    /// Offload layer count of the live session.
+    pub n_gpu_layers: u32,
+}
+
 /// True when this backend is a local GGUF (catalog or path), not hosted.
 pub fn is_local_gguf(backend: &ModelBackend) -> bool {
     matches!(
@@ -137,6 +167,101 @@ mod tests {
         assert!(!is_local_gguf(&ModelBackend::OpenAi {
             model: "gpt-4.1-mini".into(),
         }));
+        assert!(text.same_as_loaded(&text.weights, text.mmproj.as_deref()));
+        assert!(!text.same_as_loaded(&vision.weights, vision.mmproj.as_deref()));
+        assert!(!vision.can_reuse(
+            &LoadedSession {
+                weights: &text.weights,
+                mmproj: text.mmproj.as_deref(),
+                has_mtmd: false,
+                device: "cpu",
+                n_gpu_layers: 0,
+            },
+            "cpu",
+            0,
+        ));
+        assert!(vision.can_reuse(
+            &LoadedSession {
+                weights: &vision.weights,
+                mmproj: vision.mmproj.as_deref(),
+                has_mtmd: true,
+                device: "cpu",
+                n_gpu_layers: 0,
+            },
+            "cpu",
+            0,
+        ));
+        assert!(!vision.can_reuse(
+            &LoadedSession {
+                weights: &vision.weights,
+                mmproj: vision.mmproj.as_deref(),
+                has_mtmd: false,
+                device: "cpu",
+                n_gpu_layers: 0,
+            },
+            "cpu",
+            0,
+        ));
+    }
+
+    #[test]
+    fn text_and_vision_sessions_with_shared_weights_are_not_reusable() {
+        let weights = PathBuf::from("/models/instruct.gguf");
+        let mmproj = PathBuf::from("/models/mmproj.gguf");
+        let text = GgufFiles {
+            weights: weights.clone(),
+            mmproj: None,
+            label: "gemma-3-4b-it".into(),
+        };
+        let vision = GgufFiles {
+            weights: weights.clone(),
+            mmproj: Some(mmproj.clone()),
+            label: "gemma-3-4b-it-mmproj".into(),
+        };
+        assert!(text.can_reuse(
+            &LoadedSession {
+                weights: &weights,
+                mmproj: None,
+                has_mtmd: false,
+                device: "cuda",
+                n_gpu_layers: 99,
+            },
+            "cuda",
+            99,
+        ));
+        assert!(!vision.can_reuse(
+            &LoadedSession {
+                weights: &weights,
+                mmproj: None,
+                has_mtmd: false,
+                device: "cuda",
+                n_gpu_layers: 99,
+            },
+            "cuda",
+            99,
+        ));
+        assert!(!text.can_reuse(
+            &LoadedSession {
+                weights: &weights,
+                mmproj: Some(&mmproj),
+                has_mtmd: true,
+                device: "cuda",
+                n_gpu_layers: 99,
+            },
+            "cuda",
+            99,
+        ));
+        assert!(!vision.can_reuse(
+            &LoadedSession {
+                weights: &weights,
+                mmproj: Some(&mmproj),
+                has_mtmd: true,
+                device: "cuda",
+                n_gpu_layers: 99,
+            },
+            "cpu",
+            0,
+        ));
     }
 
     #[test]
