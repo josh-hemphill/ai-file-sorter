@@ -115,21 +115,41 @@ mod tests {
     fn carry_remaps_evidence_for_matching_paths() {
         let mut prior = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/inbox"));
         let old = file("show.mp3", 12);
-        let bag = Evidence::new(old.id, EvidenceSource::MediaTags, Confidence::CERTAIN)
-            .with_fact(keys::MEDIA_TITLE, "Night Drive");
         prior.entries.push(old.clone());
-        prior.evidence.push(bag);
+        prior.evidence.push(
+            Evidence::new(old.id, EvidenceSource::MediaTags, Confidence::CERTAIN)
+                .with_fact(keys::MEDIA_TITLE, "Night Drive"),
+        );
+        prior.evidence.push(
+            Evidence::new(old.id, EvidenceSource::User, Confidence::CERTAIN)
+                .with_fact(keys::CATEGORY, "Music")
+                .with_fact(keys::DESCRIPTION, "Late-night mix"),
+        );
 
         let mut next = WorkspaceSnapshot::new(prior.session, PathBuf::from("/tmp/inbox"));
         let new = file("show.mp3", 12);
         next.entries.push(new.clone());
         carry_evidence(&mut next, &prior);
         assert!(has_extract_evidence(&next, &new));
+        assert!(has_category_evidence(&next, &new));
+        assert!(has_description_evidence(&next, &new));
         assert_eq!(
             next.evidence_for(new.id)
-                .next()
+                .find(|bag| bag.source == EvidenceSource::MediaTags)
                 .and_then(|bag| bag.fact(keys::MEDIA_TITLE)),
             Some("Night Drive")
+        );
+        assert_eq!(
+            next.evidence_for(new.id)
+                .find(|bag| bag.fact(keys::CATEGORY).is_some())
+                .and_then(|bag| bag.fact(keys::CATEGORY)),
+            Some("Music")
+        );
+        assert_eq!(
+            next.evidence_for(new.id)
+                .find(|bag| bag.fact(keys::DESCRIPTION).is_some())
+                .and_then(|bag| bag.fact(keys::DESCRIPTION)),
+            Some("Late-night mix")
         );
     }
 

@@ -213,6 +213,15 @@ async function chooseFolder() {
   }
 }
 
+function clearScanBindings() {
+  snapshot.value = null;
+  revision.value = null;
+  plan.value = null;
+  journal.value = null;
+  issues.value = [];
+  selectedAsset.value = null;
+}
+
 async function runScan() {
   if (!rootPath.value) {
     engineError.value = "Choose a source folder first.";
@@ -220,9 +229,7 @@ async function runScan() {
   }
   busy.value = true;
   engineError.value = null;
-  plan.value = null;
-  journal.value = null;
-  issues.value = [];
+  clearScanBindings();
   logLines.value = [];
   stageProgress.value = {};
   view.value = "activity";

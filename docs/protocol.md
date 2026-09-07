@@ -52,7 +52,7 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 between files. A cancelled scan emits `cancelled` for the scan id and does **not**
 emit `scan_completed`. If walk/relationships finished, the engine still writes a
 **checkpoint** snapshot for that `session` (extract/analyze evidence flushed every
-8 files). The next `scan` with the same `session` and root carries matching
+8 new bags; skips do not count). The next `scan` with the same `session` and root carries matching
 identities forward and skips files that already have metadata. Apply/undo that
 already mutated disk still emit `journal` (partial/failed) rather than pretending
 the work never happened.

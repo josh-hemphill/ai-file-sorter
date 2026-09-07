@@ -429,9 +429,17 @@ impl Engine {
             return;
         }
 
-        let resume = session
-            .and_then(|session| self.store.get_snapshot(session).ok().flatten())
-            .filter(|prior| checkpoint::roots_match(&prior.root, root));
+        let resume = match session {
+            Some(requested) => match self.store.get_snapshot(requested) {
+                Ok(Some(prior)) if checkpoint::roots_match(&prior.root, root) => Some(prior),
+                Ok(_) => None,
+                Err(error) => {
+                    emit(store_failed(id, error));
+                    return;
+                }
+            },
+            None => None,
+        };
         let session = resume
             .as_ref()
             .map(|prior| prior.session)
@@ -1662,19 +1670,30 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
         });
-        engine.request_cancel("2".into());
         let session = SessionId::new();
-        let events = engine.handle(Request {
-            id: "2".into(),
-            command: Command::Scan {
-                root: dir.path().to_path_buf(),
-                options: ScanOptions {
-                    extract_metadata: false,
-                    ..ScanOptions::default()
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
                 },
-                session: Some(session),
             },
-        });
+            &mut |envelope| {
+                if let Event::Progress { stage, .. } = &envelope.event
+                    && stage == "scan"
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
         assert!(
             events
                 .iter()
@@ -2579,6 +2598,49 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn corrupt_snapshot_json_is_a_storage_error_on_resume() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let session = SessionId::new();
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_snapshot_json(session, "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            aifs_store::WorkspaceStore::open(&db)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .get_snapshot(session)
+                .is_err(),
+            "corrupt row must still be present so scan does not overwrite it"
+        );
     }
 
     #[test]
