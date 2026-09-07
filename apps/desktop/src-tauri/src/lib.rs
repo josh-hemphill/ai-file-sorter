@@ -11,11 +11,11 @@ use aifs_protocol::{
     ScanOptions,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 struct EngineState {
-    client: Mutex<Option<EngineClient>>,
+    client: Mutex<Option<Arc<EngineClient>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -69,18 +69,23 @@ fn forward_engine_event(app: &AppHandle, event: &Event) {
     }
 }
 
-fn with_client<T>(
-    state: &EngineState,
-    fun: impl FnOnce(&mut EngineClient) -> Result<T, String>,
-) -> Result<T, String> {
-    let mut guard = state
+fn clone_client(state: &EngineState) -> Result<Arc<EngineClient>, String> {
+    let guard = state
         .client
         .lock()
         .map_err(|_| "engine lock poisoned".to_owned())?;
-    let client = guard
-        .as_mut()
-        .ok_or_else(|| "engine is not running".to_owned())?;
-    fun(client)
+    guard
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "engine is not running".to_owned())
+}
+
+fn with_client<T>(
+    state: &EngineState,
+    fun: impl FnOnce(&EngineClient) -> Result<T, String>,
+) -> Result<T, String> {
+    let client = clone_client(state)?;
+    fun(&client)
 }
 
 fn ensure_client(state: &EngineState) -> Result<(), String> {
@@ -94,7 +99,7 @@ fn ensure_client(state: &EngineState) -> Result<(), String> {
     let binary = discover_engine_binary().map_err(|error| error.to_string())?;
     let client =
         EngineClient::connect(binary, "aifs-desktop").map_err(|error| error.to_string())?;
-    *guard = Some(client);
+    *guard = Some(Arc::new(client));
     Ok(())
 }
 
@@ -139,7 +144,7 @@ fn policy_for_preset(preset: &str) -> Option<(ScanOptions, ProposalPolicy)> {
 }
 
 fn resolve_policy(
-    client: &mut EngineClient,
+    client: &EngineClient,
     preset: &str,
 ) -> Result<(ScanOptions, ProposalPolicy), String> {
     if let Some(pair) = policy_for_preset(preset) {
@@ -173,6 +178,7 @@ fn scan_root(
         for envelope in envelopes {
             match envelope.event {
                 Event::ScanCompleted { snapshot } => return Ok(snapshot),
+                Event::Cancelled => return Err("request cancelled".to_owned()),
                 Event::Failed { message, .. } => return Err(message),
                 _ => {}
             }
@@ -283,6 +289,7 @@ fn apply_plan(
         for envelope in envelopes {
             match envelope.event {
                 Event::Journal { journal } => return Ok(journal),
+                Event::Cancelled => return Err("request cancelled".to_owned()),
                 Event::Failed { message, .. } => return Err(message),
                 _ => {}
             }
@@ -326,6 +333,12 @@ fn chat_revision(
             revision: reply.revision,
         })
     })
+}
+
+#[tauri::command]
+fn cancel_in_flight(state: State<EngineState>) -> Result<(), String> {
+    let client = clone_client(&state)?;
+    client.cancel_in_flight().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -430,6 +443,7 @@ pub fn run() {
             apply_plan,
             undo_journal,
             chat_revision,
+            cancel_in_flight,
             get_settings,
             put_settings,
             get_models,

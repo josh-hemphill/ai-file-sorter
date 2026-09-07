@@ -30,6 +30,10 @@ export async function scanRoot(
   return invoke("scan_root", { args: { root, preset } });
 }
 
+export async function cancelInFlight(): Promise<void> {
+  await invoke("cancel_in_flight");
+}
+
 export async function proposeSession(
   session: Id,
   preset: string,

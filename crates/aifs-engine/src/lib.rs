@@ -5,12 +5,15 @@
 //! `put_models`, `download_model`, `probe_endpoint`, and `shutdown`.
 
 mod analyze;
+mod cancel;
 mod download;
 mod extract;
 mod hosted;
 #[cfg(test)]
 mod http_stub;
 
+use crate::analyze::AnalyzeNotice;
+use crate::cancel::{CancelGate, CancelScope, WorkStatus};
 use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
 use aifs_apply::{ApplyHook, apply_plan_with_hooks, undo_journal_with_hooks};
 use aifs_domain::{
@@ -30,6 +33,8 @@ use aifs_store::WorkspaceStore;
 use aifs_worker_client::WorkerClient;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const SCAN_LOG_CAP: usize = 400;
@@ -53,6 +58,7 @@ pub fn capabilities() -> Vec<String> {
         "settings".to_owned(),
         "models".to_owned(),
         "download_model".to_owned(),
+        "cancel".to_owned(),
     ];
     caps.extend(extract::worker_capabilities());
     caps
@@ -63,6 +69,7 @@ pub struct Engine {
     store: WorkspaceStore,
     hello_ok: bool,
     shutdown: bool,
+    cancel: Arc<CancelGate>,
 }
 
 impl Default for Engine {
@@ -79,6 +86,7 @@ impl Engine {
                 .unwrap_or_else(|error| panic!("in-memory sqlite failed: {error}")),
             hello_ok: false,
             shutdown: false,
+            cancel: Arc::new(CancelGate::default()),
         }
     }
 
@@ -88,7 +96,22 @@ impl Engine {
             store: WorkspaceStore::open(path)?,
             hello_ok: false,
             shutdown: false,
+            cancel: Arc::new(CancelGate::default()),
         })
+    }
+
+    /// Shared cancel gate (stdin reader + tests).
+    pub(crate) fn cancel_gate(&self) -> Arc<CancelGate> {
+        Arc::clone(&self.cancel)
+    }
+
+    /// Records a cancel for `target` so the next cooperative check stops that request.
+    pub(crate) fn request_cancel(&self, target: RequestId) {
+        self.cancel.request_cancel(target);
+    }
+
+    fn should_stop(&self, id: &RequestId) -> bool {
+        self.cancel.is_cancelled(id)
     }
 
     /// True after a `shutdown` command has been handled.
@@ -105,6 +128,12 @@ impl Engine {
 
     /// Handles one request, emitting envelopes as they are produced (including progress).
     pub fn handle_with(&mut self, request: Request, emit: &mut impl FnMut(Envelope)) {
+        if let Command::Cancel { target } = &request.command {
+            self.request_cancel(target.clone());
+            emit(Envelope::reply(&request.id, Event::Cancelled));
+            return;
+        }
+        let _scope = CancelScope::new(Arc::clone(&self.cancel), request.id.clone());
         match request.command {
             Command::Hello {
                 client: _,
@@ -164,7 +193,7 @@ impl Engine {
                 self.shutdown = true;
                 emit(Envelope::reply(&request.id, Event::Shutdown));
             }
-            Command::Cancel { .. } => emit(Envelope::reply(&request.id, Event::Cancelled)),
+            Command::Cancel { .. } => {}
             Command::GetSettings => emit(self.handle_get_settings(&request.id)),
             Command::PutSettings { settings } => {
                 emit(self.handle_put_settings(&request.id, settings))
@@ -388,6 +417,10 @@ impl Engine {
             ));
             return;
         }
+        if self.should_stop(id) {
+            emit(Envelope::reply(id, Event::Cancelled));
+            return;
+        }
 
         let session = session.unwrap_or_default();
         if let Err(error) = emit_model_runtime_notices(&self.store, id, emit) {
@@ -412,16 +445,29 @@ impl Engine {
             .checked_sub(PROGRESS_INTERVAL)
             .unwrap_or_else(Instant::now);
         let mut snapshot = match scan(root, &options, session, |current, message| {
+            if self.should_stop(id) {
+                return false;
+            }
             if should_emit_progress(&mut last_progress, current, None) {
                 emit_progress(emit, id, "scan", current, None, message);
             }
+            true
         }) {
             Ok(snapshot) => snapshot,
+            Err(ScanError::Cancelled) => {
+                emit(Envelope::reply(id, Event::Cancelled));
+                return;
+            }
             Err(error) => {
                 emit(scan_error_event(id, error));
                 return;
             }
         };
+
+        if self.should_stop(id) {
+            emit(Envelope::reply(id, Event::Cancelled));
+            return;
+        }
 
         emit_progress(
             emit,
@@ -456,18 +502,56 @@ impl Engine {
             last_progress = Instant::now()
                 .checked_sub(PROGRESS_INTERVAL)
                 .unwrap_or_else(Instant::now);
-            extract::extract_into_supervised(&mut snapshot, |current, total, path| {
-                if should_emit_progress(&mut last_progress, current, Some(total)) {
-                    emit_progress(emit, id, "extract", current, Some(total), path);
-                }
-            });
+            if extract::extract_into_supervised(
+                &mut snapshot,
+                |current, total, path| {
+                    if should_emit_progress(&mut last_progress, current, Some(total)) {
+                        emit_progress(emit, id, "extract", current, Some(total), path);
+                    }
+                },
+                || !self.should_stop(id),
+            ) == WorkStatus::Cancelled
+            {
+                emit(Envelope::reply(id, Event::Cancelled));
+                return;
+            }
+        }
+
+        if self.should_stop(id) {
+            emit(Envelope::reply(id, Event::Cancelled));
+            return;
         }
 
         match (load_settings(&self.store), load_models(&self.store)) {
             (Ok(settings), Ok(models)) => {
-                analyze::analyze_into_supervised(&mut snapshot, &models, &settings, |message| {
-                    emit_log(emit, id, LogLevel::Info, message)
-                });
+                last_progress = Instant::now()
+                    .checked_sub(PROGRESS_INTERVAL)
+                    .unwrap_or_else(Instant::now);
+                if analyze::analyze_into_supervised(
+                    &mut snapshot,
+                    &models,
+                    &settings,
+                    |notice| match notice {
+                        AnalyzeNotice::Log(message) => {
+                            emit_log(emit, id, LogLevel::Info, message);
+                        }
+                        AnalyzeNotice::Progress {
+                            stage,
+                            current,
+                            total,
+                            path,
+                        } => {
+                            if should_emit_progress(&mut last_progress, current, Some(total)) {
+                                emit_progress(emit, id, stage, current, Some(total), path);
+                            }
+                        }
+                    },
+                    || !self.should_stop(id),
+                ) == WorkStatus::Cancelled
+                {
+                    emit(Envelope::reply(id, Event::Cancelled));
+                    return;
+                }
             }
             (Err(error), _) | (_, Err(error)) => emit_log(
                 emit,
@@ -617,28 +701,33 @@ impl Engine {
         };
         let stage = if dry_run { "apply-dry-run" } else { "apply" };
         let mut persist_error: Option<aifs_store::StoreError> = None;
-        let journal = apply_plan_with_hooks(&snapshot, &plan, dry_run, |hook| match hook {
-            ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
-                Ok(()) => {
-                    emit_apply_progress(emit, id, stage, journal);
+        let journal = apply_plan_with_hooks(&snapshot, &plan, dry_run, |hook| {
+            if self.should_stop(id) {
+                return false;
+            }
+            match hook {
+                ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
+                    Ok(()) => {
+                        emit_apply_progress(emit, id, stage, journal);
+                        true
+                    }
+                    Err(error) => {
+                        persist_error = Some(error);
+                        false
+                    }
+                },
+                ApplyHook::Heartbeat => {
+                    emit(Envelope::reply(
+                        id,
+                        Event::Progress {
+                            stage: stage.to_owned(),
+                            current: 0,
+                            total: None,
+                            message: "working".to_owned(),
+                        },
+                    ));
                     true
                 }
-                Err(error) => {
-                    persist_error = Some(error);
-                    false
-                }
-            },
-            ApplyHook::Heartbeat => {
-                emit(Envelope::reply(
-                    id,
-                    Event::Progress {
-                        stage: stage.to_owned(),
-                        current: 0,
-                        total: None,
-                        message: "working".to_owned(),
-                    },
-                ));
-                true
             }
         });
         emit_journal_outcome(emit, id, session, &self.store, journal, persist_error);
@@ -678,46 +767,51 @@ impl Engine {
             }
         };
         let mut persist_error: Option<aifs_store::StoreError> = None;
-        let journal = undo_journal_with_hooks(&snapshot, &journal, |hook| match hook {
-            ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
-                Ok(()) => {
+        let journal = undo_journal_with_hooks(&snapshot, &journal, |hook| {
+            if self.should_stop(id) {
+                return false;
+            }
+            match hook {
+                ApplyHook::Progress(journal) => match self.store.put_journal(session, journal) {
+                    Ok(()) => {
+                        emit(Envelope::reply(
+                            id,
+                            Event::Progress {
+                                stage: "undo".to_owned(),
+                                current: journal
+                                    .entries
+                                    .iter()
+                                    .filter(|entry| {
+                                        matches!(
+                                            entry.state,
+                                            aifs_domain::JournalState::RolledBack
+                                                | aifs_domain::JournalState::Failed { .. }
+                                        )
+                                    })
+                                    .count() as u64,
+                                total: Some(journal.entries.len() as u64),
+                                message: format!("journal {}", journal.id),
+                            },
+                        ));
+                        true
+                    }
+                    Err(error) => {
+                        persist_error = Some(error);
+                        false
+                    }
+                },
+                ApplyHook::Heartbeat => {
                     emit(Envelope::reply(
                         id,
                         Event::Progress {
                             stage: "undo".to_owned(),
-                            current: journal
-                                .entries
-                                .iter()
-                                .filter(|entry| {
-                                    matches!(
-                                        entry.state,
-                                        aifs_domain::JournalState::RolledBack
-                                            | aifs_domain::JournalState::Failed { .. }
-                                    )
-                                })
-                                .count() as u64,
-                            total: Some(journal.entries.len() as u64),
-                            message: format!("journal {}", journal.id),
+                            current: 0,
+                            total: None,
+                            message: "working".to_owned(),
                         },
                     ));
                     true
                 }
-                Err(error) => {
-                    persist_error = Some(error);
-                    false
-                }
-            },
-            ApplyHook::Heartbeat => {
-                emit(Envelope::reply(
-                    id,
-                    Event::Progress {
-                        stage: "undo".to_owned(),
-                        current: 0,
-                        total: None,
-                        message: "working".to_owned(),
-                    },
-                ));
-                true
             }
         });
         emit_journal_outcome(emit, id, session, &self.store, journal, persist_error);
@@ -903,12 +997,16 @@ fn chat_via_worker(
 }
 
 fn scan_error_event(id: &RequestId, error: ScanError) -> Envelope {
+    if matches!(error, ScanError::Cancelled) {
+        return Envelope::reply(id, Event::Cancelled);
+    }
     let (code, message) = match error {
         ScanError::InvalidRoot { path, message } => (
             ErrorCode::InvalidRoot,
             format!("{}: {message}", path.display()),
         ),
         ScanError::Io { path, source } => (ErrorCode::Io, format!("{}: {source}", path.display())),
+        ScanError::Cancelled => unreachable!("cancelled is emitted as Event::Cancelled"),
     };
     Envelope::reply(
         id,
@@ -1275,7 +1373,6 @@ fn emit_journal_outcome(
 
 /// Reads JSONL requests from `stdin` and writes envelopes to `stdout` until shutdown.
 pub fn run_stdio() -> io::Result<()> {
-    let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut engine = if let Some(explicit) = std::env::var_os("AIFS_STORE") {
         let path = std::path::PathBuf::from(&explicit);
@@ -1290,7 +1387,30 @@ pub fn run_stdio() -> io::Result<()> {
             None => Engine::new(),
         }
     };
-    for line in stdin.lock().lines() {
+    let gate = engine.cancel_gate();
+    let (tx, rx) = mpsc::channel::<io::Result<String>>();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(line) => {
+                    if let Ok(request) = decode_line::<Request>(&line)
+                        && let Command::Cancel { target } = request.command
+                    {
+                        gate.request_cancel(target);
+                    }
+                    if tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    for line in rx {
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -1427,6 +1547,63 @@ mod tests {
             .collect();
         assert!(stages.contains(&"scan"), "stages={stages:?}");
         assert!(stages.contains(&"relationships"), "stages={stages:?}");
+    }
+
+    #[test]
+    fn prearmed_cancel_stops_scan_without_snapshot() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        for index in 0..32 {
+            fs::write(dir.path().join(format!("file-{index}.txt")), b"x")
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        engine.request_cancel("2".into());
+        let events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "cancelled scan must not complete a snapshot"
+        );
+    }
+
+    #[test]
+    fn cancel_command_acks_and_arms_target() {
+        let mut engine = Engine::new();
+        let events = engine.handle(Request {
+            id: "c".into(),
+            command: Command::Cancel { target: "2".into() },
+        });
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancel ack, got {events:?}"
+        );
+        assert!(engine.cancel_gate().is_cancelled(&"2".into()));
     }
 
     #[test]

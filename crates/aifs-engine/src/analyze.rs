@@ -1,5 +1,6 @@
 //! Session-lived LLM analysis after deterministic extract.
 
+use crate::cancel::WorkStatus;
 use aifs_domain::{
     EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
 };
@@ -7,13 +8,31 @@ use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text};
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
+/// Log line or categorize/describe progress from supervised analysis.
+pub enum AnalyzeNotice<'a> {
+    /// Informational line (load, skip, category).
+    Log(String),
+    /// Per-file categorize/describe progress.
+    Progress {
+        /// `categorize` or `describe`.
+        stage: &'a str,
+        /// 1-based index.
+        current: u64,
+        /// Files in this stage.
+        total: u64,
+        /// Relative path.
+        path: &'a str,
+    },
+}
+
 /// Runs categorize/describe when slots are assigned. Heuristics still propose later.
 pub fn analyze_into_supervised(
     snapshot: &mut WorkspaceSnapshot,
     models: &ModelInventory,
     settings: &AppSettings,
-    mut on_log: impl FnMut(String),
-) {
+    mut on_notice: impl FnMut(AnalyzeNotice<'_>),
+    mut should_continue: impl FnMut() -> bool,
+) -> WorkStatus {
     let categorize = slot(models, "categorize").filter(|slot| !is_off(&slot.backend));
     let vision = slot(models, "vision").filter(|slot| !is_off(&slot.backend));
     let document = slot(models, "document").filter(|slot| !is_off(&slot.backend));
@@ -25,17 +44,17 @@ pub fn analyze_into_supervised(
     let run_categorize = categorize_slot.is_some();
     let run_describe = settings.analyze_images && vision.is_some();
     if !run_categorize && !run_describe {
-        return;
+        return WorkStatus::Completed;
     }
 
     let mut llm = match WorkerClient::try_connect(WorkerKind::Llm) {
         Some(client) => client,
         None => {
-            on_log(
+            on_notice(AnalyzeNotice::Log(
                 "LLM worker is not installed; scan continues with extract and heuristics."
                     .to_owned(),
-            );
-            return;
+            ));
+            return WorkStatus::Completed;
         }
     };
 
@@ -50,35 +69,55 @@ pub fn analyze_into_supervised(
             slot,
             models,
             &storage_dir,
-            &mut on_log,
+            &mut |message| on_notice(AnalyzeNotice::Log(message)),
         ) {
             Ok(()) => {
+                let targets: Vec<ObservedEntry> = snapshot
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == EntryKind::File
+                            && should_categorize(entry, categorize.is_some(), document_only)
+                    })
+                    .cloned()
+                    .collect();
+                let total = targets.len() as u64;
                 let mut bags = Vec::new();
-                for entry in snapshot.entries.iter() {
-                    if entry.kind != EntryKind::File
-                        || !should_categorize(entry, categorize.is_some(), document_only)
-                    {
-                        continue;
+                for (index, entry) in targets.into_iter().enumerate() {
+                    if !should_continue() {
+                        snapshot.evidence.extend(bags);
+                        shutdown_llm(&mut llm, loaded.is_some());
+                        return WorkStatus::Cancelled;
                     }
-                    let prior = prior_evidence(snapshot, entry);
-                    match llm.categorize(&snapshot.root, entry, prior) {
+                    on_notice(AnalyzeNotice::Progress {
+                        stage: "categorize",
+                        current: index as u64 + 1,
+                        total,
+                        path: entry.path.as_str(),
+                    });
+                    let prior = prior_evidence(snapshot, &entry);
+                    match llm.categorize(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
-                            log_category(&mut on_log, entry, &evidence);
+                            log_category(
+                                &mut |message| on_notice(AnalyzeNotice::Log(message)),
+                                &entry,
+                                &evidence,
+                            );
                             bags.push(evidence);
                         }
                         Ok(None) => {}
-                        Err(error) => on_log(format!(
+                        Err(error) => on_notice(AnalyzeNotice::Log(format!(
                             "categorize skipped {}: {}",
                             entry.path.as_str(),
                             sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
-                        )),
+                        ))),
                     }
                 }
                 snapshot.evidence.extend(bags);
             }
-            Err(message) => on_log(format!(
+            Err(message) => on_notice(AnalyzeNotice::Log(format!(
                 "Categorize load failed ({message}); folder labels stay heuristic."
-            )),
+            ))),
         }
     }
 
@@ -89,39 +128,63 @@ pub fn analyze_into_supervised(
             slot,
             models,
             &storage_dir,
-            &mut on_log,
+            &mut |message| on_notice(AnalyzeNotice::Log(message)),
         ) {
             Ok(()) => {
+                let targets: Vec<ObservedEntry> = snapshot
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == EntryKind::File
+                            && matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
+                    })
+                    .cloned()
+                    .collect();
+                let total = targets.len() as u64;
                 let mut bags = Vec::new();
-                for entry in snapshot.entries.iter() {
-                    if entry.kind != EntryKind::File
-                        || !matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
-                    {
-                        continue;
+                for (index, entry) in targets.into_iter().enumerate() {
+                    if !should_continue() {
+                        snapshot.evidence.extend(bags);
+                        shutdown_llm(&mut llm, loaded.is_some());
+                        return WorkStatus::Cancelled;
                     }
-                    let prior = prior_evidence(snapshot, entry);
-                    match llm.describe(&snapshot.root, entry, prior) {
+                    on_notice(AnalyzeNotice::Progress {
+                        stage: "describe",
+                        current: index as u64 + 1,
+                        total,
+                        path: entry.path.as_str(),
+                    });
+                    let prior = prior_evidence(snapshot, &entry);
+                    match llm.describe(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
-                            on_log(format!("described {}", entry.path.as_str()));
+                            on_notice(AnalyzeNotice::Log(format!(
+                                "described {}",
+                                entry.path.as_str()
+                            )));
                             bags.push(evidence);
                         }
                         Ok(None) => {}
-                        Err(error) => on_log(format!(
+                        Err(error) => on_notice(AnalyzeNotice::Log(format!(
                             "describe skipped {}: {}",
                             entry.path.as_str(),
                             sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
-                        )),
+                        ))),
                     }
                 }
                 snapshot.evidence.extend(bags);
             }
-            Err(message) => on_log(format!(
+            Err(message) => on_notice(AnalyzeNotice::Log(format!(
                 "Vision load failed ({message}); image description skipped."
-            )),
+            ))),
         }
     }
 
-    if loaded.is_some() {
+    shutdown_llm(&mut llm, loaded.is_some());
+    WorkStatus::Completed
+}
+
+fn shutdown_llm(llm: &mut WorkerClient, loaded: bool) {
+    if loaded {
         let _ = llm.unload();
     }
     let _ = llm.shutdown();

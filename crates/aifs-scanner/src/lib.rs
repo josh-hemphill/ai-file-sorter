@@ -54,6 +54,9 @@ pub enum ScanError {
         #[source]
         source: io::Error,
     },
+    /// The caller asked the walk to stop.
+    #[error("scan cancelled")]
+    Cancelled,
 }
 
 /// Walks `root` and returns entries, skipped items, and project matches.
@@ -65,7 +68,7 @@ pub fn scan(
     root: &Path,
     options: &ScanOptions,
     session: SessionId,
-    mut on_progress: impl FnMut(u64, &str),
+    mut on_progress: impl FnMut(u64, &str) -> bool,
 ) -> Result<WorkspaceSnapshot, ScanError> {
     let root = normalize_root(root)?;
     let mut snapshot = WorkspaceSnapshot::new(session, root.clone());
@@ -110,14 +113,21 @@ pub fn scan(
         for child in children {
             seen += 1;
             match classify_child(&root, &child, options) {
-                ChildAction::Skip(skipped) => snapshot.skipped.push(skipped),
+                ChildAction::Skip(skipped) => {
+                    if !on_progress(seen, skipped.path.as_str()) {
+                        return Err(ScanError::Cancelled);
+                    }
+                    snapshot.skipped.push(skipped);
+                }
                 ChildAction::Include {
                     entry,
                     enqueue_dir,
                     skip_children,
                     project,
                 } => {
-                    on_progress(seen, entry.path.as_str());
+                    if !on_progress(seen, entry.path.as_str()) {
+                        return Err(ScanError::Cancelled);
+                    }
                     if let Some(detected) = project {
                         let already = snapshot
                             .projects
@@ -486,7 +496,7 @@ mod tests {
     use std::io::Write;
 
     fn scan_tree(root: &Path, options: ScanOptions) -> WorkspaceSnapshot {
-        scan(root, &options, SessionId::new(), |_, _| {}).unwrap_or_else(|e| panic!("{e}"))
+        scan(root, &options, SessionId::new(), |_, _| true).unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[test]
@@ -665,8 +675,24 @@ mod tests {
             Path::new("/definitely-not-a-real-aifs-root"),
             &ScanOptions::default(),
             SessionId::new(),
-            |_, _| {},
+            |_, _| true,
         );
         assert!(matches!(err, Err(ScanError::InvalidRoot { .. })));
+    }
+
+    #[test]
+    fn progress_false_cancels_walk() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("keep.txt"), b"ok").unwrap_or_else(|e| panic!("{e}"));
+        let err = scan(
+            dir.path(),
+            &ScanOptions::default(),
+            SessionId::new(),
+            |_, _| false,
+        );
+        assert!(
+            matches!(err, Err(ScanError::Cancelled)),
+            "walk should stop when on_progress returns false, got {err:?}"
+        );
     }
 }
