@@ -78,6 +78,7 @@ const busy = ref(false);
 const progress = ref<ProgressEvent | null>(null);
 const rootPath = ref("");
 const recentRoots = ref<string[]>(loadRecentRoots());
+const scanSessions = ref<Record<string, string>>({});
 const preset = ref<IntentPreset>("inbox");
 const view = ref<CenterView>("structure");
 const snapshot = ref<WorkspaceSnapshot | null>(null);
@@ -183,6 +184,16 @@ function placementFor(asset: string) {
   return revision.value?.placements[asset];
 }
 
+function sessionFor(root: string): string {
+  const existing = scanSessions.value[root];
+  if (existing) {
+    return existing;
+  }
+  const id = crypto.randomUUID();
+  scanSessions.value = { ...scanSessions.value, [root]: id };
+  return id;
+}
+
 function choosePreset(id: IntentPreset) {
   preset.value = id;
   if (id === "custom") {
@@ -218,7 +229,9 @@ async function runScan() {
   try {
     await connectEngine();
     engineReady.value = true;
-    const next = await scanRoot(rootPath.value, preset.value);
+    const next = await scanRoot(rootPath.value, preset.value, sessionFor(rootPath.value));
+    snapshot.value = next;
+    scanSessions.value = { ...scanSessions.value, [rootPath.value]: next.session };
     snapshot.value = next;
     recentRoots.value = rememberRoot(recentRoots.value, rootPath.value);
     const proposed = await proposeSession(next.session, preset.value);

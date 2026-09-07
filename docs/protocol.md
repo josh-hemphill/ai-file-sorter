@@ -50,8 +50,15 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 
 `cancel` is decoded on a stdin reader thread so a long `scan` can notice the flag
 between files. A cancelled scan emits `cancelled` for the scan id and does **not**
-emit `scan_completed`. Apply/undo that already mutated disk still emit `journal`
-(partial/failed) rather than pretending the work never happened.
+emit `scan_completed`. If walk/relationships finished, the engine still writes a
+**checkpoint** snapshot for that `session` (extract/analyze evidence flushed every
+8 files). The next `scan` with the same `session` and root carries matching
+identities forward and skips files that already have metadata. Apply/undo that
+already mutated disk still emit `journal` (partial/failed) rather than pretending
+the work never happened.
+
+Pass `session` on `scan` to resume. The desktop shell keeps a per-root session id
+so Cancel then Scan continues extract instead of starting over.
 
 The engine-client idle wait is 180s per event (reset on every progress/log line)
 so categorize/describe can exceed 60s as long as workers keep emitting.

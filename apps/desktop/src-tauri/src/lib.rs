@@ -119,6 +119,8 @@ fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
 struct ScanArgs {
     root: String,
     preset: String,
+    #[serde(default)]
+    session: Option<SessionId>,
 }
 
 fn policy_for_preset(preset: &str) -> Option<(ScanOptions, ProposalPolicy)> {
@@ -168,7 +170,7 @@ fn scan_root(
                 aifs_protocol::Command::Scan {
                     root: args.root.clone().into(),
                     options,
-                    session: None,
+                    session: args.session,
                 },
                 |envelope| {
                     forward_engine_event(&app, &envelope.event);

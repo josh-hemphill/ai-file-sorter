@@ -26,8 +26,9 @@ export async function pickFolder(): Promise<string | null> {
 export async function scanRoot(
   root: string,
   preset: string,
+  session?: string,
 ): Promise<WorkspaceSnapshot> {
-  return invoke("scan_root", { args: { root, preset } });
+  return invoke("scan_root", { args: { root, preset, session } });
 }
 
 export async function cancelInFlight(): Promise<void> {

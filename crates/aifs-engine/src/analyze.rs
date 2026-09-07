@@ -1,6 +1,7 @@
 //! Session-lived LLM analysis after deterministic extract.
 
 use crate::cancel::WorkStatus;
+use crate::checkpoint::{CHECKPOINT_EVERY, has_category_evidence, has_description_evidence};
 use aifs_domain::{
     EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
 };
@@ -31,6 +32,7 @@ pub fn analyze_into_supervised(
     models: &ModelInventory,
     settings: &AppSettings,
     mut on_notice: impl FnMut(AnalyzeNotice<'_>),
+    mut on_checkpoint: impl FnMut(&WorkspaceSnapshot),
     mut should_continue: impl FnMut() -> bool,
 ) -> WorkStatus {
     let categorize = slot(models, "categorize").filter(|slot| !is_off(&slot.backend));
@@ -87,6 +89,7 @@ pub fn analyze_into_supervised(
                     if !should_continue() {
                         snapshot.evidence.extend(bags);
                         shutdown_llm(&mut llm, loaded.is_some());
+                        on_checkpoint(snapshot);
                         return WorkStatus::Cancelled;
                     }
                     on_notice(AnalyzeNotice::Progress {
@@ -95,6 +98,9 @@ pub fn analyze_into_supervised(
                         total,
                         path: entry.path.as_str(),
                     });
+                    if has_category_evidence(snapshot, &entry) {
+                        continue;
+                    }
                     let prior = prior_evidence(snapshot, &entry);
                     match llm.categorize(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
@@ -104,6 +110,10 @@ pub fn analyze_into_supervised(
                                 &evidence,
                             );
                             bags.push(evidence);
+                            if bags.len().is_multiple_of(CHECKPOINT_EVERY) {
+                                snapshot.evidence.extend(std::mem::take(&mut bags));
+                                on_checkpoint(snapshot);
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => on_notice(AnalyzeNotice::Log(format!(
@@ -146,6 +156,7 @@ pub fn analyze_into_supervised(
                     if !should_continue() {
                         snapshot.evidence.extend(bags);
                         shutdown_llm(&mut llm, loaded.is_some());
+                        on_checkpoint(snapshot);
                         return WorkStatus::Cancelled;
                     }
                     on_notice(AnalyzeNotice::Progress {
@@ -154,6 +165,9 @@ pub fn analyze_into_supervised(
                         total,
                         path: entry.path.as_str(),
                     });
+                    if has_description_evidence(snapshot, &entry) {
+                        continue;
+                    }
                     let prior = prior_evidence(snapshot, &entry);
                     match llm.describe(&snapshot.root, &entry, prior) {
                         Ok(Some(evidence)) => {
@@ -162,6 +176,10 @@ pub fn analyze_into_supervised(
                                 entry.path.as_str()
                             )));
                             bags.push(evidence);
+                            if bags.len().is_multiple_of(CHECKPOINT_EVERY) {
+                                snapshot.evidence.extend(std::mem::take(&mut bags));
+                                on_checkpoint(snapshot);
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => on_notice(AnalyzeNotice::Log(format!(
