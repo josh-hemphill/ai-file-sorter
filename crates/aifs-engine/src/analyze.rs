@@ -60,7 +60,9 @@ pub fn analyze_into_supervised(
         }
     };
 
-    let storage_dir = models.storage_dir.trim().to_owned();
+    let storage_dir = crate::resolved_models_dir(&models.storage_dir)
+        .display()
+        .to_string();
     let mut loaded: Option<String> = None;
     let document_only = categorize.is_none() && document.is_some();
 
@@ -267,12 +269,19 @@ fn ensure_loaded(
         *loaded = None;
     }
     let result = llm
-        .load(
+        .load_with(
             slot.backend.clone(),
             models.gpu_preference.clone(),
             None,
             slot.api_key.clone(),
             storage_dir,
+            || {
+                on_log(format!(
+                    "loading {} for {}",
+                    backend_key(&slot.backend),
+                    slot.id
+                ));
+            },
         )
         .map_err(|error| load_error(error, slot.api_key.as_deref()))?;
     if let Some(fallback) = &result.fallback {

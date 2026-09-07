@@ -192,11 +192,7 @@ impl Engine {
                 session,
                 revision,
                 utterance,
-            } => {
-                for envelope in self.handle_chat(&request.id, session, revision, utterance) {
-                    emit(envelope);
-                }
-            }
+            } => self.handle_chat(&request.id, session, revision, utterance, emit),
             Command::Shutdown => {
                 self.shutdown = true;
                 emit(Envelope::reply(&request.id, Event::Shutdown));
@@ -909,52 +905,69 @@ impl Engine {
         session: SessionId,
         revision: RevisionId,
         utterance: String,
-    ) -> Vec<Envelope> {
+        emit: &mut impl FnMut(Envelope),
+    ) {
         if let Some(failed) = self.require_hello(id) {
-            return vec![failed];
+            emit(failed);
+            return;
         }
         let trimmed = utterance.trim();
         if trimmed.is_empty() {
-            return vec![Envelope::reply(
+            emit(Envelope::reply(
                 id,
                 Event::Failed {
                     code: ErrorCode::InvalidRequest,
                     message: "chat utterance is empty".to_owned(),
                     issues: vec![],
                 },
-            )];
+            ));
+            return;
         }
         let snapshot = match self.store.get_snapshot(session) {
             Ok(Some(snapshot)) => snapshot,
-            Ok(None) => return vec![not_found(id, "session snapshot")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "session snapshot"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
         let base = match self.store.get_revision(revision) {
             Ok(Some(revision)) => revision,
-            Ok(None) => return vec![not_found(id, "revision")],
-            Err(error) => return vec![store_failed(id, error)],
+            Ok(None) => {
+                emit(not_found(id, "revision"));
+                return;
+            }
+            Err(error) => {
+                emit(store_failed(id, error));
+                return;
+            }
         };
         if base.session != session {
-            return vec![Envelope::reply(
+            emit(Envelope::reply(
                 id,
                 Event::Failed {
                     code: ErrorCode::InvalidRequest,
                     message: "revision does not belong to this session".to_owned(),
                     issues: vec![],
                 },
-            )];
+            ));
+            return;
         }
         let keyword = execute(&snapshot, &base, &interpret(trimmed));
         let inventory = load_models(&self.store).unwrap_or_default();
-        let turn = assistant_turn(&inventory, trimmed, &snapshot, &base, &keyword);
+        let turn = assistant_turn(&inventory, trimmed, &snapshot, &base, &keyword, id, emit);
         if turn.patches.is_empty() {
-            return vec![Envelope::reply(
+            emit(Envelope::reply(
                 id,
                 Event::ChatReply {
                     message: turn.message,
                     revision: None,
                 },
-            )];
+            ));
+            return;
         }
         match base.with_patches(
             RevisionAuthor::Assistant {
@@ -965,24 +978,25 @@ impl Engine {
         ) {
             Ok(revision) => {
                 if let Err(error) = self.store.put_revision(&revision) {
-                    return vec![store_failed(id, error)];
+                    emit(store_failed(id, error));
+                    return;
                 }
-                vec![Envelope::reply(
+                emit(Envelope::reply(
                     id,
                     Event::ChatReply {
                         message: turn.message,
                         revision: Some(revision),
                     },
-                )]
+                ));
             }
-            Err(error) => vec![Envelope::reply(
+            Err(error) => emit(Envelope::reply(
                 id,
                 Event::Failed {
                     code: ErrorCode::InvalidRequest,
                     message: error.to_string(),
                     issues: vec![],
                 },
-            )],
+            )),
         }
     }
 
@@ -1021,6 +1035,8 @@ fn assistant_turn(
     snapshot: &WorkspaceSnapshot,
     revision: &aifs_domain::ProposalRevision,
     keyword: &ToolOutput,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
 ) -> ChatTurn {
     let Some(slot) = inventory
         .slots
@@ -1033,7 +1049,7 @@ fn assistant_turn(
             patches: keyword.patches.clone(),
         };
     };
-    match chat_via_worker(slot, inventory, utterance, snapshot, revision) {
+    match chat_via_worker(slot, inventory, utterance, snapshot, revision, id, emit) {
         Ok(text) if !text.trim().is_empty() => match chat::parse_chat_reply(&text) {
             Some(parsed) => {
                 let (patches, skipped) = chat::drop_blocked_moves(snapshot, parsed.patches);
@@ -1088,17 +1104,25 @@ fn chat_via_worker(
     utterance: &str,
     snapshot: &WorkspaceSnapshot,
     revision: &aifs_domain::ProposalRevision,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
 ) -> Result<String, String> {
     let mut llm = WorkerClient::try_connect(WorkerKind::Llm)
         .ok_or_else(|| "LLM worker is not installed".to_owned())?;
     let context = chat::chat_context(snapshot, revision);
+    let storage_dir = resolved_models_dir(&inventory.storage_dir)
+        .display()
+        .to_string();
     let result = (|| {
-        llm.load(
+        llm.load_with(
             slot.backend.clone(),
             inventory.gpu_preference.clone(),
             None,
             slot.api_key.clone(),
-            inventory.storage_dir.clone(),
+            storage_dir,
+            || {
+                emit_log(emit, id, LogLevel::Info, "loading chat model");
+            },
         )
         .map_err(|error| error.to_string())?;
         llm.chat(utterance, context)
@@ -1230,7 +1254,7 @@ fn probe_llm_worker() -> LlmWorkerStatus {
     }
 }
 
-fn resolved_models_dir(storage_dir: &str) -> PathBuf {
+pub(crate) fn resolved_models_dir(storage_dir: &str) -> PathBuf {
     let trimmed = storage_dir.trim();
     if trimmed.is_empty() {
         default_models_dir()
@@ -1670,6 +1694,18 @@ mod tests {
                 .iter()
                 .any(|envelope| matches!(envelope.event, Event::Progress { .. })),
             "scan should emit progress before completing"
+        );
+    }
+
+    #[test]
+    fn empty_model_storage_dir_resolves_to_a_default_models_path() {
+        let empty = resolved_models_dir("");
+        let blank = resolved_models_dir("   ");
+        assert_eq!(empty, blank);
+        assert!(empty.ends_with("models"), "{}", empty.display());
+        assert_eq!(
+            resolved_models_dir("/tmp/custom-models"),
+            std::path::PathBuf::from("/tmp/custom-models")
         );
     }
 

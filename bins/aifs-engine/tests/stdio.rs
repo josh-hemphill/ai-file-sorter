@@ -7,16 +7,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+fn connect_isolated(name: &str) -> (tempfile::TempDir, EngineClient) {
+    let store_dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let store = store_dir.path().join("engine.sqlite");
+    let client = EngineClient::connect_with_store(env!("CARGO_BIN_EXE_aifs-engine"), name, &store)
+        .unwrap_or_else(|e| panic!("{e}"));
+    (store_dir, client)
+}
+
 #[test]
 fn hello_and_scan_over_stdio() {
-    let engine = env!("CARGO_BIN_EXE_aifs-engine");
     let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     fs::write(dir.path().join("readme.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
     fs::write(dir.path().join("photo.CR2"), b"raw").unwrap_or_else(|e| panic!("{e}"));
     fs::write(dir.path().join("photo.jpg"), b"jpg").unwrap_or_else(|e| panic!("{e}"));
     fs::write(dir.path().join("photo.xmp"), b"<xmp/>").unwrap_or_else(|e| panic!("{e}"));
-
-    let client = EngineClient::connect(engine, "stdio-test").unwrap_or_else(|e| panic!("{e}"));
+    let (_store, client) = connect_isolated("stdio-test");
     let snapshot = client
         .scan(
             dir.path(),
@@ -47,11 +53,9 @@ fn hello_and_scan_over_stdio() {
 
 #[test]
 fn chat_over_stdio_patches_a_child_revision() {
-    let engine = env!("CARGO_BIN_EXE_aifs-engine");
     let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
-
-    let client = EngineClient::connect(engine, "stdio-chat").unwrap_or_else(|e| panic!("{e}"));
+    let (_store, client) = connect_isolated("stdio-chat");
     let snapshot = client
         .scan(
             dir.path(),
@@ -85,15 +89,14 @@ fn chat_over_stdio_patches_a_child_revision() {
 
 #[test]
 fn cancel_in_flight_scan_over_stdio() {
-    let engine = env!("CARGO_BIN_EXE_aifs-engine");
     let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     for index in 0..400 {
         fs::write(dir.path().join(format!("file-{index}.txt")), b"x")
             .unwrap_or_else(|e| panic!("{e}"));
     }
 
-    let client =
-        Arc::new(EngineClient::connect(engine, "stdio-cancel").unwrap_or_else(|e| panic!("{e}")));
+    let (_store, client) = connect_isolated("stdio-cancel");
+    let client = Arc::new(client);
     let canceller = Arc::clone(&client);
     let started = AtomicBool::new(false);
     let envelopes = client

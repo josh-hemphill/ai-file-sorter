@@ -19,6 +19,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const INFER_TIMEOUT: Duration = Duration::from_secs(120);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+/// Recv slice while waiting on a worker so the engine can emit idle-resetting logs.
+/// Must stay under the engine-client idle timeout (180s).
+const WAIT_SLICE: Duration = Duration::from_secs(15);
 
 /// Successful `load` reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,7 +230,28 @@ impl WorkerClient {
         api_key: Option<String>,
         storage_dir: impl Into<String>,
     ) -> Result<WorkerLoad, WorkerClientError> {
-        let envelopes = self.request_with_timeout(
+        self.load_with(
+            backend,
+            gpu_preference,
+            n_gpu_layers,
+            api_key,
+            storage_dir,
+            || {},
+        )
+    }
+
+    /// Like [`Self::load`], invoking `on_wait` while the worker is silent so callers
+    /// can emit engine progress before the 180s client idle timeout.
+    pub fn load_with(
+        &mut self,
+        backend: ModelBackend,
+        gpu_preference: impl Into<String>,
+        n_gpu_layers: Option<u32>,
+        api_key: Option<String>,
+        storage_dir: impl Into<String>,
+        mut on_wait: impl FnMut(),
+    ) -> Result<WorkerLoad, WorkerClientError> {
+        let envelopes = self.request_while(
             WorkerCommand::Load {
                 backend,
                 gpu_preference: gpu_preference.into(),
@@ -238,6 +262,7 @@ impl WorkerClient {
                 storage_dir: storage_dir.into(),
             },
             LOAD_TIMEOUT,
+            &mut on_wait,
         )?;
         for envelope in envelopes {
             match envelope.event {
@@ -395,13 +420,22 @@ impl WorkerClient {
         &mut self,
         command: WorkerCommand,
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
-        self.request_with_timeout(command, REQUEST_TIMEOUT)
+        self.request_while(command, REQUEST_TIMEOUT, &mut || {})
     }
 
     fn request_with_timeout(
         &mut self,
         command: WorkerCommand,
         timeout: Duration,
+    ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
+        self.request_while(command, timeout, &mut || {})
+    }
+
+    fn request_while(
+        &mut self,
+        command: WorkerCommand,
+        timeout: Duration,
+        on_wait: &mut impl FnMut(),
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
         let id = RequestId(self.next_id.to_string());
         self.next_id += 1;
@@ -419,26 +453,36 @@ impl WorkerClient {
             writeln!(stdin, "{line}")?;
             stdin.flush()?;
         }
+        let deadline = Instant::now() + timeout;
         let mut collected = Vec::new();
         loop {
-            let envelope = self.recv_next(timeout)?;
-            let matches = envelope.id.as_ref() == Some(&id) || envelope.id.is_none();
-            if !matches {
-                continue;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(WorkerClientError::Timeout);
             }
-            let terminal = envelope.is_terminal();
-            collected.push(envelope);
-            if terminal {
-                return Ok(collected);
+            match self.rx.recv_timeout(remaining.min(WAIT_SLICE)) {
+                Ok(result) => {
+                    let envelope = result?;
+                    let matches = envelope.id.as_ref() == Some(&id) || envelope.id.is_none();
+                    if !matches {
+                        continue;
+                    }
+                    let terminal = envelope.is_terminal();
+                    collected.push(envelope);
+                    if terminal {
+                        return Ok(collected);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if Instant::now() >= deadline {
+                        return Err(WorkerClientError::Timeout);
+                    }
+                    on_wait();
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(WorkerClientError::Disconnected);
+                }
             }
-        }
-    }
-
-    fn recv_next(&mut self, timeout: Duration) -> Result<WorkerEnvelope, WorkerClientError> {
-        match self.rx.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(WorkerClientError::Timeout),
-            Err(RecvTimeoutError::Disconnected) => Err(WorkerClientError::Disconnected),
         }
     }
 }
@@ -515,5 +559,18 @@ fn worker_file_name(kind: WorkerKind) -> String {
         format!("{}.exe", kind.binary_stem())
     } else {
         kind.binary_stem().to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_wait_slice_stays_under_engine_idle_timeout() {
+        let engine_idle = Duration::from_secs(180);
+        assert!(WAIT_SLICE < engine_idle);
+        assert!(LOAD_TIMEOUT > engine_idle);
+        assert!(INFER_TIMEOUT < engine_idle);
     }
 }
