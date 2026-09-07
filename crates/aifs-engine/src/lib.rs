@@ -2918,6 +2918,7 @@ mod tests {
             .any(|capability| capability == "llama");
         let _ = worker.shutdown();
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let models = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
         let mut engine = Engine::new();
         engine.handle(Request {
@@ -2927,7 +2928,10 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
         });
-        let mut inventory = ModelInventory::default();
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
         inventory.slots[0].backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };

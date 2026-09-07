@@ -570,9 +570,21 @@ mod tests {
             "make desktop must overwrite the stub LLM worker with llama.cpp"
         );
         let tauri = include_str!("../tauri.conf.json");
-        assert!(
-            tauri.contains("cargo engine-llm"),
-            "Tauri beforeDev/beforeBuild must compile llama.cpp into aifs-worker-llm: {tauri}"
-        );
+        for hook in ["beforeDevCommand", "beforeBuildCommand"] {
+            let line = tauri
+                .lines()
+                .find(|row| row.contains(hook))
+                .unwrap_or_else(|| panic!("{hook}"));
+            let bins = line
+                .find("cargo engine-bins")
+                .unwrap_or_else(|| panic!("{hook} must run cargo engine-bins: {line}"));
+            let llm = line
+                .find("cargo engine-llm")
+                .unwrap_or_else(|| panic!("{hook} must run cargo engine-llm: {line}"));
+            assert!(
+                bins < llm,
+                "{hook} must overwrite the stub worker with llama.cpp: {line}"
+            );
+        }
     }
 }
