@@ -1,6 +1,7 @@
 //! Supervised evidence extraction. Crash-prone work belongs in worker processes;
 //! the engine falls back to in-process Rust readers when a worker binary is missing.
 
+use crate::cancel::WorkStatus;
 use aifs_domain::{EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot};
 use aifs_protocol::worker::WorkerKind;
 use aifs_worker_client::WorkerClient;
@@ -9,7 +10,8 @@ use aifs_worker_client::WorkerClient;
 pub fn extract_into_supervised(
     snapshot: &mut WorkspaceSnapshot,
     mut on_progress: impl FnMut(u64, u64, &str),
-) {
+    mut should_continue: impl FnMut() -> bool,
+) -> WorkStatus {
     let mut media = WorkerClient::try_connect(WorkerKind::Media);
     let mut document = WorkerClient::try_connect(WorkerKind::Document);
     let mut vision = WorkerClient::try_connect(WorkerKind::Vision);
@@ -17,6 +19,11 @@ pub fn extract_into_supervised(
     let total = snapshot.entries.len() as u64;
     let mut bags = Vec::new();
     for (index, entry) in snapshot.entries.iter().enumerate() {
+        if !should_continue() {
+            snapshot.evidence.extend(bags);
+            shutdown_extract_workers(media, document, vision);
+            return WorkStatus::Cancelled;
+        }
         on_progress(index as u64 + 1, total, entry.path.as_str());
         if let Some(evidence) = extract_one(
             &root,
@@ -29,13 +36,22 @@ pub fn extract_into_supervised(
         }
     }
     snapshot.evidence.extend(bags);
-    if let Some(mut worker) = media.take() {
+    shutdown_extract_workers(media, document, vision);
+    WorkStatus::Completed
+}
+
+fn shutdown_extract_workers(
+    media: Option<WorkerClient>,
+    document: Option<WorkerClient>,
+    vision: Option<WorkerClient>,
+) {
+    if let Some(mut worker) = media {
         let _ = worker.shutdown();
     }
-    if let Some(mut worker) = document.take() {
+    if let Some(mut worker) = document {
         let _ = worker.shutdown();
     }
-    if let Some(mut worker) = vision.take() {
+    if let Some(mut worker) = vision {
         let _ = worker.shutdown();
     }
 }

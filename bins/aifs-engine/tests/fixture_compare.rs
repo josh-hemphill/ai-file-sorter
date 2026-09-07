@@ -48,8 +48,7 @@ fn inbox_mixed_proposal_matches_golden_destinations() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
 
-    let mut client =
-        EngineClient::connect(engine, "fixture-compare").unwrap_or_else(|e| panic!("{e}"));
+    let client = EngineClient::connect(engine, "fixture-compare").unwrap_or_else(|e| panic!("{e}"));
     let snapshot = client
         .scan(dir.path(), ScanOptions::default(), None)
         .unwrap_or_else(|e| panic!("{e}"));

@@ -104,7 +104,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             no_protect_projects,
             no_extract,
         } => {
-            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let options = ScanOptions {
                 recursive: !no_recursive,
                 include_hidden,
@@ -142,7 +142,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             apply,
             include_hidden,
         } => {
-            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let snapshot = client.scan(
                 &folder,
                 ScanOptions {
@@ -199,7 +199,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             include_hidden,
         } => {
-            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let snapshot = client.scan(
                 &folder,
                 ScanOptions {
@@ -234,7 +234,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let expected: aifs_planner::ExpectedPlan =
                 serde_json::from_str(&std::fs::read_to_string(&expected)?)?;
-            let mut client = EngineClient::connect(&engine_path, "aifs-cli")?;
+            let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let snapshot = client.scan(
                 &folder,
                 ScanOptions {

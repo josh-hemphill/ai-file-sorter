@@ -16,6 +16,7 @@ import {
   planRevision,
   proposeSession,
   scanRoot,
+  cancelInFlight,
   undoJournal,
   getModels,
 } from "../engine";
@@ -58,6 +59,8 @@ const STAGE_ORDER = [
   { id: "scan", label: "Walk" },
   { id: "relationships", label: "Relationships" },
   { id: "extract", label: "Metadata" },
+  { id: "categorize", label: "Categorize" },
+  { id: "describe", label: "Describe" },
 ];
 
 const emit = defineEmits<{
@@ -222,9 +225,18 @@ async function runScan() {
     revision.value = proposed;
     view.value = "structure";
   } catch (error) {
-    engineError.value = String(error);
+    const text = String(error);
+    engineError.value = /cancelled/i.test(text) ? "Scan cancelled." : text;
   } finally {
     busy.value = false;
+  }
+}
+
+async function requestCancel() {
+  try {
+    await cancelInFlight();
+  } catch (error) {
+    engineError.value = String(error);
   }
 }
 
@@ -484,7 +496,19 @@ function familyOf(entry: ObservedEntry): string {
         {{ item }}
       </button>
       <p v-if="!recentRoots.length" class="muted">Scanned folders show up here.</p>
-      <button class="primary" type="button" :disabled="busy" @click="runScan">
+      <button
+        v-if="busy"
+        type="button"
+        @click="requestCancel"
+      >
+        Cancel
+      </button>
+      <button
+        v-else
+        class="primary"
+        type="button"
+        @click="runScan"
+      >
         Scan
       </button>
     </aside>
@@ -682,6 +706,7 @@ function familyOf(entry: ObservedEntry): string {
           <span v-else class="muted">Add a source, pick an intent, then scan.</span>
         </div>
         <div class="actions">
+          <button v-if="busy" type="button" @click="requestCancel">Cancel</button>
           <button type="button" :disabled="busy || !revision" @click="acceptAll">
             Approve all proposed changes
           </button>

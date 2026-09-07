@@ -8,12 +8,17 @@ use aifs_protocol::{
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Idle wait for the next engine event. Reset on every progress/log line so a long
+/// scan can exceed this as long as it keeps emitting. Must be greater than the
+/// worker infer timeout (120s).
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const MUTATING_SHUTDOWN_WAIT: Duration = Duration::from_secs(30 * 60);
 const ENGINE_BINARY: &str = if cfg!(windows) {
@@ -46,6 +51,9 @@ pub enum ClientError {
     /// Timed out waiting for a terminal event.
     #[error("timed out waiting for the engine")]
     Timeout,
+    /// The in-flight request ended with `cancelled` (no snapshot / no success).
+    #[error("request cancelled")]
+    Cancelled,
     /// A protocol line could not be parsed.
     #[error("invalid engine output: {0}")]
     Codec(String),
@@ -64,12 +72,14 @@ pub enum ClientError {
 
 /// Client that owns an engine child process.
 pub struct EngineClient {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    rx: Receiver<Result<Envelope, ClientError>>,
-    next_id: u64,
-    buffered: Vec<Envelope>,
-    mutating: bool,
+    child: Mutex<Child>,
+    stdin: Mutex<Option<ChildStdin>>,
+    rx: Mutex<Receiver<Result<Envelope, ClientError>>>,
+    next_id: AtomicU64,
+    buffered: Mutex<Vec<Envelope>>,
+    mutating: AtomicBool,
+    in_flight: Mutex<Option<RequestId>>,
+    request_lock: Mutex<()>,
 }
 
 impl EngineClient {
@@ -124,18 +134,20 @@ impl EngineClient {
             }
         });
         Ok(Self {
-            child,
-            stdin: Some(stdin),
-            rx,
-            next_id: 1,
-            buffered: Vec::new(),
-            mutating: false,
+            child: Mutex::new(child),
+            stdin: Mutex::new(Some(stdin)),
+            rx: Mutex::new(rx),
+            next_id: AtomicU64::new(1),
+            buffered: Mutex::new(Vec::new()),
+            mutating: AtomicBool::new(false),
+            in_flight: Mutex::new(None),
+            request_lock: Mutex::new(()),
         })
     }
 
     /// Spawns the engine at `binary` and completes `hello`.
     pub fn connect(binary: impl AsRef<Path>, client_name: &str) -> Result<Self, ClientError> {
-        let mut client = Self::spawn(binary)?;
+        let client = Self::spawn(binary)?;
         client.hello(client_name)?;
         Ok(client)
     }
@@ -145,8 +157,55 @@ impl EngineClient {
         Self::connect(discover_engine_binary()?, client_name)
     }
 
+    /// Asks the engine to stop `target` at the next cooperative check.
+    pub fn cancel(&self, target: RequestId) -> Result<(), ClientError> {
+        let _ = self.write_command(Command::Cancel { target })?;
+        Ok(())
+    }
+
+    /// Cancels the request currently waiting in [`Self::request_with_events`].
+    pub fn cancel_in_flight(&self) -> Result<(), ClientError> {
+        let target = self
+            .in_flight
+            .lock()
+            .map_err(|_| std::io::Error::other("in-flight lock poisoned"))?
+            .clone();
+        let Some(target) = target else {
+            return Ok(());
+        };
+        self.cancel(target)
+    }
+
+    fn allocate_id(&self) -> RequestId {
+        RequestId(self.next_id.fetch_add(1, Ordering::Relaxed).to_string())
+    }
+
+    fn write_command(&self, command: Command) -> Result<RequestId, ClientError> {
+        let id = self.allocate_id();
+        self.write_request(&id, command)?;
+        Ok(id)
+    }
+
+    fn write_request(&self, id: &RequestId, command: Command) -> Result<(), ClientError> {
+        let request = Request {
+            id: id.clone(),
+            command,
+        };
+        let line = encode_line(&request).map_err(|error| ClientError::Codec(error.to_string()))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| std::io::Error::other("stdin lock poisoned"))?;
+        let stdin = stdin
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("engine stdin closed"))?;
+        writeln!(stdin, "{line}")?;
+        stdin.flush()?;
+        Ok(())
+    }
+
     /// Negotiates the protocol version.
-    pub fn hello(&mut self, client: &str) -> Result<Vec<String>, ClientError> {
+    pub fn hello(&self, client: &str) -> Result<Vec<String>, ClientError> {
         let envelopes = self.request(Command::Hello {
             client: client.to_owned(),
             protocol_version: PROTOCOL_VERSION,
@@ -165,7 +224,7 @@ impl EngineClient {
 
     /// Runs a scan and returns the completed snapshot.
     pub fn scan(
-        &mut self,
+        &self,
         root: impl AsRef<Path>,
         options: ScanOptions,
         session: Option<aifs_domain::SessionId>,
@@ -178,6 +237,7 @@ impl EngineClient {
         for envelope in envelopes {
             match envelope.event {
                 Event::ScanCompleted { snapshot } => return Ok(snapshot),
+                Event::Cancelled => return Err(ClientError::Cancelled),
                 Event::Failed { code, message, .. } => {
                     return Err(ClientError::Engine { code, message });
                 }
@@ -195,14 +255,14 @@ impl EngineClient {
     }
 
     /// Asks the engine to exit.
-    pub fn shutdown(&mut self) -> Result<(), ClientError> {
+    pub fn shutdown(&self) -> Result<(), ClientError> {
         let _ = self.request(Command::Shutdown)?;
         Ok(())
     }
 
     /// Builds a heuristic proposal for a session.
     pub fn propose(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         policy: aifs_protocol::ProposalPolicy,
     ) -> Result<aifs_domain::ProposalRevision, ClientError> {
@@ -211,7 +271,7 @@ impl EngineClient {
 
     /// Applies patches, producing a child revision.
     pub fn patch(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         base_revision: aifs_domain::RevisionId,
         author: aifs_domain::RevisionAuthor,
@@ -229,7 +289,7 @@ impl EngineClient {
 
     /// Validates a revision into an operation plan.
     pub fn plan(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         revision: aifs_domain::RevisionId,
     ) -> Result<(aifs_domain::OperationPlan, Vec<aifs_domain::PlanIssue>), ClientError> {
@@ -255,7 +315,7 @@ impl EngineClient {
 
     /// Applies a plan (or dry-runs it).
     pub fn apply(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         plan: aifs_domain::PlanId,
         dry_run: bool,
@@ -269,7 +329,7 @@ impl EngineClient {
 
     /// Undoes a journal.
     pub fn undo(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         journal: aifs_domain::JournalId,
     ) -> Result<aifs_domain::ApplyJournal, ClientError> {
@@ -278,7 +338,7 @@ impl EngineClient {
 
     /// Runs assistant tools against a revision. Returns a child revision when patches land.
     pub fn chat(
-        &mut self,
+        &self,
         session: aifs_domain::SessionId,
         revision: aifs_domain::RevisionId,
         utterance: impl Into<String>,
@@ -310,16 +370,16 @@ impl EngineClient {
     }
 
     /// Loads persisted classification settings.
-    pub fn get_settings(&mut self) -> Result<AppSettings, ClientError> {
+    pub fn get_settings(&self) -> Result<AppSettings, ClientError> {
         self.expect_settings(Command::GetSettings)
     }
 
     /// Replaces persisted classification settings.
-    pub fn put_settings(&mut self, settings: AppSettings) -> Result<AppSettings, ClientError> {
+    pub fn put_settings(&self, settings: AppSettings) -> Result<AppSettings, ClientError> {
         self.expect_settings(Command::PutSettings { settings })
     }
 
-    fn expect_settings(&mut self, command: Command) -> Result<AppSettings, ClientError> {
+    fn expect_settings(&self, command: Command) -> Result<AppSettings, ClientError> {
         let envelopes = self.request(command)?;
         for envelope in envelopes {
             match envelope.event {
@@ -341,18 +401,18 @@ impl EngineClient {
     }
 
     /// Loads redacted model slot assignments.
-    pub fn get_models(&mut self) -> Result<ModelInventory, ClientError> {
+    pub fn get_models(&self) -> Result<ModelInventory, ClientError> {
         self.expect_models(Command::GetModels)
     }
 
     /// Replaces model slot assignments.
-    pub fn put_models(&mut self, inventory: ModelInventory) -> Result<ModelInventory, ClientError> {
+    pub fn put_models(&self, inventory: ModelInventory) -> Result<ModelInventory, ClientError> {
         self.expect_models(Command::PutModels { inventory })
     }
 
     /// Validates a backend without scanning.
     pub fn probe_endpoint(
-        &mut self,
+        &self,
         backend: ModelBackend,
         api_key: Option<String>,
     ) -> Result<(bool, String), ClientError> {
@@ -378,7 +438,7 @@ impl EngineClient {
 
     /// Downloads catalog GGUFs, skipping files already in the storage directory.
     pub fn download_model(
-        &mut self,
+        &self,
         catalog_id: impl Into<String>,
     ) -> Result<ModelInventory, ClientError> {
         self.expect_models(Command::DownloadModel {
@@ -386,7 +446,7 @@ impl EngineClient {
         })
     }
 
-    fn expect_models(&mut self, command: Command) -> Result<ModelInventory, ClientError> {
+    fn expect_models(&self, command: Command) -> Result<ModelInventory, ClientError> {
         let envelopes = self.request(command)?;
         for envelope in envelopes {
             match envelope.event {
@@ -408,7 +468,7 @@ impl EngineClient {
     }
 
     fn expect_revision(
-        &mut self,
+        &self,
         command: Command,
     ) -> Result<aifs_domain::ProposalRevision, ClientError> {
         let envelopes = self.request(command)?;
@@ -431,10 +491,7 @@ impl EngineClient {
         ))
     }
 
-    fn expect_journal(
-        &mut self,
-        command: Command,
-    ) -> Result<aifs_domain::ApplyJournal, ClientError> {
+    fn expect_journal(&self, command: Command) -> Result<aifs_domain::ApplyJournal, ClientError> {
         let envelopes = self.request(command)?;
         for envelope in envelopes {
             match envelope.event {
@@ -456,62 +513,97 @@ impl EngineClient {
     }
 
     /// Sends a command and collects events until a terminal one for that id.
-    pub fn request(&mut self, command: Command) -> Result<Vec<Envelope>, ClientError> {
+    pub fn request(&self, command: Command) -> Result<Vec<Envelope>, ClientError> {
         self.request_with_events(command, |_| {})
     }
 
     /// Like [`Self::request`], invoking `on_event` for every matching envelope
-    /// (including progress) as it arrives.
+    /// (including progress) as it arrives. Cancel can be sent concurrently via
+    /// [`Self::cancel_in_flight`].
     pub fn request_with_events(
-        &mut self,
+        &self,
         command: Command,
         mut on_event: impl FnMut(&Envelope),
     ) -> Result<Vec<Envelope>, ClientError> {
+        let _request_guard = self
+            .request_lock
+            .lock()
+            .map_err(|_| std::io::Error::other("request lock poisoned"))?;
         let mutating = command_mutates_disk(&command);
         if mutating {
-            self.mutating = true;
+            self.mutating.store(true, Ordering::Relaxed);
         }
-        let id = RequestId(self.next_id.to_string());
-        self.next_id += 1;
-        let request = Request {
-            id: id.clone(),
-            command,
-        };
-        let line = encode_line(&request).map_err(|error| ClientError::Codec(error.to_string()))?;
-        {
-            let stdin = self
-                .stdin
-                .as_mut()
-                .ok_or_else(|| std::io::Error::other("engine stdin closed"))?;
-            writeln!(stdin, "{line}")?;
-            stdin.flush()?;
+        let id = self.allocate_id();
+        if let Ok(mut in_flight) = self.in_flight.lock() {
+            *in_flight = Some(id.clone());
+        }
+        if let Err(error) = self.write_request(&id, command) {
+            if let Ok(mut in_flight) = self.in_flight.lock() {
+                *in_flight = None;
+            }
+            if mutating {
+                self.mutating.store(false, Ordering::Relaxed);
+            }
+            return Err(error);
         }
 
         let mut collected = Vec::new();
-        loop {
-            let envelope = self.recv_next()?;
-            let matches = envelope.id.as_ref() == Some(&id) || envelope.id.is_none();
-            if !matches {
-                self.buffered.push(envelope);
-                continue;
-            }
+        let result = loop {
+            let envelope = match self.recv_matching(&id) {
+                Ok(envelope) => envelope,
+                Err(error) => break Err(error),
+            };
             on_event(&envelope);
             let terminal = envelope.is_terminal();
             collected.push(envelope);
             if terminal {
-                if mutating {
-                    self.mutating = false;
-                }
-                return Ok(collected);
+                break Ok(collected);
+            }
+        };
+        if let Ok(mut in_flight) = self.in_flight.lock() {
+            *in_flight = None;
+        }
+        if mutating {
+            self.mutating.store(false, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn recv_matching(&self, id: &RequestId) -> Result<Envelope, ClientError> {
+        loop {
+            if let Some(envelope) = self.take_buffered_matching(id) {
+                return Ok(envelope);
+            }
+            let envelope = self.recv_from_rx()?;
+            let matches = envelope.id.as_ref() == Some(id) || envelope.id.is_none();
+            if matches {
+                return Ok(envelope);
+            }
+            // Cancel acks use a different request id and must not be re-buffered
+            // in a way that spins `recv` on the same unmatched line.
+            if matches!(envelope.event, Event::Cancelled) {
+                continue;
+            }
+            if let Ok(mut buffered) = self.buffered.lock() {
+                buffered.push(envelope);
             }
         }
     }
 
-    fn recv_next(&mut self) -> Result<Envelope, ClientError> {
-        if !self.buffered.is_empty() {
-            return Ok(self.buffered.remove(0));
-        }
-        match self.rx.recv_timeout(REQUEST_TIMEOUT) {
+    fn take_buffered_matching(&self, id: &RequestId) -> Option<Envelope> {
+        let mut buffered = self.buffered.lock().ok()?;
+        let position = buffered
+            .iter()
+            .position(|envelope| envelope.id.as_ref() == Some(id) || envelope.id.is_none())?;
+        Some(buffered.remove(position))
+    }
+
+    fn recv_from_rx(&self) -> Result<Envelope, ClientError> {
+        let rx = self
+            .rx
+            .lock()
+            .map_err(|_| std::io::Error::other("engine output lock poisoned"))?;
+        match rx.recv_timeout(IDLE_TIMEOUT) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => Err(ClientError::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(ClientError::Disconnected),
@@ -521,7 +613,8 @@ impl EngineClient {
 
 impl Drop for EngineClient {
     fn drop(&mut self) {
-        if let Some(mut stdin) = self.stdin.take()
+        if let Ok(mut stdin) = self.stdin.lock()
+            && let Some(mut stdin) = stdin.take()
             && let Ok(line) = encode_line(&Request {
                 id: RequestId("shutdown".to_owned()),
                 command: Command::Shutdown,
@@ -530,14 +623,17 @@ impl Drop for EngineClient {
             let _ = writeln!(stdin, "{line}");
             let _ = stdin.flush();
         }
-        let wait = if self.mutating {
+        let wait = if self.mutating.load(Ordering::Relaxed) {
             MUTATING_SHUTDOWN_WAIT
         } else {
             GRACEFUL_SHUTDOWN_WAIT
         };
         let deadline = Instant::now() + wait;
+        let Ok(mut child) = self.child.lock() else {
+            return;
+        };
         loop {
-            match self.child.try_wait() {
+            match child.try_wait() {
                 Ok(Some(_)) => return,
                 Ok(None) if Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(50));
@@ -545,8 +641,8 @@ impl Drop for EngineClient {
                 _ => break,
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

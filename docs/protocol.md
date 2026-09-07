@@ -17,14 +17,14 @@ diagnostic only.
 | `type` | Payload | Terminal event |
 |--------|---------|----------------|
 | `hello` | `client`, `protocol_version` | `ready` |
-| `scan` | `root`, `options: ScanOptions`, optional `session` | `scan_completed { snapshot }` |
+| `scan` | `root`, `options: ScanOptions`, optional `session` | `scan_completed { snapshot }` or `cancelled` |
 | `propose` | `session`, `policy: ProposalPolicy` | `revision` |
 | `patch` | `session`, `base_revision`, `author`, `summary`, `patches[]` | `revision` |
 | `plan` | `session`, `revision` | `planned { plan, issues }` or `failed { plan_rejected, issues }` |
 | `apply` | `session`, `plan`, `dry_run` | `journal` |
 | `undo` | `session`, `journal` | `journal` |
 | `chat` | `session`, `revision`, `utterance` | `chat_reply { message, revision? }` |
-| `cancel` | `target` | `cancelled` on the target request |
+| `cancel` | `target` | ack `cancelled` on the cancel request; the **target** also ends with `cancelled` (scan) |
 | `shutdown` | — | `shutdown` |
 | `get_settings` | — | `settings { settings }` |
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
@@ -39,12 +39,22 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 ## Events
 
 - `progress { stage, current, total?, message }` — may repeat; never terminal.
+  Scan/analyze stages include `scan`, `relationships`, `extract`, `categorize`,
+  and `describe`.
 - `log { level, message }` — never terminal. Scan uses this for projects, skips, and
   bundles so the UI can show a live identification stream.
 - `ready`, `scan_completed`, `revision`, `planned`, `journal`, `chat_reply`,
   `settings`, `models`, `endpoint_probed`, `cancelled`, `failed`, `shutdown` — terminal for their request.
 
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
+
+`cancel` is decoded on a stdin reader thread so a long `scan` can notice the flag
+between files. A cancelled scan emits `cancelled` for the scan id and does **not**
+emit `scan_completed`. Apply/undo that already mutated disk still emit `journal`
+(partial/failed) rather than pretending the work never happened.
+
+The engine-client idle wait is 180s per event (reset on every progress/log line)
+so categorize/describe can exceed 60s as long as workers keep emitting.
 
 ## Error codes
 
