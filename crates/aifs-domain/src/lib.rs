@@ -1,7 +1,7 @@
 //! Core domain model shared by the engine, workers, CLI, and desktop shell.
 //!
 //! Everything here is plain data with `serde` support and no I/O. The vocabulary
-//! follows the rewrite design notes in `rust/docs/domain-model.md`:
+//! follows the rewrite design notes in `docs/domain-model.md`:
 //!
 //! * [`entry::ObservedEntry`] — what the scanner saw on disk, keyed by an opaque
 //!   [`ids::AssetId`] rather than by path.

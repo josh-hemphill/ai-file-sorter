@@ -13,30 +13,56 @@ the engine, CLI, and Tauri 2 + Vue 3 workspace.
 - **Collaborative refinement** — the user and an assistant share a small patch
   vocabulary. The assistant never gets SQL or raw filesystem operations.
 
-See [`rust/docs/architecture.md`](rust/docs/architecture.md),
-[`rust/docs/domain-model.md`](rust/docs/domain-model.md),
-[`rust/docs/protocol.md`](rust/docs/protocol.md), and the
-[`golden-path execution plan`](rust/docs/golden-path-execution-plan.md).
+See [`docs/architecture.md`](docs/architecture.md),
+[`docs/domain-model.md`](docs/domain-model.md),
+[`docs/protocol.md`](docs/protocol.md), and the
+[`golden-path execution plan`](docs/golden-path-execution-plan.md).
 
-## Quick start
+## From source
+
+Requirements: a Rust stable toolchain (this repo pins it in
+[`rust-toolchain.toml`](rust-toolchain.toml)). Desktop also needs Node.js 24 LTS
+and [pnpm](https://pnpm.io/) 12.
 
 ```bash
-cd rust
-cargo run -p aifs-cli -- scan /path/to/folder
-cargo run -p aifs-cli -- organize /path/to/folder          # dry run
-cargo run -p aifs-cli -- organize /path/to/folder --apply
-cargo run -p aifs-cli -- chat /path/to/folder "Move podcasts away from music"
-cargo run -p aifs-cli -- compare /path/to/folder --expected fixtures/inbox-mixed.expected.json
+git clone https://github.com/josh-hemphill/ai-file-sorter.git
+cd ai-file-sorter
+make build
+cargo aifs -- scan fixtures/inbox-mixed
+cargo aifs -- organize fixtures/inbox-mixed          # dry run
+cargo aifs -- organize /path/to/folder --apply
+cargo aifs -- chat fixtures/inbox-mixed "Move podcasts away from music"
+cargo aifs -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
-The CLI locates `aifs-engine` next to itself, via `$AIFS_ENGINE`, or under
-`target/{debug,release}/`. There is no in-process fallback. Scan will spawn
-`aifs-worker-media` (and document/vision stubs) when those binaries are on the
-same path; media-tag extraction falls back to in-process Rust readers if the
-media worker is missing.
+`make build` compiles `aifs-engine`, the `aifs` CLI, and the media / document /
+vision / LLM workers into `target/debug/`. The CLI locates `aifs-engine` next to
+itself, via `$AIFS_ENGINE`, or under `target/{debug,release}/`. There is no
+in-process fallback. Scan prefers isolated workers when those binaries are on
+the same path; extractors fall back to in-process Rust readers if a worker is
+missing.
+
+Desktop (builds the engine first, then starts Tauri + Vite):
 
 ```bash
-cd rust
+make desktop
+```
+
+Equivalent without Make:
+
+```bash
+cargo engine-bins
+cd apps/desktop
+pnpm install
+pnpm test
+pnpm tauri dev
+```
+
+If the engine binary is not next to the desktop executable, set `AIFS_ENGINE`.
+
+```bash
+make check          # fmt --check, clippy, cargo test
+make desktop-test   # Vue unit tests + vue-tsc
 cargo fmt --all
 cargo clippy --workspace --all-targets
 cargo test --workspace
@@ -46,15 +72,24 @@ Optional llama.cpp (not compiled by default CI). CUDA/Vulkan/Metal stay inside
 `aifs-worker-llm` only:
 
 ```bash
+make llama
 CXX=g++ cargo build -p aifs-worker-llm --features llama
 CXX=g++ cargo build -p aifs-worker-llm --features llama,cuda
 cargo build -p aifs-worker-llm --features llama,vulkan
 cargo build -p aifs-worker-llm --features llama,metal   # macOS
 ```
 
-The toolchain is pinned to `stable` (`rust/rust-toolchain.toml`, edition 2024).
-`unsafe_code` is forbidden in the workspace; crash-prone native libraries belong in
-worker processes. The desktop shell uses pnpm 12 and Node.js 24 LTS.
+Linux desktop packages (Debian/Ubuntu), matching CI:
+
+```bash
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev
+```
+
+The toolchain is pinned to `stable` (edition 2024). `unsafe_code` is forbidden in
+the workspace; crash-prone native libraries belong in worker processes.
+
+More contributor detail: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
