@@ -7,7 +7,7 @@ use crate::prompt::{
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::{
     ModelBackend, OPENAI_CHAT_URL, custom_chat_url, gemini_generate_url, hosted_model_label,
-    is_hosted_backend,
+    is_hosted_backend, sanitize_hosted_text,
 };
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use serde::Deserialize;
@@ -228,8 +228,8 @@ fn openai_complete(
         request = request.set("Authorization", &format!("Bearer {key}"));
     }
     let raw = send_json(request, &body, api_key)?;
-    let parsed: OpenAiChat =
-        serde_json::from_str(&raw).map_err(|error| sanitize_error(&error.to_string(), api_key))?;
+    let parsed: OpenAiChat = serde_json::from_str(&raw)
+        .map_err(|error| sanitize_hosted_text(&error.to_string(), api_key))?;
     parsed
         .choices
         .first()
@@ -256,8 +256,8 @@ fn gemini_complete(
         request = request.set("x-goog-api-key", key);
     }
     let raw = send_json(request, &body, api_key)?;
-    let parsed: GeminiResponse =
-        serde_json::from_str(&raw).map_err(|error| sanitize_error(&error.to_string(), api_key))?;
+    let parsed: GeminiResponse = serde_json::from_str(&raw)
+        .map_err(|error| sanitize_hosted_text(&error.to_string(), api_key))?;
     parsed
         .candidates
         .first()
@@ -271,6 +271,7 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(INFER_TIMEOUT)
+        .redirects(0)
         .build()
 }
 
@@ -282,29 +283,21 @@ fn send_json(
     let response = request
         .set("Content-Type", "application/json")
         .send_json(body.clone())
-        .map_err(|error| sanitize_error(&error.to_string(), api_key))?;
+        .map_err(|error| sanitize_hosted_text(&error.to_string(), api_key))?;
     let status = response.status();
     let mut raw = String::new();
     response
         .into_reader()
         .take(RESPONSE_CHARS as u64)
         .read_to_string(&mut raw)
-        .map_err(|error| sanitize_error(&error.to_string(), api_key))?;
+        .map_err(|error| sanitize_hosted_text(&error.to_string(), api_key))?;
     if !(200..300).contains(&status) {
         return Err(format!(
             "hosted HTTP {status}: {}",
-            truncate(&sanitize_error(&raw, api_key), 300)
+            truncate(&sanitize_hosted_text(&raw, api_key), 300)
         ));
     }
     Ok(raw)
-}
-
-fn sanitize_error(message: &str, api_key: Option<&str>) -> String {
-    let mut out = message.to_owned();
-    if let Some(key) = api_key.filter(|key| !key.is_empty()) {
-        out = out.replace(key, "<redacted>");
-    }
-    out
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -363,7 +356,7 @@ mod tests {
 
     #[test]
     fn error_text_does_not_keep_the_key() {
-        let leaked = sanitize_error("401 Authorization Bearer sk-secret", Some("sk-secret"));
+        let leaked = sanitize_hosted_text("401 Authorization Bearer sk-secret", Some("sk-secret"));
         assert!(!leaked.contains("sk-secret"), "{leaked}");
         assert!(leaked.contains("<redacted>"), "{leaked}");
     }

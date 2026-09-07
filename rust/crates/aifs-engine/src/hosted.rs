@@ -2,6 +2,7 @@
 
 use aifs_protocol::{
     ModelBackend, OPENAI_MODELS_URL, custom_chat_url, gemini_model_url, is_hosted_backend,
+    sanitize_hosted_text,
 };
 use serde_json::json;
 use std::io::Read;
@@ -38,6 +39,7 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(PROBE_CONNECT)
         .timeout_read(PROBE_READ)
+        .redirects(0)
         .build()
 }
 
@@ -45,33 +47,11 @@ fn probe_get(url: &str, api_key: Option<&str>, auth: AuthStyle) -> (bool, String
     let mut request = agent().get(url);
     request = apply_auth(request, api_key, auth);
     match request.call() {
-        Ok(response) => {
-            let status = response.status();
-            drain(response, api_key);
-            if (200..300).contains(&status) {
-                (true, format!("Reached {url} ({status})."))
-            } else {
-                (
-                    false,
-                    format!("Reached {url} but the server returned {status}."),
-                )
-            }
-        }
+        Ok(response) => finish_probe(url, response.status(), Some(response), api_key),
         Err(ureq::Error::Status(status, response)) => {
-            drain(response, api_key);
-            if status == 401 || status == 403 {
-                (
-                    false,
-                    format!("Reached {url} ({status}); check the API key."),
-                )
-            } else {
-                (
-                    false,
-                    format!("Reached {url} but the server returned {status}."),
-                )
-            }
+            finish_probe(url, status, Some(response), api_key)
         }
-        Err(error) => (false, sanitize_error(&error.to_string(), api_key)),
+        Err(error) => (false, sanitize_hosted_text(&error.to_string(), api_key)),
     }
 }
 
@@ -84,34 +64,36 @@ fn probe_custom(url: &str, model: &str, api_key: Option<&str>) -> (bool, String)
     let mut request = agent().post(url);
     request = apply_auth(request, api_key, AuthStyle::Bearer);
     match request.send_json(body) {
-        Ok(response) => {
-            let status = response.status();
-            drain(response, api_key);
-            if (200..300).contains(&status) {
-                (true, format!("Reached {url} ({status})."))
-            } else {
-                (
-                    false,
-                    format!("Reached {url} but the server returned {status}."),
-                )
-            }
-        }
+        Ok(response) => finish_probe(url, response.status(), Some(response), api_key),
         Err(ureq::Error::Status(status, response)) => {
-            drain(response, api_key);
-            if status == 401 || status == 403 {
-                (
-                    false,
-                    format!("Reached {url} ({status}); check the API key."),
-                )
-            } else {
-                (
-                    false,
-                    format!("Reached {url} but the server returned {status}."),
-                )
-            }
+            finish_probe(url, status, Some(response), api_key)
         }
-        Err(error) => (false, sanitize_error(&error.to_string(), api_key)),
+        Err(error) => (false, sanitize_hosted_text(&error.to_string(), api_key)),
     }
+}
+
+fn finish_probe(
+    url: &str,
+    status: u16,
+    response: Option<ureq::Response>,
+    api_key: Option<&str>,
+) -> (bool, String) {
+    if let Some(response) = response {
+        drain(response);
+    }
+    let raw = if (200..300).contains(&status) {
+        format!("Reached {url} ({status}).")
+    } else if status == 401 || status == 403 {
+        format!("Reached {url} ({status}); check the API key.")
+    } else if (300..400).contains(&status) {
+        format!("Reached {url} ({status}); redirects are not followed.")
+    } else {
+        format!("Reached {url} but the server returned {status}.")
+    };
+    (
+        (200..300).contains(&status),
+        sanitize_hosted_text(&raw, api_key),
+    )
 }
 
 fn apply_auth(request: ureq::Request, api_key: Option<&str>, auth: AuthStyle) -> ureq::Request {
@@ -122,30 +104,63 @@ fn apply_auth(request: ureq::Request, api_key: Option<&str>, auth: AuthStyle) ->
     }
 }
 
-fn drain(response: ureq::Response, api_key: Option<&str>) {
+fn drain(response: ureq::Response) {
     let mut raw = String::new();
     let _ = response
         .into_reader()
         .take(RESPONSE_CHARS as u64)
         .read_to_string(&mut raw);
-    let _ = sanitize_error(&raw, api_key);
-}
-
-fn sanitize_error(message: &str, api_key: Option<&str>) -> String {
-    let mut out = message.to_owned();
-    if let Some(key) = api_key.filter(|key| !key.is_empty()) {
-        out = out.replace(key, "<redacted>");
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     #[test]
-    fn sanitize_strips_keys() {
-        let text = sanitize_error("failed Bearer sk-live", Some("sk-live"));
-        assert!(!text.contains("sk-live"), "{text}");
+    fn probe_does_not_follow_redirects_or_leak_keys() {
+        let stolen = Arc::new(AtomicBool::new(false));
+        let stolen_flag = stolen.clone();
+        let sink = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+        let sink_addr = sink.local_addr().unwrap_or_else(|error| panic!("{error}"));
+        let sink_thread = std::thread::spawn(move || {
+            let _ = sink.set_nonblocking(true);
+            for _ in 0..40 {
+                if sink.accept().is_ok() {
+                    stolen_flag.store(true, Ordering::SeqCst);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let source = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+        let source_addr = source
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let location = format!("http://{sink_addr}/stolen");
+        let source_thread = std::thread::spawn(move || {
+            let (mut stream, _) = source.accept().unwrap_or_else(|error| panic!("{error}"));
+            let mut buf = [0_u8; 2048];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let url = format!("http://{source_addr}/v1/models");
+        let (ok, message) = probe_get(&url, Some("sk-secret"), AuthStyle::Gemini);
+        assert!(!ok, "{message}");
+        assert!(message.contains("302"), "{message}");
+        assert!(!message.contains("sk-secret"), "{message}");
+        assert!(
+            !stolen.load(Ordering::SeqCst),
+            "probe followed the redirect and forwarded the Gemini key"
+        );
+        let _ = source_thread.join();
+        let _ = sink_thread.join();
     }
 }

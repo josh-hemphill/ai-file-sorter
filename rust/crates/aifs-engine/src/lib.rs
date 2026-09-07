@@ -854,8 +854,8 @@ fn assistant_chat(
     match chat_via_worker(slot, inventory, utterance, snapshot, revision) {
         Ok(text) if !text.trim().is_empty() => (text, slot_model_id(&slot.backend)),
         Ok(_) => (tools_message, MOCK_ASSISTANT_MODEL.to_owned()),
-        Err(error) => (
-            format!("{tools_message}\n(Chat model skipped: {error})"),
+        Err(_) => (
+            format!("{tools_message}\n(Chat model skipped.)"),
             MOCK_ASSISTANT_MODEL.to_owned(),
         ),
     }
@@ -1924,10 +1924,80 @@ mod tests {
             Event::ChatReply { message, revision } => (message, revision),
             other => panic!("unexpected {other:?}"),
         };
-        assert!(message.contains("Podcasts"), "{message}");
+        assert!(message.contains("Grouping audio"), "{message}");
+        assert!(!message.contains("Chat model skipped"), "{message}");
         let next = next.unwrap_or_else(|| panic!("expected child revision"));
         assert_eq!(next.parent, Some(revision.id));
         let _ = server.join();
+    }
+
+    #[test]
+    fn chat_skips_unreachable_hosted_slot_without_leaking_errors() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let mut inventory = ModelInventory::default();
+        if let Some(slot) = inventory.slots.iter_mut().find(|slot| slot.id == "chat") {
+            slot.backend = ModelBackend::CustomEndpoint {
+                base_url: "http://127.0.0.1:1/v1".into(),
+                model: "local-test".into(),
+            };
+            slot.api_key = Some("sk-secret".into());
+        }
+        engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels { inventory },
+        });
+        let snapshot = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Podcasts"), "{message}");
+        assert!(message.contains("Chat model skipped."), "{message}");
+        assert!(!message.contains("sk-secret"), "{message}");
+        assert!(!message.contains("127.0.0.1"), "{message}");
+        let next = next.unwrap_or_else(|| panic!("expected child revision"));
+        assert_eq!(next.parent, Some(revision.id));
     }
 
     #[test]

@@ -25,7 +25,7 @@ pub use catalog::{
 pub use codec::{CodecError, decode_line, encode_line};
 pub use hosted::{
     OPENAI_CHAT_URL, OPENAI_MODELS_URL, custom_chat_url, gemini_generate_url, gemini_model_url,
-    hosted_model_label, is_hosted_backend,
+    hosted_model_label, is_hosted_backend, sanitize_hosted_text,
 };
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS, ModelArtifactStatus, ModelBackend,
