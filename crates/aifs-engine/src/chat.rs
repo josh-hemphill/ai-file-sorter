@@ -5,8 +5,8 @@ use aifs_domain::{
 };
 use serde::Deserialize;
 
-const CHAT_CONTEXT_FILES: usize = 80;
-const CHAT_CONTEXT_CHARS: usize = 6000;
+const CHAT_CONTEXT_FILES: usize = 48;
+const CHAT_CONTEXT_CHARS: usize = 3500;
 
 /// Model JSON that named a `patches` array (possibly empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +71,7 @@ pub(crate) fn chat_context(snapshot: &WorkspaceSnapshot, revision: &ProposalRevi
             entry.path.as_str()
         ));
     }
-    truncate(&lines.join("\n"), CHAT_CONTEXT_CHARS)
+    truncate_lines(&lines, CHAT_CONTEXT_CHARS)
 }
 
 /// Drops destination edits for protected or layout-preserving bundle members.
@@ -158,12 +158,26 @@ fn extract_balanced(text: &str, open: char, close: char) -> Option<&str> {
     Some(&text[start..=end])
 }
 
-fn truncate(value: &str, max_chars: usize) -> String {
-    let count = value.chars().count();
-    if count <= max_chars {
-        return value.to_owned();
+fn truncate_lines(lines: &[String], max_chars: usize) -> String {
+    let mut out = String::new();
+    for line in lines {
+        let extra = if out.is_empty() {
+            line.chars().count()
+        } else {
+            1 + line.chars().count()
+        };
+        if !out.is_empty() && out.chars().count() + extra > max_chars {
+            break;
+        }
+        if out.is_empty() && line.chars().count() > max_chars {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
     }
-    value.chars().take(max_chars).collect()
+    out
 }
 
 #[cfg(test)]
@@ -220,6 +234,18 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(parse_chat_reply("Grouping audio into Podcasts.").is_none());
+        assert!(
+            parse_chat_reply(r#"{"choices":[{"message":{"content":"hi"}}]}"#).is_none(),
+            "OpenAI envelopes must not count as a chat reply"
+        );
+        assert!(
+            parse_chat_reply(r#"{"message":"hi"}"#).is_none(),
+            "objects without a patches key must not skip keyword fallback"
+        );
+        let empty = parse_chat_reply(r#"{"message":"Just thinking.","patches":[]}"#)
+            .unwrap_or_else(|| panic!("empty patches is parseable"));
+        assert_eq!(empty.message.as_deref(), Some("Just thinking."));
+        assert!(empty.patches.is_empty());
     }
 
     #[test]
@@ -252,6 +278,31 @@ mod tests {
                 assets: vec![asset],
                 folder: RelativePath::parse("Podcasts").unwrap_or_else(|e| panic!("{e}")),
                 rationale: None,
+            }],
+        );
+        assert!(kept.is_empty());
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn drop_blocked_moves_skips_preserve_layout_members() {
+        let (mut snapshot, _, asset) = audio_snapshot();
+        snapshot.bundles.push(Bundle {
+            id: BundleId::new(),
+            kind: BundleKind::Folder,
+            label: "album".into(),
+            members: vec![asset],
+            anchor: Some(asset),
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("album").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "folder".into(),
+        });
+        let (kept, skipped) = drop_blocked_moves(
+            &snapshot,
+            vec![RevisionPatch::Rename {
+                asset,
+                file_name: "x.mp3".into(),
             }],
         );
         assert!(kept.is_empty());

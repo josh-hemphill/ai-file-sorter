@@ -18,7 +18,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-const N_CTX: u32 = 2048;
+const N_CTX: u32 = 4096;
 const MAX_GEN_TOKENS: i32 = 128;
 const CHAT_GEN_TOKENS: i32 = 512;
 const BATCH_FLOOR: usize = 512;

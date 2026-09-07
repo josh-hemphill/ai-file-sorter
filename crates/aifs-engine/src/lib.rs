@@ -2666,6 +2666,95 @@ mod tests {
     }
 
     #[test]
+    fn chat_empty_model_patches_do_not_run_keywords() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let snapshot = match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let before = revision
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_default();
+        let content = serde_json::json!({
+            "message": "Just thinking.",
+            "patches": []
+        })
+        .to_string();
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": content } }]
+        })
+        .to_string();
+        let (base, server) = crate::http_stub::serve_json_once_owned("200 OK", body);
+        let mut inventory = ModelInventory::default();
+        if let Some(slot) = inventory.slots.iter_mut().find(|slot| slot.id == "chat") {
+            slot.backend = ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            };
+        }
+        engine.handle(Request {
+            id: "4".into(),
+            command: Command::PutModels { inventory },
+        });
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Just thinking."), "{message}");
+        assert!(
+            next.is_none(),
+            "empty model patches must not keyword-move, got {next:?}"
+        );
+        assert!(
+            !before.starts_with("Podcasts/"),
+            "fixture destination already under Podcasts: {before}"
+        );
+        let _ = server.join();
+    }
+
+    #[test]
     fn chat_skips_unreachable_hosted_slot_without_leaking_errors() {
         aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
             .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));

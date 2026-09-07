@@ -80,12 +80,14 @@ so categorize/describe can exceed 60s as long as workers keep emitting.
 
 This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
-`put_models`, `download_model`, `probe_endpoint`, and `shutdown`. `chat` interprets the utterance into
-deterministic tools (`search`, `inspect`, `structure`, `group`, `rename`,
-`validate`) and, when those tools emit patches, stores a child revision authored
-by the mock assistant. The assistant never receives SQL or raw filesystem
-operations. `plan` requires accepted placements (the CLI `organize` command
-accepts all heuristic placements, then dry-runs by default).
+`put_models`, `download_model`, `probe_endpoint`, and `shutdown`. `chat` prefers
+model `RevisionPatch` JSON when the chat slot is assigned. Keyword tools
+(`search`, `inspect`, `structure`, `group`, `rename`, `validate`) run when the
+slot is off, the worker fails, or the reply is not parseable. Child revisions
+are authored by the assistant model when patches apply. The assistant never
+receives SQL or raw filesystem operations. `plan` requires accepted placements
+(the CLI `organize` command accepts all heuristic placements, then dry-runs by
+default).
 
 ## Workers
 
