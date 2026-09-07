@@ -18,11 +18,13 @@ pub mod worker;
 pub use worker::{ENGINE_PROCESS_STEM, first_process_binary, process_binary_names, target_triple};
 
 pub use catalog::{
-    ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, CATALOG_BASE_ENV, CATALOG_TEXT, CATALOG_VISION,
-    CatalogArtifact, CatalogEntry, DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME,
-    GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME, all_artifacts, artifact_bytes_on_disk,
-    artifact_is_present, artifact_path, catalog_download_url, catalog_entry,
-    catalog_id_is_downloaded, catalog_ids_for_artifact, set_catalog_base_override,
+    ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, ArtifactSha256Guard, CATALOG_BASE_ENV,
+    CATALOG_TEXT, CATALOG_VISION, CatalogArtifact, CatalogEntry, CatalogTestGuard,
+    DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME, GEMMA_MMPROJ_SHA256,
+    GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME, GEMMA_TEXT_SHA256, all_artifacts,
+    artifact_bytes_on_disk, artifact_is_present, artifact_is_verified, artifact_path,
+    catalog_download_url, catalog_entry, catalog_id_is_downloaded, catalog_ids_for_artifact,
+    expected_sha256, set_artifact_sha256_override, set_catalog_base_override, sha256_hex,
 };
 pub use codec::{CodecError, decode_line, encode_line};
 pub use hosted::{

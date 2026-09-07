@@ -30,7 +30,7 @@ diagnostic only.
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
 | `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` scanned from disk; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, or `missing_files`) |
 | `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime` is not stored) |
-| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; existing files skipped; `runtime` recomputed) |
+| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
 Every request has an `id` chosen by the client. Events echo that `id`; unsolicited events

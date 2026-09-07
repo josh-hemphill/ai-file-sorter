@@ -103,6 +103,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         fs::write(dir.path().join(GEMMA_TEXT_FILENAME), b"gguf")
             .unwrap_or_else(|error| panic!("{error}"));
+        let _pin = aifs_protocol::ArtifactSha256Guard::pin(&[
+            (GEMMA_TEXT_FILENAME, b"gguf".as_slice()),
+            (aifs_protocol::GEMMA_MMPROJ_FILENAME, b"proj".as_slice()),
+        ]);
         let text = resolve_gguf(
             &ModelBackend::Catalog {
                 catalog_id: "gemma-3-4b-it".into(),

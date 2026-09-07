@@ -1,8 +1,8 @@
 //! Model slot configuration. Keys are stored by the engine and redacted on `get_models`.
 
 use crate::catalog::{
-    all_artifacts, artifact_bytes_on_disk, artifact_is_present, artifact_path, catalog_entry,
-    catalog_id_is_downloaded, catalog_ids_for_artifact,
+    all_artifacts, artifact_bytes_on_disk, artifact_is_verified, artifact_path, catalog_entry,
+    catalog_id_is_downloaded, catalog_ids_for_artifact, expected_sha256,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -308,7 +308,7 @@ impl ModelInventory {
                     path: path.display().to_string(),
                     expected_bytes: artifact.expected_bytes,
                     bytes_on_disk,
-                    present: artifact_is_present(&path),
+                    present: artifact_is_verified(&path, &expected_sha256(artifact)),
                     used_by: catalog_ids_for_artifact(artifact.id)
                         .into_iter()
                         .map(str::to_owned)
@@ -580,11 +580,14 @@ mod tests {
         };
         let (_, pending) = probe_backend_at(&backend, Some(dir.path()));
         assert!(pending.contains("Download now"), "{pending}");
+        let body = b"gguf";
         std::fs::write(
             crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
-            b"gguf",
+            body,
         )
         .unwrap_or_else(|error| panic!("{error}"));
+        let _pin =
+            crate::ArtifactSha256Guard::pin(&[(crate::GEMMA_TEXT_FILENAME, body.as_slice())]);
         let (_, ready) = probe_backend_at(&backend, Some(dir.path()));
         assert!(ready.contains("already downloaded"), "{ready}");
         let status = ModelInventory::default().with_disk_status(dir.path());
@@ -660,6 +663,12 @@ mod tests {
             b"gguf",
         )
         .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            slot_runtime(&backend, &llama_worker(), Some(dir.path())).kind_id(),
+            "missing_files"
+        );
+        let _pin =
+            crate::ArtifactSha256Guard::pin(&[(crate::GEMMA_TEXT_FILENAME, b"gguf".as_slice())]);
         let ready = slot_runtime(&backend, &llama_worker(), Some(dir.path()));
         assert_eq!(ready.kind_id(), "llama");
         assert!(ready.is_live_infer());

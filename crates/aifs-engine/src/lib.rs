@@ -3127,7 +3127,7 @@ mod tests {
             (aifs_protocol::GEMMA_MMPROJ_FILENAME, b"mmproj".as_slice()),
         ];
         let (base, hits) = spawn_catalog_http(&files);
-        let _guard = CatalogBaseGuard::set(&base);
+        let _fixture = aifs_protocol::CatalogTestGuard::pin(&base, &files);
         let mut engine = Engine::new();
         hello_ok(&mut engine);
         let inventory = ModelInventory {
@@ -3199,6 +3199,50 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn download_model_rejects_checksum_mismatch_and_leaves_no_file() {
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let files = [(
+            aifs_protocol::GEMMA_TEXT_FILENAME,
+            b"tampered-weights".as_slice(),
+        )];
+        let (base, hits) = spawn_catalog_http(&files);
+        let _fixture = aifs_protocol::CatalogTestGuard::pin(
+            &base,
+            &[(
+                aifs_protocol::GEMMA_TEXT_FILENAME,
+                b"expected-weights".as_slice(),
+            )],
+        );
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels {
+                inventory: ModelInventory {
+                    storage_dir: models.path().display().to_string(),
+                    ..ModelInventory::default()
+                },
+            },
+        }));
+        match terminal(engine.handle(Request {
+            id: "dl".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+        })) {
+            Event::Failed { code, message, .. } => {
+                assert_eq!(code, ErrorCode::Io);
+                assert!(message.contains("checksum mismatch"), "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 1);
+        let dest = models.path().join(aifs_protocol::GEMMA_TEXT_FILENAME);
+        assert!(!dest.exists(), "{}", dest.display());
+        assert!(!dest.with_extension("gguf.part").exists());
     }
 
     #[test]
@@ -3512,22 +3556,5 @@ mod tests {
             }
         });
         (format!("http://{addr}"), hits)
-    }
-
-    struct CatalogBaseGuard {
-        previous: Option<String>,
-    }
-
-    impl CatalogBaseGuard {
-        fn set(base: &str) -> Self {
-            let previous = aifs_protocol::set_catalog_base_override(Some(base.to_owned()));
-            Self { previous }
-        }
-    }
-
-    impl Drop for CatalogBaseGuard {
-        fn drop(&mut self) {
-            let _ = aifs_protocol::set_catalog_base_override(self.previous.take());
-        }
     }
 }
