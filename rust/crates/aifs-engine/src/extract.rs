@@ -71,7 +71,12 @@ fn extract_one(
             aifs_extractors::extract_document_entry(root, entry)
         }
         FileFamily::Image | FileFamily::RawImage => {
-            vision.and_then(|worker| worker.extract(root, entry).ok().flatten())
+            if let Some(worker) = vision
+                && let Ok(evidence) = worker.extract(root, entry)
+            {
+                return evidence;
+            }
+            aifs_extractors::extract_image_entry(root, entry)
         }
         _ => None,
     }
