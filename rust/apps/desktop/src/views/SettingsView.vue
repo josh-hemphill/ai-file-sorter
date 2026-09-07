@@ -160,8 +160,8 @@ onMounted(() => {
     <article class="card">
       <h2>Analysis</h2>
       <p class="muted">
-        Models themselves are chosen on the Setup page. Enabling a slot here records the intent;
-        scan still uses heuristics until analysis workers exist.
+        Models themselves are chosen on the Setup page. Enabling a slot here records the intent.
+        Scan runs that analysis when the slot is assigned and the LLM worker is installed.
       </p>
       <label class="choice">
         <input v-model="settings.analyze_images" type="checkbox" />

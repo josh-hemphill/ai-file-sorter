@@ -45,7 +45,7 @@ Rules:
 | `aifs-planner` | Heuristic proposals and plan validation | domain, protocol |
 | `aifs-apply` | Journaled local apply + undo | domain, scanner |
 | `aifs-ai-tools` | Keyword tools that emit `RevisionPatch`es (never SQL or FS ops) | domain, planner |
-| `aifs-engine` | Request dispatch (`hello` … `chat`); supervises workers | domain, protocol, store, workers |
+| `aifs-engine` | Request dispatch (`hello` … `chat`); supervises workers and analysis | domain, protocol, store, workers |
 | `aifs-worker-runtime` / `aifs-worker-client` | Worker JSONL loop and spawn/timeout client | protocol |
 | `bins/aifs-engine` | Stdio JSONL server | `aifs-engine` |
 | `bins/aifs-worker-*` | Isolated extractors (evidence only; never SQLite or FS mutation) | runtime, extractors |

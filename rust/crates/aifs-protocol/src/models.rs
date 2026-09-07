@@ -270,14 +270,14 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
                 (
                     true,
                     format!(
-                        "{catalog_id} is already downloaded. Local workers are not connected yet — scan still uses heuristics."
+                        "{catalog_id} is already downloaded. Scan will load the LLM worker for this slot; infer is still stubbed."
                     ),
                 )
             } else {
                 (
                     true,
                     format!(
-                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan still uses heuristics until analysis workers exist."
+                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan will load the LLM worker after download; infer is still stubbed."
                     ),
                 )
             }
@@ -294,7 +294,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             }
             (
                 true,
-                "Local GGUF found. Scan still uses heuristics until analysis workers exist."
+                "Local GGUF found. Scan will load the LLM worker for this slot; infer is still stubbed."
                     .to_owned(),
             )
         }
@@ -303,7 +303,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
         }
         ModelBackend::OpenAi { .. } => (
             true,
-            "OpenAI assignment recorded. Scan still uses heuristics until analysis workers exist."
+            "OpenAI assignment recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
                 .to_owned(),
         ),
         ModelBackend::Gemini { model } if model.trim().is_empty() => {
@@ -311,7 +311,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
         }
         ModelBackend::Gemini { .. } => (
             true,
-            "Gemini assignment recorded. Scan still uses heuristics until analysis workers exist."
+            "Gemini assignment recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
                 .to_owned(),
         ),
         ModelBackend::CustomEndpoint { base_url, model } => {
@@ -324,7 +324,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             }
             (
                 true,
-                "Custom endpoint recorded. Scan still uses heuristics until analysis workers exist."
+                "Custom endpoint recorded. Scan will load the LLM worker for this slot; infer is still stubbed."
                     .to_owned(),
             )
         }

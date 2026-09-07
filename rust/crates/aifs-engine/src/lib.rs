@@ -4,6 +4,7 @@
 //! `undo`, `chat`, `cancel`, `get_settings`, `put_settings`, `get_models`,
 //! `put_models`, `download_model`, `probe_endpoint`, and `shutdown`.
 
+mod analyze;
 mod download;
 mod extract;
 
@@ -443,6 +444,20 @@ impl Engine {
                     emit_progress(emit, id, "extract", current, Some(total), path);
                 }
             });
+        }
+
+        match (load_settings(&self.store), load_models(&self.store)) {
+            (Ok(settings), Ok(models)) => {
+                analyze::analyze_into_supervised(&mut snapshot, &models, &settings, |message| {
+                    emit_log(emit, id, LogLevel::Info, message)
+                });
+            }
+            (Err(error), _) | (_, Err(error)) => emit_log(
+                emit,
+                id,
+                LogLevel::Warn,
+                format!("Could not load models for analysis ({error}); scan continues."),
+            ),
         }
 
         if let Err(error) = self.store.put_snapshot(&snapshot) {
@@ -924,7 +939,7 @@ fn emit_model_runtime_notices(
                 emit,
                 id,
                 LogLevel::Info,
-                "Vision slot assigned; scan still uses heuristics until analysis workers exist.",
+                "Vision slot assigned; images will be described after extract.",
             );
         }
     }
@@ -941,7 +956,7 @@ fn emit_model_runtime_notices(
                 emit,
                 id,
                 LogLevel::Info,
-                "Document slot assigned; scan still uses heuristics until analysis workers exist.",
+                "Document slot assigned; documents will be categorized after extract.",
             );
         }
     }
@@ -1693,6 +1708,85 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn scan_categorizes_when_llm_slot_is_assigned() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels {
+                inventory: inventory.clone(),
+            },
+        })) {
+            Event::Models { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions::default(),
+                session: None,
+            },
+        });
+        let logs: Vec<String> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let categorized = snapshot.evidence.iter().any(|bag| {
+            matches!(bag.source, aifs_domain::EvidenceSource::LocalModel { .. })
+                && bag.fact(aifs_domain::evidence::keys::CATEGORY) == Some("Documents")
+        });
+        assert!(
+            categorized,
+            "expected stub categorize evidence, evidence={:?} logs={logs:?}",
+            snapshot.evidence
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("categorized") && message.contains("note.txt")),
+            "expected categorize log, logs={logs:?}"
+        );
+        let revision = match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let dest = revision
+            .placements
+            .values()
+            .next()
+            .map(|placement| placement.destination.as_str().to_owned())
+            .unwrap_or_default();
+        assert_eq!(dest, "Documents/note.txt");
     }
 
     #[test]

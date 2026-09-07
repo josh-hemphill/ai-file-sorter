@@ -143,8 +143,9 @@ onUnmounted(() => {
         <h1 id="setup-title">Setup</h1>
         <p class="muted">
           This page records which local or remote model each analysis slot should use. Saving
-          does not start a model. Scan and propose still use heuristics until analysis workers
-          exist. Several slots can share one downloaded GGUF — it is fetched once.
+          does not start a model. Scan loads the LLM worker for assigned slots (infer is still
+          stubbed). Propose stays heuristic if load fails. Several slots can share one downloaded
+          GGUF — it is fetched once.
         </p>
       </div>
       <div class="row">
@@ -160,7 +161,7 @@ onUnmounted(() => {
     </header>
     <p v-if="error" class="error">{{ error }}</p>
     <p v-else-if="saved" class="ok">
-      Assignments saved. Scan still uses heuristics until analysis workers exist.
+      Assignments saved. Scan will load the LLM worker for assigned slots; infer is still stubbed.
     </p>
 
     <article class="card">
