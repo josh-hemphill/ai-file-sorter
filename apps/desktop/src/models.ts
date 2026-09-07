@@ -1,4 +1,4 @@
-import type { ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot } from "./types";
+import type { ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot, SlotRuntime } from "./types";
 
 export const MODEL_SLOT_META = [
   {
@@ -100,13 +100,51 @@ export function withSlotKind(slot: ModelSlot, kind: ModelBackend["kind"]): Model
   };
 }
 
+const RUNTIME_SUMMARY_ORDER: SlotRuntime["kind"][] = [
+  "llama",
+  "hosted",
+  "stub",
+  "missing_worker",
+  "missing_files",
+  "off",
+];
+
+function runtimeKindLabel(kind: string): string {
+  switch (kind) {
+    case "llama":
+      return "llama";
+    case "hosted":
+      return "hosted";
+    case "stub":
+      return "stub";
+    case "missing_worker":
+      return "no worker";
+    case "missing_files":
+      return "missing files";
+    case "assigned":
+      return "assigned";
+    default:
+      return "off";
+  }
+}
+
 /** Compact workspace chip copy. */
 export function inventorySummary(inventory: ModelInventory): string {
-  const assigned = inventory.slots.filter((slot) => slot.kind && slot.kind !== "off").length;
-  if (assigned === 0) {
+  const counts = new Map<string, number>();
+  for (const slot of inventory.slots) {
+    const kind =
+      slot.runtime?.kind ?? (slot.kind && slot.kind !== "off" ? "assigned" : "off");
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  const total = inventory.slots.length;
+  if (total === 0 || (counts.get("off") ?? 0) === total) {
     return "All analysis slots off";
   }
-  return `${assigned} slot${assigned === 1 ? "" : "s"} assigned · scan still uses heuristics`;
+  const order = [...RUNTIME_SUMMARY_ORDER, "assigned"];
+  return order
+    .filter((kind) => (counts.get(kind) ?? 0) > 0)
+    .map((kind) => `${counts.get(kind) ?? 0} ${runtimeKindLabel(kind)}`)
+    .join(" · ");
 }
 
 /** Human size for catalog files. */

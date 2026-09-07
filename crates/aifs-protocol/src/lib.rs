@@ -28,8 +28,9 @@ pub use hosted::{
     hosted_model_label, is_hosted_backend, sanitize_hosted_text,
 };
 pub use models::{
-    BUILTIN_CATALOG, GPU_PREFERENCES, MODEL_SLOT_IDS, ModelArtifactStatus, ModelBackend,
-    ModelInventory, ModelSlot, probe_backend, probe_backend_at,
+    BUILTIN_CATALOG, GPU_PREFERENCES, LlmWorkerStatus, MODEL_SLOT_IDS, ModelArtifactStatus,
+    ModelBackend, ModelInventory, ModelSlot, SlotRuntime, probe_backend, probe_backend_at,
+    slot_runtime,
 };
 pub use options::{AppSettings, CategoryWhitelist, FolderStyle, ProposalPolicy, ScanOptions};
 
@@ -306,7 +307,8 @@ pub enum Event {
         /// Persisted classification settings.
         settings: AppSettings,
     },
-    /// `get_models` / `put_models` result. API keys are never present.
+    /// `get_models` / `put_models` / `download_model` result. API keys are never present.
+    /// Each slot may include computed `runtime` (not stored).
     Models {
         /// Redacted inventory.
         inventory: ModelInventory,

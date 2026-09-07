@@ -3,7 +3,7 @@ import { mdiCheckCircleOutline, mdiDownloadOutline } from "@mdi/js";
 import { computed, ref, watch } from "vue";
 import { probeEndpoint } from "../engine";
 import { BUILTIN_CATALOG, slotBackend, withSlotKind } from "../models";
-import type { ModelBackend, ModelSlot } from "../types";
+import type { ModelBackend, ModelSlot, SlotRuntime } from "../types";
 import Icon from "./Icon.vue";
 
 const props = defineProps<{
@@ -34,6 +34,31 @@ watch(
 );
 
 const kind = computed(() => props.assignment.kind ?? "off");
+
+const runtimeCopy = computed(() => {
+  const runtime = props.assignment.runtime;
+  if (!runtime) {
+    return null;
+  }
+  return `${runtimeKindLabel(runtime.kind)} · ${runtime.detail}`;
+});
+
+function runtimeKindLabel(kind: SlotRuntime["kind"]): string {
+  switch (kind) {
+    case "llama":
+      return "llama.cpp";
+    case "hosted":
+      return "hosted";
+    case "stub":
+      return "stub infer";
+    case "missing_worker":
+      return "no worker";
+    case "missing_files":
+      return "missing files";
+    default:
+      return "off";
+  }
+}
 
 function update(patch: Partial<ModelSlot>) {
   emit("change", { ...props.assignment, ...patch });
@@ -74,6 +99,7 @@ function requestDownload() {
   <article class="card">
     <strong>{{ label }}</strong>
     <span class="muted">{{ hint }}</span>
+    <p v-if="runtimeCopy" class="muted slot-runtime">{{ runtimeCopy }}</p>
     <label class="field">
       Backend
       <select :value="kind" @change="setKind(($event.target as HTMLSelectElement).value as ModelBackend['kind'])">
