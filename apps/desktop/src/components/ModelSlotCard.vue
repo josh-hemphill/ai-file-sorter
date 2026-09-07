@@ -61,7 +61,7 @@ function runtimeKindLabel(kind: SlotRuntime["kind"]): string {
 }
 
 function update(patch: Partial<ModelSlot>) {
-  emit("change", { ...props.assignment, ...patch });
+  emit("change", { ...props.assignment, ...patch, runtime: undefined });
 }
 
 function setKind(next: ModelBackend["kind"]) {

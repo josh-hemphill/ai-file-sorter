@@ -5,6 +5,7 @@ import {
   formatBytes,
   inventorySummary,
   slotBackend,
+  withPresentedRuntime,
   withSlotKind,
 } from "./models.ts";
 
@@ -75,6 +76,52 @@ test("inventorySummary does not claim heuristics when infer is stub or llama", (
     }),
     "1 assigned · 1 off",
   );
+});
+
+test("withPresentedRuntime refreshes slot runtime after download", () => {
+  const current = {
+    storage_dir: "/old",
+    gpu_preference: "auto",
+    slots: [
+      {
+        id: "categorize",
+        kind: "catalog" as const,
+        catalog_id: "gemma-3-4b-it",
+        runtime: { kind: "missing_files" as const, detail: "missing" },
+      },
+      { id: "vision", kind: "off" as const, runtime: { kind: "off" as const, detail: "off" } },
+    ],
+    artifacts: [],
+  };
+  const presented = {
+    storage_dir: "/models",
+    gpu_preference: "auto",
+    slots: [
+      {
+        id: "categorize",
+        kind: "catalog" as const,
+        catalog_id: "gemma-3-4b-it",
+        runtime: { kind: "llama" as const, detail: "llama.cpp" },
+      },
+      { id: "vision", kind: "off" as const, runtime: { kind: "off" as const, detail: "off" } },
+    ],
+    artifacts: [
+      {
+        id: "gemma-text-q4",
+        filename: "google_gemma-3-4b-it-Q4_K_M.gguf",
+        path: "/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+        expected_bytes: 1,
+        bytes_on_disk: 1,
+        present: true,
+        used_by: ["gemma-3-4b-it"],
+      },
+    ],
+  };
+  const next = withPresentedRuntime(current, presented);
+  assert.equal(next.storage_dir, "/models");
+  assert.equal(next.slots[0].runtime?.kind, "llama");
+  assert.equal(next.slots[0].kind, "catalog");
+  assert.equal(next.artifacts?.[0].present, true);
 });
 
 test("withSlotKind clears foreign fields", () => {

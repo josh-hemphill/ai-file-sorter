@@ -1255,10 +1255,18 @@ fn emit_model_runtime_notices(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<(), aifs_store::StoreError> {
+    emit_model_runtime_notices_with(store, id, emit, probe_llm_worker())
+}
+
+fn emit_model_runtime_notices_with(
+    store: &aifs_store::WorkspaceStore,
+    id: &RequestId,
+    emit: &mut impl FnMut(Envelope),
+    worker: LlmWorkerStatus,
+) -> Result<(), aifs_store::StoreError> {
     let settings = load_settings(store)?;
     let models = load_models(store)?;
     let dir = resolved_models_dir(&models.storage_dir);
-    let worker = probe_llm_worker();
     let runtime_for = |slot_id: &str| {
         models
             .slots
@@ -3301,16 +3309,31 @@ mod tests {
             stored.contains("gemma-3-4b-it"),
             "assignment must still be stored: {stored}"
         );
+        let mut reloaded =
+            Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
+        hello_ok(&mut reloaded);
+        let loaded = match terminal(reloaded.handle(Request {
+            id: "get".into(),
+            command: Command::GetModels,
+        })) {
+            Event::Models { inventory } => inventory,
+            other => panic!("unexpected {other:?}"),
+        };
+        let loaded_kind = loaded.slots[0]
+            .runtime
+            .as_ref()
+            .map(SlotRuntime::kind_id)
+            .unwrap_or("missing");
+        assert_eq!(loaded_kind, kind);
     }
 
     #[test]
     fn scan_logs_honest_stub_and_hosted_slot_status() {
-        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|error| panic!("{error}"));
         let mut engine = Engine::new();
         hello_ok(&mut engine);
         let settings = AppSettings {
             analyze_images: true,
+            analyze_documents: true,
             ..AppSettings::default()
         };
         terminal(engine.handle(Request {
@@ -3321,25 +3344,28 @@ mod tests {
         inventory.slots[0].backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };
-        inventory.slots[1].backend = ModelBackend::Catalog {
+        inventory.slots[1].backend = ModelBackend::CustomEndpoint {
+            base_url: "http://127.0.0.1:9/v1".into(),
+            model: "vision-test".into(),
+        };
+        inventory.slots[2].backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };
         terminal(engine.handle(Request {
             id: "models".into(),
             command: Command::PutModels { inventory },
         }));
-        let events = engine.handle(Request {
-            id: "scan".into(),
-            command: Command::Scan {
-                root: dir.path().to_path_buf(),
-                options: ScanOptions {
-                    extract_metadata: false,
-                    fingerprint_prefix_bytes: 32,
-                    ..ScanOptions::default()
-                },
-                session: None,
-            },
-        });
+        let stub = LlmWorkerStatus::Ready {
+            capabilities: vec!["stub".into(), "hosted".into()],
+        };
+        let mut events = Vec::new();
+        emit_model_runtime_notices_with(
+            &engine.store,
+            &"scan".into(),
+            &mut |envelope| events.push(envelope),
+            stub,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
         let logs: Vec<String> = events
             .iter()
             .filter_map(|envelope| match &envelope.event {
@@ -3349,26 +3375,24 @@ mod tests {
             .collect();
         assert!(
             logs.iter()
-                .all(|message| !message.contains("will be described")
-                    && !message.contains("will be categorized after extract")),
+                .any(|message| { message.contains("Categorize slot uses stub infer") }),
             "{logs:?}"
         );
         assert!(
             logs.iter()
-                .any(|message| message.contains("Categorize slot")
-                    && (message.contains("stub infer")
-                        || message.contains("llama.cpp")
-                        || message.contains("not installed")
-                        || message.contains("not on disk"))),
-            "categorize notice missing: {logs:?}"
+                .any(|message| message.contains("Vision slot uses hosted infer")),
+            "{logs:?}"
         );
         assert!(
-            logs.iter().any(|message| message.contains("Vision slot")
-                && (message.contains("stub infer")
-                    || message.contains("llama.cpp")
-                    || message.contains("not installed")
-                    || message.contains("not on disk"))),
-            "vision notice missing: {logs:?}"
+            logs.iter()
+                .any(|message| message.contains("Document slot uses stub infer")),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .all(|message| !message.contains("will be described")
+                    && !message.contains("will be categorized after extract")),
+            "{logs:?}"
         );
     }
 

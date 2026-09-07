@@ -148,6 +148,23 @@ export function inventorySummary(inventory: ModelInventory): string {
     .join(" · ");
 }
 
+/** Copies computed `runtime` (and disk artifacts) from an engine `models` reply. */
+export function withPresentedRuntime(
+  current: ModelInventory,
+  presented: ModelInventory,
+): ModelInventory {
+  const runtimeById = new Map(presented.slots.map((slot) => [slot.id, slot.runtime]));
+  return {
+    ...current,
+    storage_dir: presented.storage_dir || current.storage_dir,
+    artifacts: presented.artifacts ?? current.artifacts,
+    slots: current.slots.map((slot) => ({
+      ...slot,
+      runtime: runtimeById.has(slot.id) ? runtimeById.get(slot.id) : slot.runtime,
+    })),
+  };
+}
+
 /** Human size for catalog files. */
 export function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) {
