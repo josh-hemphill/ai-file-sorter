@@ -15,12 +15,12 @@ desktop app all live here (there is no nested `rust/` directory).
 make build
 make test
 make desktop
-cargo aifs -- scan fixtures/inbox-mixed
-cargo aifs -- organize fixtures/inbox-mixed
-cargo aifs -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
+cargo aifs scan fixtures/inbox-mixed
+cargo aifs organize fixtures/inbox-mixed
+cargo aifs compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
-`cargo aifs` is an alias for `cargo run -p aifs-cli --`. `make build` compiles
+`cargo aifs` is an alias for `cargo run -p aifs-cli --` (do not add a second `--`). `make build` compiles
 `aifs-engine`, `aifs`, and the four workers into `target/debug/` so discovery
 works without `$AIFS_ENGINE`.
 

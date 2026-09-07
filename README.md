@@ -28,11 +28,11 @@ and [pnpm](https://pnpm.io/) 12.
 git clone https://github.com/josh-hemphill/ai-file-sorter.git
 cd ai-file-sorter
 make build
-cargo aifs -- scan fixtures/inbox-mixed
-cargo aifs -- organize fixtures/inbox-mixed          # dry run
-cargo aifs -- organize /path/to/folder --apply
-cargo aifs -- chat fixtures/inbox-mixed "Move podcasts away from music"
-cargo aifs -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
+cargo aifs scan fixtures/inbox-mixed
+cargo aifs organize fixtures/inbox-mixed          # dry run
+cargo aifs organize /path/to/folder --apply
+cargo aifs chat fixtures/inbox-mixed "Move podcasts away from music"
+cargo aifs compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
 `make build` compiles `aifs-engine`, the `aifs` CLI, and the media / document /
