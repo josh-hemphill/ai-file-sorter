@@ -15,6 +15,10 @@ pub mod models;
 pub mod options;
 pub mod worker;
 
+pub use worker::{
+    ENGINE_PROCESS_STEM, first_process_binary, host_target_triple, process_binary_names,
+};
+
 pub use catalog::{
     ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, CATALOG_BASE_ENV, CATALOG_TEXT, CATALOG_VISION,
     CatalogArtifact, CatalogEntry, DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME,

@@ -96,7 +96,13 @@ fn ensure_client(state: &EngineState) -> Result<(), String> {
     if guard.is_some() {
         return Ok(());
     }
-    let binary = discover_engine_binary().map_err(|error| error.to_string())?;
+    let binary = discover_engine_binary().map_err(|error| {
+        if cfg!(debug_assertions) {
+            error.to_string()
+        } else {
+            format!("aifs-engine sidecar is missing from this bundle ({error})")
+        }
+    })?;
     let client =
         EngineClient::connect(binary, "aifs-desktop").map_err(|error| error.to_string())?;
     *guard = Some(Arc::new(client));
@@ -455,4 +461,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundle_embeds_engine_workers_and_sets_csp() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            !conf["app"]["security"]["csp"].is_null(),
+            "csp must not be null"
+        );
+        let csp = &conf["app"]["security"]["csp"];
+        assert!(csp.is_object() || csp.is_string(), "{csp}");
+        if let Some(default_src) = csp.get("default-src").and_then(|value| value.as_str()) {
+            assert!(default_src.contains("'self'"), "{default_src}");
+        }
+        let bins = conf["bundle"]["externalBin"]
+            .as_array()
+            .unwrap_or_else(|| panic!("externalBin"));
+        for name in [
+            "binaries/aifs-engine",
+            "binaries/aifs-worker-media",
+            "binaries/aifs-worker-document",
+            "binaries/aifs-worker-vision",
+            "binaries/aifs-worker-llm",
+        ] {
+            assert!(
+                bins.iter().any(|value| value.as_str() == Some(name)),
+                "missing {name} in {bins:?}"
+            );
+        }
+    }
 }

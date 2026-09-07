@@ -59,6 +59,7 @@ pnpm tauri dev
 ```
 
 If the engine binary is not next to the desktop executable, set `AIFS_ENGINE`.
+Packaged desktop builds embed the engine and workers as Tauri sidecars.
 
 ```bash
 make check          # fmt --check, clippy, cargo test

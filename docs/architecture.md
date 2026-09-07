@@ -24,7 +24,10 @@ Rules:
 - The UI process never opens user files, SQLite, or model runtimes. It only talks to the
   engine over the protocol in `crates/aifs-protocol`.
 - The Tauri shell launches a fixed engine binary with scoped capabilities. Release builds
-  fail loudly if the engine is missing; there is no in-process fallback.
+  fail loudly if the engine is missing; there is no in-process fallback. Packaged apps
+  embed `aifs-engine` and the four workers as Tauri `externalBin` sidecars (named
+  `{stem}-{target-triple}` next to the app). The WebView CSP is a non-null allow-list
+  (`default-src 'self'` plus Tauri IPC); the UI does not spawn binaries.
 - Only the engine writes the store. Workers return evidence/artefacts and never mutate
   files or the database.
 - Native, crash-prone libraries live in disposable worker processes so a bad file cannot

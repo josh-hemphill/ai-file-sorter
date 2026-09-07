@@ -21,5 +21,8 @@ pnpm test
 pnpm tauri dev
 ```
 
-`tauri dev` also builds the engine and workers via `beforeDevCommand`. If the
-engine binary is not next to the desktop executable, set `AIFS_ENGINE`.
+`tauri dev` also builds the engine and workers via `beforeDevCommand`. Packaged
+builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
+embed them as `externalBin` sidecars. If the engine binary is not next to the
+desktop executable, set `AIFS_ENGINE`. Discovery also accepts the Tauri sidecar
+filename (`aifs-engine-{target-triple}`).
