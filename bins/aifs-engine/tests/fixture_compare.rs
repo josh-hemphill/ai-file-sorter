@@ -48,7 +48,10 @@ fn inbox_mixed_proposal_matches_golden_destinations() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
 
-    let client = EngineClient::connect(engine, "fixture-compare").unwrap_or_else(|e| panic!("{e}"));
+    let store_dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let store = store_dir.path().join("engine.sqlite");
+    let client = EngineClient::connect_with_store(engine, "fixture-compare", &store)
+        .unwrap_or_else(|e| panic!("{e}"));
     let snapshot = client
         .scan(dir.path(), ScanOptions::default(), None)
         .unwrap_or_else(|e| panic!("{e}"));

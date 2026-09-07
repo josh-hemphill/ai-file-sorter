@@ -155,6 +155,25 @@ impl EngineClient {
         Ok(client)
     }
 
+    /// Like [`Self::spawn`], pointing the engine at `store` via `AIFS_STORE`.
+    pub fn spawn_with_store(
+        binary: impl AsRef<Path>,
+        store: impl AsRef<Path>,
+    ) -> Result<Self, ClientError> {
+        Self::spawn_process(binary, Some(store.as_ref()))
+    }
+
+    /// Like [`Self::connect`], pointing the engine at `store` via `AIFS_STORE`.
+    pub fn connect_with_store(
+        binary: impl AsRef<Path>,
+        client_name: &str,
+        store: impl AsRef<Path>,
+    ) -> Result<Self, ClientError> {
+        let client = Self::spawn_with_store(binary, store)?;
+        client.hello(client_name)?;
+        Ok(client)
+    }
+
     /// Looks up the engine binary and connects.
     pub fn connect_default(client_name: &str) -> Result<Self, ClientError> {
         Self::connect(discover_engine_binary()?, client_name)
@@ -792,9 +811,8 @@ mod tests {
     fn isolated_client(name: &str) -> (tempfile::TempDir, EngineClient) {
         let store_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let store = store_dir.path().join("engine.sqlite");
-        let client = EngineClient::spawn_process(engine_bin(), Some(&store))
+        let client = EngineClient::connect_with_store(engine_bin(), name, &store)
             .unwrap_or_else(|error| panic!("{error}"));
-        client.hello(name).unwrap_or_else(|error| panic!("{error}"));
         (store_dir, client)
     }
 
@@ -821,7 +839,7 @@ mod tests {
         fs::write(root.path().join("note.txt"), b"hi").unwrap_or_else(|error| panic!("{error}"));
         let store_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let store = store_dir.path().join("engine.sqlite");
-        let client = EngineClient::spawn_process(engine_bin(), Some(&store))
+        let client = EngineClient::spawn_with_store(engine_bin(), &store)
             .unwrap_or_else(|error| panic!("{error}"));
         let error = match client.scan(root.path(), scan_options(), None) {
             Err(error) => error,
@@ -853,12 +871,13 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
         });
-        let error = match client.scan(root.path(), scan_options(), None) {
+        let result = client.scan(root.path(), scan_options(), None);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = canceller_thread.join();
+        let error = match result {
             Err(error) => error,
             Ok(_) => panic!("cancelled scan must fail"),
         };
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = canceller_thread.join();
         assert!(
             matches!(error, ClientError::Cancelled),
             "expected Cancelled, got {error}"
