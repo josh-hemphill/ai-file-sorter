@@ -44,10 +44,12 @@ version = "0.1.0"
 dependencies = [
  "aifs-domain",
  "aifs-engine-client",
+ "aifs-extractors",
  "aifs-planner",
  "aifs-protocol",
  "clap",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -115,6 +117,7 @@ version = "0.1.0"
 dependencies = [
  "aifs-domain",
  "aifs-protocol",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 

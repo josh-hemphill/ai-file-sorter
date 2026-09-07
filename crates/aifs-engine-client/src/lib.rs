@@ -655,7 +655,19 @@ fn command_mutates_disk(command: &Command) -> bool {
 /// executable (plain name or Tauri `{stem}-{target-triple}` sidecar), then
 /// well-known Cargo target directories.
 pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
-    if let Ok(explicit) = std::env::var("AIFS_ENGINE") {
+    discover_engine_binary_from(
+        std::env::var("AIFS_ENGINE").ok(),
+        std::env::current_exe().ok(),
+        std::env::var("CARGO_MANIFEST_DIR").ok(),
+    )
+}
+
+fn discover_engine_binary_from(
+    explicit: Option<String>,
+    current_exe: Option<PathBuf>,
+    manifest_dir: Option<String>,
+) -> Result<PathBuf, ClientError> {
+    if let Some(explicit) = explicit {
         let path = PathBuf::from(explicit);
         if path.exists() {
             return Ok(path);
@@ -663,14 +675,14 @@ pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
         return Err(ClientError::EngineNotFound(path.display().to_string()));
     }
 
-    if let Ok(exe) = std::env::current_exe()
+    if let Some(exe) = current_exe
         && let Some(dir) = exe.parent()
         && let Some(sibling) = first_process_binary(dir, ENGINE_PROCESS_STEM)
     {
         return Ok(sibling);
     }
 
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+    if let Some(manifest) = manifest_dir {
         let mut dir = PathBuf::from(manifest);
         for _ in 0..6 {
             for profile in ["debug", "release"] {
@@ -692,4 +704,59 @@ pub fn discover_engine_binary() -> Result<PathBuf, ClientError> {
     Err(ClientError::EngineNotFound(
         "set AIFS_ENGINE or install aifs-engine next to this binary".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aifs_protocol::target_triple;
+    use std::fs;
+    use std::time::Duration;
+
+    #[test]
+    fn idle_timeout_outlasts_worker_infer() {
+        assert_eq!(IDLE_TIMEOUT, Duration::from_secs(180));
+        assert!(IDLE_TIMEOUT > Duration::from_secs(120));
+    }
+
+    #[test]
+    fn discover_uses_explicit_path_when_the_file_exists() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let engine = dir.path().join("custom-engine");
+        fs::write(&engine, b"").unwrap_or_else(|error| panic!("{error}"));
+        let found = discover_engine_binary_from(Some(engine.display().to_string()), None, None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(found, engine);
+    }
+
+    #[test]
+    fn discover_explicit_missing_path_is_not_found() {
+        let error = match discover_engine_binary_from(
+            Some("/no/such/aifs-engine".to_owned()),
+            None,
+            None,
+        ) {
+            Err(error) => error,
+            Ok(path) => panic!("missing explicit path must fail, got {}", path.display()),
+        };
+        assert!(
+            matches!(error, ClientError::EngineNotFound(ref path) if path.contains("aifs-engine")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn discover_sibling_prefers_plain_name_over_sidecar() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
+        let sidecar = dir.path().join(format!("{ENGINE_PROCESS_STEM}-{triple}"));
+        let plain = dir.path().join(ENGINE_PROCESS_STEM);
+        fs::write(&sidecar, b"").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&plain, b"").unwrap_or_else(|error| panic!("{error}"));
+        let exe = dir.path().join("aifs");
+        fs::write(&exe, b"").unwrap_or_else(|error| panic!("{error}"));
+        let found = discover_engine_binary_from(None, Some(exe), None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(found, plain);
+    }
 }
