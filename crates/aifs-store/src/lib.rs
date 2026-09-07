@@ -100,7 +100,8 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Writes snapshot JSON for `session` without validating it.
+    /// Writes snapshot JSON for `session` without validating it (corrupt-row tests).
+    #[doc(hidden)]
     pub fn put_snapshot_json(&self, session: SessionId, json: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO snapshots(session, captured_at, json) VALUES (?1, 0, ?2)

@@ -486,11 +486,6 @@ impl Engine {
             }
         };
 
-        if self.should_stop(id) {
-            emit(Envelope::reply(id, Event::Cancelled));
-            return;
-        }
-
         emit_progress(
             emit,
             id,
@@ -523,14 +518,12 @@ impl Engine {
         if let Some(prior) = resume {
             checkpoint::carry_evidence(&mut snapshot, &prior);
             let extracted = checkpoint::extract_done_count(&snapshot);
-            if extracted > 0 {
-                emit_log(
-                    emit,
-                    id,
-                    LogLevel::Info,
-                    format!("Resuming session; {extracted} files already have metadata."),
-                );
-            }
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                format!("Resuming session; {extracted} files already have metadata."),
+            );
         }
 
         if self.should_stop(id) {
@@ -1670,30 +1663,19 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
         });
+        engine.request_cancel("2".into());
         let session = SessionId::new();
-        let gate = engine.cancel_gate();
-        let mut events = Vec::new();
-        engine.handle_with(
-            Request {
-                id: "2".into(),
-                command: Command::Scan {
-                    root: dir.path().to_path_buf(),
-                    options: ScanOptions {
-                        extract_metadata: false,
-                        ..ScanOptions::default()
-                    },
-                    session: Some(session),
+        let events = engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    ..ScanOptions::default()
                 },
+                session: Some(session),
             },
-            &mut |envelope| {
-                if let Event::Progress { stage, .. } = &envelope.event
-                    && stage == "scan"
-                {
-                    gate.request_cancel("2".into());
-                }
-                events.push(envelope);
-            },
-        );
+        });
         assert!(
             events
                 .iter()
@@ -1764,6 +1746,69 @@ mod tests {
         let checkpoint = engine
             .stored_snapshot(session)
             .unwrap_or_else(|| panic!("cancel after walk should persist the tree"));
+        assert!(
+            checkpoint
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt"),
+            "checkpoint entries={:?}",
+            checkpoint.entries
+        );
+    }
+
+    #[test]
+    fn cancel_after_finished_walk_persists_checkpoint() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, message, .. } = &envelope.event
+                    && stage == "scan"
+                    && message == "walk complete"
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "must not complete a snapshot"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("cancel after a finished walk should persist the tree"));
         assert!(
             checkpoint
                 .entries
@@ -1890,9 +1935,121 @@ mod tests {
             .iter()
             .filter(|bag| bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive"))
             .count();
+        assert_eq!(
+            tagged, 12,
+            "resume should skip files that already have tags, tagged={tagged} evidence={:?}",
+            snapshot.evidence
+        );
+        for entry in snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == aifs_domain::EntryKind::File)
+        {
+            let extract_bags = snapshot
+                .evidence
+                .iter()
+                .filter(|bag| {
+                    bag.asset == entry.id
+                        && matches!(
+                            bag.source,
+                            aifs_domain::EvidenceSource::MediaTags
+                                | aifs_domain::EvidenceSource::Exif
+                                | aifs_domain::EvidenceSource::DocumentMetadata
+                        )
+                })
+                .count();
+            assert_eq!(
+                extract_bags,
+                1,
+                "resume must not re-extract {} (bags={extract_bags})",
+                entry.path.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_root_does_not_carry_prior_evidence() {
+        let media = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        aifs_extractors::write_id3v23_fixture(
+            &media.path().join("show.mp3"),
+            "Night Drive",
+            "Ada",
+            "After Hours",
+            "2019",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let other = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::copy(media.path().join("show.mp3"), other.path().join("show.mp3"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: media.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => {
+                assert!(snapshot.evidence.iter().any(|bag| {
+                    bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive")
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: other.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        });
         assert!(
-            tagged >= 12,
-            "resume should extract remaining files, tagged={tagged} evidence={:?}",
+            events.iter().all(|envelope| match &envelope.event {
+                Event::Log { message, .. } => !message.contains("Resuming session"),
+                _ => true,
+            }),
+            "mismatched root must not resume, events={events:?}"
+        );
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(snapshot.session, session);
+        assert!(
+            checkpoint::roots_match(&snapshot.root, other.path()),
+            "expected other root {:?}, got {:?}",
+            other.path(),
+            snapshot.root
+        );
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "show.mp3")
+        );
+        assert!(
+            snapshot.evidence.iter().all(|bag| {
+                bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) != Some("Night Drive")
+            }),
+            "must not carry evidence from a different root, evidence={:?}",
             snapshot.evidence
         );
     }
