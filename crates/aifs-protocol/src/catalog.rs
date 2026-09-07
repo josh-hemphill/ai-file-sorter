@@ -340,10 +340,11 @@ mod tests {
 
     #[test]
     fn tiny_fixture_is_present_but_not_downloaded_until_hash_matches() {
+        let _lock = ArtifactSha256Guard::pin(&[]);
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let path = artifact_path(dir.path(), GEMMA_TEXT_FILENAME);
         assert!(!artifact_is_present(&path));
-        fs::write(&path, b"gguf").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&path, b"junk-not-a-gguf").unwrap_or_else(|error| panic!("{error}"));
         assert!(artifact_is_present(&path));
         assert!(!artifact_is_verified(&path, GEMMA_TEXT_SHA256));
         assert!(!catalog_id_is_downloaded(dir.path(), "gemma-3-4b-it"));
