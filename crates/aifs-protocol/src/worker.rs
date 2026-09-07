@@ -85,8 +85,8 @@ impl WorkerKind {
 /// Engine stdio binary stem (no target-triple suffix).
 pub const ENGINE_PROCESS_STEM: &str = "aifs-engine";
 
-/// Compile-time rustc target triple, when the build script set it.
-pub fn host_target_triple() -> Option<&'static str> {
+/// Compile-time rustc `TARGET` triple, when the build script set it.
+pub fn target_triple() -> Option<&'static str> {
     option_env!("AIFS_TARGET_TRIPLE")
 }
 
@@ -102,7 +102,7 @@ pub fn process_binary_names(stem: &str, target_triple: Option<&str>) -> Vec<Stri
 
 /// First existing process binary for `stem` in `dir` (plain name, then sidecar suffix).
 pub fn first_process_binary(dir: &Path, stem: &str) -> Option<PathBuf> {
-    process_binary_names(stem, host_target_triple())
+    process_binary_names(stem, target_triple())
         .into_iter()
         .map(|name| dir.join(name))
         .find(|path| path.is_file())
@@ -378,22 +378,19 @@ mod tests {
             ]
         );
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let sidecar = dir.path().join("aifs-worker-llm-aarch64-apple-darwin");
+        let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
+        let sidecar = dir.path().join(format!("aifs-worker-llm-{triple}"));
         std::fs::write(&sidecar, b"").unwrap_or_else(|error| panic!("{error}"));
-        let found = process_binary_names("aifs-worker-llm", Some("aarch64-apple-darwin"))
-            .into_iter()
-            .map(|name| dir.path().join(name))
-            .find(|path| path.is_file())
-            .unwrap_or_else(|| panic!("sidecar"));
-        assert_eq!(found, sidecar);
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            Some(sidecar.as_path())
+        );
         let plain = dir.path().join("aifs-worker-llm");
         std::fs::write(&plain, b"").unwrap_or_else(|error| panic!("{error}"));
-        let preferred = process_binary_names("aifs-worker-llm", Some("aarch64-apple-darwin"))
-            .into_iter()
-            .map(|name| dir.path().join(name))
-            .find(|path| path.is_file())
-            .unwrap_or_else(|| panic!("plain"));
-        assert_eq!(preferred, plain);
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            Some(plain.as_path())
+        );
     }
 
     fn load_command(api_key: Option<RedactedString>) -> WorkerCommand {

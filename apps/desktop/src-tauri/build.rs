@@ -19,6 +19,9 @@ fn main() {
 }
 
 /// Copies `target/{profile}/{stem}` to `binaries/{stem}-{triple}`.
+///
+/// Debug builds write empty placeholders when the real binaries are missing so
+/// `tauri_build` can compile `aifs-desktop` during clippy/test. Release panics.
 fn copy_sidecars() {
     let triple = env::var("TARGET").unwrap_or_default();
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());

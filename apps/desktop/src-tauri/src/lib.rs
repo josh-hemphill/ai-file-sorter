@@ -473,10 +473,35 @@ mod tests {
             !conf["app"]["security"]["csp"].is_null(),
             "csp must not be null"
         );
-        let csp = &conf["app"]["security"]["csp"];
-        assert!(csp.is_object() || csp.is_string(), "{csp}");
-        if let Some(default_src) = csp.get("default-src").and_then(|value| value.as_str()) {
-            assert!(default_src.contains("'self'"), "{default_src}");
+        let csp = conf["app"]["security"]["csp"]
+            .as_object()
+            .unwrap_or_else(|| panic!("csp must be an object allow-list"));
+        for key in [
+            "default-src",
+            "connect-src",
+            "img-src",
+            "style-src",
+            "script-src",
+        ] {
+            let value = csp
+                .get(key)
+                .and_then(|item| item.as_str())
+                .unwrap_or_else(|| panic!("csp.{key}"));
+            match key {
+                "default-src" | "script-src" => {
+                    assert!(value.contains("'self'"), "{key}={value}");
+                }
+                "connect-src" => {
+                    assert!(value.contains("ipc:"), "{key}={value}");
+                }
+                "img-src" => {
+                    assert!(value.contains("'self'"), "{key}={value}");
+                }
+                "style-src" => {
+                    assert!(value.contains("'self'"), "{key}={value}");
+                }
+                _ => {}
+            }
         }
         let bins = conf["bundle"]["externalBin"]
             .as_array()
