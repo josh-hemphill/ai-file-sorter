@@ -3261,8 +3261,10 @@ mod tests {
             Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
         hello_ok(&mut engine);
         let models_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let mut inventory = ModelInventory::default();
-        inventory.storage_dir = models_dir.path().display().to_string();
+        let mut inventory = ModelInventory {
+            storage_dir: models_dir.path().display().to_string(),
+            ..ModelInventory::default()
+        };
         inventory.slots[0].backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };
@@ -3307,8 +3309,10 @@ mod tests {
         fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|error| panic!("{error}"));
         let mut engine = Engine::new();
         hello_ok(&mut engine);
-        let mut settings = AppSettings::default();
-        settings.analyze_images = true;
+        let settings = AppSettings {
+            analyze_images: true,
+            ..AppSettings::default()
+        };
         terminal(engine.handle(Request {
             id: "settings".into(),
             command: Command::PutSettings { settings },

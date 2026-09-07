@@ -1,4 +1,4 @@
-import type { ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot, SlotRuntime } from "./types";
+import type { ModelArtifactStatus, ModelBackend, ModelInventory, ModelSlot } from "./types";
 
 export const MODEL_SLOT_META = [
   {
@@ -100,14 +100,15 @@ export function withSlotKind(slot: ModelSlot, kind: ModelBackend["kind"]): Model
   };
 }
 
-const RUNTIME_SUMMARY_ORDER: SlotRuntime["kind"][] = [
+const RUNTIME_SUMMARY_ORDER = [
   "llama",
   "hosted",
   "stub",
   "missing_worker",
   "missing_files",
+  "assigned",
   "off",
-];
+] as const;
 
 function runtimeKindLabel(kind: string): string {
   switch (kind) {
@@ -140,7 +141,7 @@ export function inventorySummary(inventory: ModelInventory): string {
   if (total === 0 || (counts.get("off") ?? 0) === total) {
     return "All analysis slots off";
   }
-  const order = [...RUNTIME_SUMMARY_ORDER, "assigned"];
+  const order = RUNTIME_SUMMARY_ORDER;
   return order
     .filter((kind) => (counts.get(kind) ?? 0) > 0)
     .map((kind) => `${counts.get(kind) ?? 0} ${runtimeKindLabel(kind)}`)
