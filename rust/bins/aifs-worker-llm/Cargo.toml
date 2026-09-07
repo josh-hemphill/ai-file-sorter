@@ -26,6 +26,7 @@ aifs-protocol = { workspace = true }
 aifs-worker-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ureq = { workspace = true }
 llama-cpp-2 = { version = "0.1.154", optional = true }
 encoding_rs = { version = "0.8", optional = true }
 

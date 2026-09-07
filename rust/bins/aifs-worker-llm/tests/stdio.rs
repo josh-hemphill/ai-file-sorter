@@ -29,6 +29,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     let mut client =
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
     assert!(client.capabilities().iter().any(|cap| cap == "stub"));
+    assert!(client.capabilities().iter().any(|cap| cap == "hosted"));
     assert!(client.capabilities().iter().any(|cap| cap == "load"));
     assert!(client.capabilities().iter().any(|cap| cap == "unload"));
     let loaded = client
@@ -119,12 +120,12 @@ fn llama_worker_refuses_missing_gguf() {
 }
 
 #[test]
-fn hosted_backend_still_stubs_infer() {
+fn openai_load_requires_a_key() {
     let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let mut client =
         WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
-    let loaded = client
+    let error = client
         .load(
             ModelBackend::OpenAi {
                 model: "gpt-4.1-mini".into(),
@@ -134,19 +135,67 @@ fn hosted_backend_still_stubs_infer() {
             None,
             dir.path().display().to_string(),
         )
+        .err()
+        .unwrap_or_else(|| panic!("OpenAI load without a key must fail"));
+    assert!(error.to_string().contains("API key"), "{error}");
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn hosted_custom_endpoint_categorizes_as_remote_model() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let body = r#"{"choices":[{"message":{"content":"{\"category\":\"Documents\",\"description\":\"a memo\"}"}}]}"#;
+    let (base, server) = serve_json("200 OK", body);
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    client
+        .load(
+            ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(loaded.model, "openai:gpt-4.1-mini");
-    assert_eq!(loaded.device, "cpu");
     let entry = file_entry("notes.txt", FileFamily::Document);
     let evidence = client
         .categorize(dir.path(), &entry, vec![])
         .unwrap_or_else(|error| panic!("{error}"))
         .unwrap_or_else(|| panic!("categorize evidence"));
+    assert!(matches!(
+        evidence.source,
+        aifs_domain::EvidenceSource::RemoteModel { .. }
+    ));
     assert_eq!(
         evidence.fact(aifs_domain::evidence::keys::CATEGORY),
         Some("Documents")
     );
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+    let _ = server.join();
+}
+
+fn serve_json(status: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
+        let mut buf = [0_u8; 8192];
+        let _ = stream.read(&mut buf);
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+    });
+    (format!("http://{addr}/v1"), handle)
 }
 
 #[test]

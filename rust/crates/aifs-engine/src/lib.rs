@@ -7,6 +7,7 @@
 mod analyze;
 mod download;
 mod extract;
+mod hosted;
 
 use aifs_ai_tools::{MOCK_ASSISTANT_MODEL, execute, interpret};
 use aifs_apply::{ApplyHook, apply_plan_with_hooks, undo_journal_with_hooks};
@@ -15,13 +16,16 @@ use aifs_domain::{
     WorkspaceSnapshot,
 };
 use aifs_planner::{propose, validate};
+use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
     AppSettings, Command, Envelope, ErrorCode, Event, LogLevel, ModelBackend, ModelInventory,
     PROTOCOL_VERSION, ProposalPolicy, Request, RequestId, ScanOptions, decode_line, encode_line,
+    hosted_model_label, is_hosted_backend,
 };
 use aifs_relationships::enrich;
 use aifs_scanner::{ScanError, scan};
 use aifs_store::WorkspaceStore;
+use aifs_worker_client::WorkerClient;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -293,11 +297,22 @@ impl Engine {
         if let Some(failed) = self.require_hello(id) {
             return failed;
         }
-        let _ = api_key;
-        let storage = load_models(&self.store)
-            .ok()
-            .map(|inventory| resolved_models_dir(&inventory.storage_dir));
+        let inventory = load_models(&self.store).ok();
+        let storage = inventory
+            .as_ref()
+            .map(|loaded| resolved_models_dir(&loaded.storage_dir));
         let (ok, message) = aifs_protocol::probe_backend_at(&backend, storage.as_deref());
+        if !ok || !is_hosted_backend(&backend) {
+            return Envelope::reply(id, Event::EndpointProbed { ok, message });
+        }
+        let key = api_key
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                inventory
+                    .as_ref()
+                    .and_then(|loaded| stored_api_key_for(loaded, &backend))
+            });
+        let (ok, message) = hosted::probe_hosted(&backend, key.as_deref());
         Envelope::reply(id, Event::EndpointProbed { ok, message })
     }
 
@@ -748,19 +763,25 @@ impl Engine {
             )];
         }
         let output = execute(&snapshot, &base, &interpret(trimmed));
+        let inventory = load_models(&self.store).unwrap_or_default();
+        let (message, model_id) = assistant_chat(
+            &inventory,
+            trimmed,
+            &snapshot,
+            &base,
+            output.message.clone(),
+        );
         if output.patches.is_empty() {
             return vec![Envelope::reply(
                 id,
                 Event::ChatReply {
-                    message: output.message,
+                    message,
                     revision: None,
                 },
             )];
         }
         match base.with_patches(
-            RevisionAuthor::Assistant {
-                model: MOCK_ASSISTANT_MODEL.to_owned(),
-            },
+            RevisionAuthor::Assistant { model: model_id },
             trimmed,
             &output.patches,
         ) {
@@ -771,7 +792,7 @@ impl Engine {
                 vec![Envelope::reply(
                     id,
                     Event::ChatReply {
-                        message: output.message,
+                        message,
                         revision: Some(revision),
                     },
                 )]
@@ -805,6 +826,78 @@ impl Engine {
     fn snapshot_or_fail(&self, _id: &RequestId, session: SessionId) -> Option<WorkspaceSnapshot> {
         self.store.get_snapshot(session).ok().flatten()
     }
+}
+
+fn stored_api_key_for(inventory: &ModelInventory, backend: &ModelBackend) -> Option<String> {
+    inventory
+        .slots
+        .iter()
+        .find(|slot| &slot.backend == backend)
+        .and_then(|slot| slot.api_key.clone())
+        .filter(|key| !key.trim().is_empty())
+}
+
+fn assistant_chat(
+    inventory: &ModelInventory,
+    utterance: &str,
+    snapshot: &WorkspaceSnapshot,
+    revision: &aifs_domain::ProposalRevision,
+    tools_message: String,
+) -> (String, String) {
+    let Some(slot) = inventory
+        .slots
+        .iter()
+        .find(|slot| slot.id == "chat" && !matches!(slot.backend, ModelBackend::Off))
+    else {
+        return (tools_message, MOCK_ASSISTANT_MODEL.to_owned());
+    };
+    match chat_via_worker(slot, inventory, utterance, snapshot, revision) {
+        Ok(text) if !text.trim().is_empty() => (text, slot_model_id(&slot.backend)),
+        Ok(_) => (tools_message, MOCK_ASSISTANT_MODEL.to_owned()),
+        Err(error) => (
+            format!("{tools_message}\n(Chat model skipped: {error})"),
+            MOCK_ASSISTANT_MODEL.to_owned(),
+        ),
+    }
+}
+
+fn slot_model_id(backend: &ModelBackend) -> String {
+    match backend {
+        ModelBackend::Catalog { catalog_id } => catalog_id.clone(),
+        ModelBackend::LocalGguf { path, .. } => path.clone(),
+        _ => hosted_model_label(backend),
+    }
+}
+
+fn chat_via_worker(
+    slot: &aifs_protocol::ModelSlot,
+    inventory: &ModelInventory,
+    utterance: &str,
+    snapshot: &WorkspaceSnapshot,
+    revision: &aifs_domain::ProposalRevision,
+) -> Result<String, String> {
+    let mut llm = WorkerClient::try_connect(WorkerKind::Llm)
+        .ok_or_else(|| "LLM worker is not installed".to_owned())?;
+    let context = format!(
+        "entries={} placements={}",
+        snapshot.entries.len(),
+        revision.placements.len()
+    );
+    let result = (|| {
+        llm.load(
+            slot.backend.clone(),
+            inventory.gpu_preference.clone(),
+            None,
+            slot.api_key.clone(),
+            inventory.storage_dir.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        llm.chat(utterance, context)
+            .map_err(|error| error.to_string())
+    })();
+    let _ = llm.unload();
+    let _ = llm.shutdown();
+    result
 }
 
 fn scan_error_event(id: &RequestId, error: ScanError) -> Envelope {
@@ -1708,6 +1801,133 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    fn spawn_http(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap_or_else(|error| panic!("{error}"));
+            let mut buf = [0_u8; 8192];
+            let _ = stream.read(&mut buf);
+            let request = String::from_utf8_lossy(&buf);
+            let request_line = request.lines().next().unwrap_or("");
+            assert!(
+                !request_line.contains("sk-secret"),
+                "probe URL leaked the API key: {request_line}"
+            );
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (format!("http://{addr}/v1"), handle)
+    }
+
+    #[test]
+    fn probe_custom_endpoint_hits_http() {
+        let (base, server) = spawn_http("200 OK", r#"{"id":"ok"}"#);
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::ProbeEndpoint {
+                backend: ModelBackend::CustomEndpoint {
+                    base_url: base,
+                    model: "local-test".into(),
+                },
+                api_key: Some("sk-secret".into()),
+            },
+        })) {
+            Event::EndpointProbed { ok, message } => {
+                assert!(ok, "{message}");
+                assert!(!message.contains("sk-secret"), "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let _ = server.join();
+    }
+
+    #[test]
+    fn chat_uses_hosted_slot_and_still_emits_patches() {
+        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
+            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let body = r#"{"choices":[{"message":{"content":"Grouping audio into Podcasts."}}]}"#;
+        let (base, server) = spawn_http("200 OK", body);
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("show.mp3"), b"id3").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let mut inventory = ModelInventory::default();
+        if let Some(slot) = inventory.slots.iter_mut().find(|slot| slot.id == "chat") {
+            slot.backend = ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            };
+        }
+        engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels { inventory },
+        });
+        let snapshot = match terminal(engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let revision = match terminal(engine.handle(Request {
+            id: "4".into(),
+            command: Command::Propose {
+                session: snapshot.session,
+                policy: ProposalPolicy::default(),
+            },
+        })) {
+            Event::Revision { revision } => revision,
+            other => panic!("unexpected {other:?}"),
+        };
+        let (message, next) = match terminal(engine.handle(Request {
+            id: "5".into(),
+            command: Command::Chat {
+                session: snapshot.session,
+                revision: revision.id,
+                utterance: "Move podcasts away from music, but keep seasons shallow.".into(),
+            },
+        })) {
+            Event::ChatReply { message, revision } => (message, revision),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(message.contains("Podcasts"), "{message}");
+        let next = next.unwrap_or_else(|| panic!("expected child revision"));
+        assert_eq!(next.parent, Some(revision.id));
+        let _ = server.join();
     }
 
     #[test]
