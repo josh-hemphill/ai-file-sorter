@@ -8,7 +8,7 @@ use aifs_domain::{
     AssetId, BundleConstraint, EntryKind, FileFamily, ObservedEntry, Operation, OperationPlan,
     Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation, ProposalRevision,
     RelativePath, RelativePathError, ReviewState, RevisionAuthor, SuggestionOrigin, Timestamp,
-    WorkspaceSnapshot, evidence::keys,
+    WorkspaceSnapshot, category_date_suffix, evidence::keys,
 };
 use aifs_protocol::{CategoryWhitelist, FolderStyle, ProposalPolicy};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -161,6 +161,14 @@ fn folder_for(
         && matches!(entry.family, FileFamily::Audio | FileFamily::Video)
     {
         folder = format!("{folder}/{}", sanitize_segment(&artist, "Unknown"));
+    }
+    if policy.use_subfolders
+        && let Some(date) = category_date_suffix(
+            entry,
+            evidence_text(snapshot, entry.id, keys::IMAGE_CAPTURED_ON).as_deref(),
+        )
+    {
+        folder = format!("{folder}/{}", sanitize_segment(&date, "Unknown"));
     }
     folder = apply_category_whitelist(folder, entry.family, &policy.whitelist);
     if folder.is_empty() {
@@ -846,6 +854,52 @@ mod tests {
             placement.destination.as_str(),
             "Music/Ada/Ada - Night Drive.mp3"
         );
+    }
+
+    #[test]
+    fn image_exif_date_becomes_a_subfolder_when_enabled() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("shot.jpg", FileFamily::Image);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(id, EvidenceSource::Exif, Confidence::CERTAIN)
+                .with_fact(keys::IMAGE_CAPTURED_ON, "2021-07-15"),
+        );
+        snapshot.entries.push(entry);
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(
+            placement.destination.as_str(),
+            "Pictures/2021-07-15/shot.jpg"
+        );
+
+        let no_subs = ProposalPolicy {
+            use_subfolders: false,
+            ..ProposalPolicy::default()
+        };
+        let revision = propose(&snapshot, &no_subs);
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Pictures/shot.jpg");
+    }
+
+    #[test]
+    fn document_modified_month_becomes_a_subfolder_when_enabled() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let mut entry = file("note.txt", FileFamily::Document);
+        entry.identity.modified = Some(Timestamp(1_626_307_200_000));
+        let id = entry.id;
+        snapshot.entries.push(entry);
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Documents/2021-07/note.txt");
+
+        let no_subs = ProposalPolicy {
+            use_subfolders: false,
+            ..ProposalPolicy::default()
+        };
+        let revision = propose(&snapshot, &no_subs);
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Documents/note.txt");
     }
 
     #[test]

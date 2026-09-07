@@ -3,7 +3,7 @@
 use crate::evidence::{Evidence, keys};
 use crate::ids::AssetId;
 use crate::path::RelativePath;
-use crate::time::Timestamp;
+use crate::time::{Timestamp, parse_iso_date, parse_iso_year_month, utc_year_month_label};
 use serde::{Deserialize, Serialize};
 
 /// Kind of filesystem node that was observed.
@@ -104,6 +104,42 @@ impl FileFamily {
             Self::Executable => "Installers",
             Self::Data | Self::Sidecar | Self::Generic => "Other",
         }
+    }
+
+    /// True for office, text, and ebook families that use the document analysis slot.
+    pub fn is_document_like(self) -> bool {
+        matches!(
+            self,
+            Self::Document | Self::Spreadsheet | Self::Presentation | Self::Ebook
+        )
+    }
+}
+
+/// Date folder segment: images `YYYY-MM-DD` from EXIF, documents `YYYY-MM`.
+pub fn category_date_suffix(entry: &ObservedEntry, captured_on: Option<&str>) -> Option<String> {
+    match entry.family {
+        FileFamily::Image | FileFamily::RawImage => {
+            let value = captured_on?;
+            parse_iso_date(value).map(|_| value.to_owned())
+        }
+        FileFamily::Document
+        | FileFamily::Spreadsheet
+        | FileFamily::Presentation
+        | FileFamily::Ebook => {
+            if let Some(value) = captured_on {
+                if parse_iso_date(value).is_some() {
+                    return Some(value[..7].to_owned());
+                }
+                if parse_iso_year_month(value).is_some() {
+                    return Some(value.to_owned());
+                }
+            }
+            entry
+                .identity
+                .modified
+                .and_then(|stamp| utc_year_month_label(stamp.as_millis()))
+        }
+        _ => None,
     }
 }
 
@@ -236,6 +272,9 @@ mod tests {
         assert_eq!(FileFamily::from_extension("srt"), FileFamily::Subtitle);
         assert_eq!(FileFamily::from_extension("weird"), FileFamily::Generic);
         assert_eq!(FileFamily::Audio.default_folder(), "Music");
+        assert!(FileFamily::Document.is_document_like());
+        assert!(FileFamily::Ebook.is_document_like());
+        assert!(!FileFamily::Image.is_document_like());
     }
 
     #[test]
@@ -318,5 +357,49 @@ mod tests {
         .with_fact(keys::DESCRIPTION, "a settings panel UI capture");
         assert!(looks_like_screenshot(&shot, &[bag]));
         assert!(!looks_like_screenshot(&shot, &[]));
+    }
+
+    fn dated_file(path: &str, family: FileFamily, modified: Option<Timestamp>) -> ObservedEntry {
+        ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse(path).unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::File,
+            family,
+            identity: FileIdentity {
+                modified,
+                ..FileIdentity::default()
+            },
+            is_hidden: false,
+            lock: LockState::Readable,
+        }
+    }
+
+    #[test]
+    fn category_date_suffix_uses_exif_for_images_and_month_for_documents() {
+        let image = dated_file("shot.jpg", FileFamily::Image, Some(Timestamp(0)));
+        assert_eq!(
+            category_date_suffix(&image, Some("2021-07-15")).as_deref(),
+            Some("2021-07-15")
+        );
+        assert!(category_date_suffix(&image, Some("not-a-date")).is_none());
+        assert!(category_date_suffix(&image, None).is_none());
+
+        let document = dated_file(
+            "note.txt",
+            FileFamily::Document,
+            Some(Timestamp(1_626_307_200_000)),
+        );
+        assert_eq!(
+            category_date_suffix(&document, None).as_deref(),
+            Some("2021-07")
+        );
+        assert_eq!(
+            category_date_suffix(&document, Some("2021-07-15")).as_deref(),
+            Some("2021-07")
+        );
+        assert!(
+            category_date_suffix(&dated_file("note.txt", FileFamily::Document, None), None)
+                .is_none()
+        );
     }
 }

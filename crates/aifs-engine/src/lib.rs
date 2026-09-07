@@ -3006,7 +3006,14 @@ mod tests {
             .next()
             .map(|placement| placement.destination.as_str().to_owned())
             .unwrap_or_default();
-        assert_eq!(dest, "Documents/note.txt");
+        let note = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "note.txt")
+            .unwrap_or_else(|| panic!("note.txt"));
+        let suffix = aifs_domain::category_date_suffix(note, None)
+            .unwrap_or_else(|| panic!("scanned documents have a modified time"));
+        assert_eq!(dest, format!("Documents/{suffix}/note.txt"));
     }
 
     #[test]
@@ -3126,6 +3133,132 @@ mod tests {
                 .any(|bag| bag.fact(aifs_domain::evidence::keys::DESCRIPTION).is_some()),
             "describe evidence missing: {:?}",
             snapshot.evidence
+        );
+    }
+
+    #[test]
+    fn scan_categorizes_documents_on_the_document_slot() {
+        let mut worker =
+            aifs_worker_client::WorkerClient::try_connect(aifs_protocol::worker::WorkerKind::Llm)
+                .unwrap_or_else(|| panic!("build aifs-worker-llm before this test"));
+        let llama = worker
+            .capabilities()
+            .iter()
+            .any(|capability| capability == "llama");
+        let _ = worker.shutdown();
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let models = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("shot.jpg"), b"jpeg").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "settings".into(),
+            command: Command::PutSettings {
+                settings: AppSettings {
+                    analyze_documents: true,
+                    ..AppSettings::default()
+                },
+            },
+        })) {
+            Event::Settings { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[2].backend = ModelBackend::LocalGguf {
+            path: "document-slot.gguf".into(),
+            mmproj: None,
+        };
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels {
+                inventory: inventory.clone(),
+            },
+        })) {
+            Event::Models { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let logs: Vec<String> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        if llama {
+            assert!(
+                logs.iter().any(|message| message.contains("load failed")
+                    || message.contains("not fully downloaded")),
+                "llama worker without a verified GGUF must fail load, logs={logs:?}"
+            );
+            return;
+        }
+        let note = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "note.txt")
+            .unwrap_or_else(|| panic!("note"));
+        let shot = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "shot.jpg")
+            .unwrap_or_else(|| panic!("shot"));
+        assert!(
+            snapshot
+                .evidence_for(note.id)
+                .any(|bag| bag.fact(aifs_domain::evidence::keys::CATEGORY) == Some("Documents")),
+            "document slot must categorize note.txt, evidence={:?} logs={logs:?}",
+            snapshot.evidence
+        );
+        assert!(
+            snapshot
+                .evidence_for(shot.id)
+                .any(|bag| bag.fact(aifs_domain::evidence::keys::CATEGORY) == Some("Pictures")),
+            "categorize slot must still label images, evidence={:?} logs={logs:?}",
+            snapshot.evidence
+        );
+        assert!(
+            logs.iter()
+                .any(|message| { message.contains("loaded") && message.contains("for document") }),
+            "document slot should load when the backend differs, logs={logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("categorized") && message.contains("note.txt")),
+            "expected document categorize log, logs={logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|message| message.contains("categorized") && message.contains("shot.jpg")),
+            "expected image categorize log, logs={logs:?}"
         );
     }
 
