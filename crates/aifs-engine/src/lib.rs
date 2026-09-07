@@ -6,6 +6,7 @@
 
 mod analyze;
 mod cancel;
+mod checkpoint;
 mod download;
 mod extract;
 mod hosted;
@@ -31,6 +32,7 @@ use aifs_relationships::enrich;
 use aifs_scanner::{ScanError, scan};
 use aifs_store::WorkspaceStore;
 use aifs_worker_client::WorkerClient;
+use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -108,6 +110,11 @@ impl Engine {
     /// Records a cancel for `target` so the next cooperative check stops that request.
     pub(crate) fn request_cancel(&self, target: RequestId) {
         self.cancel.request_cancel(target);
+    }
+
+    #[cfg(test)]
+    fn stored_snapshot(&self, session: SessionId) -> Option<WorkspaceSnapshot> {
+        self.store.get_snapshot(session).ok().flatten()
     }
 
     fn should_stop(&self, id: &RequestId) -> bool {
@@ -422,7 +429,22 @@ impl Engine {
             return;
         }
 
-        let session = session.unwrap_or_default();
+        let resume = match session {
+            Some(requested) => match self.store.get_snapshot(requested) {
+                Ok(Some(prior)) if checkpoint::roots_match(&prior.root, root) => Some(prior),
+                Ok(_) => None,
+                Err(error) => {
+                    emit(store_failed(id, error));
+                    return;
+                }
+            },
+            None => None,
+        };
+        let session = resume
+            .as_ref()
+            .map(|prior| prior.session)
+            .or(session)
+            .unwrap_or_default();
         if let Err(error) = emit_model_runtime_notices(&self.store, id, emit) {
             emit_log(
                 emit,
@@ -464,11 +486,6 @@ impl Engine {
             }
         };
 
-        if self.should_stop(id) {
-            emit(Envelope::reply(id, Event::Cancelled));
-            return;
-        }
-
         emit_progress(
             emit,
             id,
@@ -498,27 +515,65 @@ impl Engine {
             format!("{} bundles", snapshot.bundles.len()),
         );
 
+        if let Some(prior) = resume {
+            checkpoint::carry_evidence(&mut snapshot, &prior);
+            let extracted = checkpoint::extract_done_count(&snapshot);
+            emit_log(
+                emit,
+                id,
+                LogLevel::Info,
+                format!("Resuming session; {extracted} files already have metadata."),
+            );
+        }
+
+        if self.should_stop(id) {
+            self.emit_cancelled_checkpoint(id, &snapshot, emit);
+            return;
+        }
+
+        let persist_error = RefCell::new(None);
+        let store = &self.store;
+        let mut persist = |snapshot: &WorkspaceSnapshot| match store.put_snapshot(snapshot) {
+            Ok(()) => true,
+            Err(error) => {
+                persist_error.replace(Some(error));
+                false
+            }
+        };
+
         if options.extract_metadata {
             last_progress = Instant::now()
                 .checked_sub(PROGRESS_INTERVAL)
                 .unwrap_or_else(Instant::now);
-            if extract::extract_into_supervised(
+            let gate = Arc::clone(&self.cancel);
+            let cancel_id = id.clone();
+            match extract::extract_into_supervised(
                 &mut snapshot,
                 |current, total, path| {
                     if should_emit_progress(&mut last_progress, current, Some(total)) {
                         emit_progress(emit, id, "extract", current, Some(total), path);
                     }
                 },
-                || !self.should_stop(id),
-            ) == WorkStatus::Cancelled
-            {
-                emit(Envelope::reply(id, Event::Cancelled));
-                return;
+                &mut persist,
+                || !gate.is_cancelled(&cancel_id),
+            ) {
+                WorkStatus::Completed => {}
+                WorkStatus::Cancelled => {
+                    self.emit_cancelled_checkpoint(id, &snapshot, emit);
+                    return;
+                }
+                WorkStatus::PersistFailed => {
+                    emit(checkpoint_store_failed(
+                        id,
+                        persist_error.borrow_mut().take(),
+                    ));
+                    return;
+                }
             }
         }
 
         if self.should_stop(id) {
-            emit(Envelope::reply(id, Event::Cancelled));
+            self.emit_cancelled_checkpoint(id, &snapshot, emit);
             return;
         }
 
@@ -527,7 +582,9 @@ impl Engine {
                 last_progress = Instant::now()
                     .checked_sub(PROGRESS_INTERVAL)
                     .unwrap_or_else(Instant::now);
-                if analyze::analyze_into_supervised(
+                let gate = Arc::clone(&self.cancel);
+                let cancel_id = id.clone();
+                match analyze::analyze_into_supervised(
                     &mut snapshot,
                     &models,
                     &settings,
@@ -546,11 +603,21 @@ impl Engine {
                             }
                         }
                     },
-                    || !self.should_stop(id),
-                ) == WorkStatus::Cancelled
-                {
-                    emit(Envelope::reply(id, Event::Cancelled));
-                    return;
+                    &mut persist,
+                    || !gate.is_cancelled(&cancel_id),
+                ) {
+                    WorkStatus::Completed => {}
+                    WorkStatus::Cancelled => {
+                        self.emit_cancelled_checkpoint(id, &snapshot, emit);
+                        return;
+                    }
+                    WorkStatus::PersistFailed => {
+                        emit(checkpoint_store_failed(
+                            id,
+                            persist_error.borrow_mut().take(),
+                        ));
+                        return;
+                    }
                 }
             }
             (Err(error), _) | (_, Err(error)) => emit_log(
@@ -561,11 +628,29 @@ impl Engine {
             ),
         }
 
+        if self.should_stop(id) {
+            self.emit_cancelled_checkpoint(id, &snapshot, emit);
+            return;
+        }
+
         if let Err(error) = self.store.put_snapshot(&snapshot) {
             emit(store_failed(id, error));
             return;
         }
         emit(Envelope::reply(id, Event::ScanCompleted { snapshot }));
+    }
+
+    fn emit_cancelled_checkpoint(
+        &self,
+        id: &RequestId,
+        snapshot: &WorkspaceSnapshot,
+        emit: &mut impl FnMut(Envelope),
+    ) {
+        if let Err(error) = self.store.put_snapshot(snapshot) {
+            emit(store_failed(id, error));
+            return;
+        }
+        emit(Envelope::reply(id, Event::Cancelled));
     }
 
     fn handle_propose(
@@ -1038,6 +1123,20 @@ fn store_failed(id: &RequestId, error: aifs_store::StoreError) -> Envelope {
             issues: vec![],
         },
     )
+}
+
+fn checkpoint_store_failed(id: &RequestId, error: Option<aifs_store::StoreError>) -> Envelope {
+    match error {
+        Some(error) => store_failed(id, error),
+        None => Envelope::reply(
+            id,
+            Event::Failed {
+                code: ErrorCode::Storage,
+                message: "checkpoint persist failed".to_owned(),
+                issues: vec![],
+            },
+        ),
+    }
 }
 
 fn load_settings(
@@ -1565,6 +1664,7 @@ mod tests {
             },
         });
         engine.request_cancel("2".into());
+        let session = SessionId::new();
         let events = engine.handle(Request {
             id: "2".into(),
             command: Command::Scan {
@@ -1573,7 +1673,7 @@ mod tests {
                     extract_metadata: false,
                     ..ScanOptions::default()
                 },
-                session: None,
+                session: Some(session),
             },
         });
         assert!(
@@ -1587,6 +1687,135 @@ mod tests {
                 .iter()
                 .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
             "cancelled scan must not complete a snapshot"
+        );
+        assert!(
+            engine.stored_snapshot(session).is_none(),
+            "walk cancel must not persist a checkpoint"
+        );
+    }
+
+    #[test]
+    fn cancel_after_relationships_persists_checkpoint() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, .. } = &envelope.event
+                    && stage == "relationships"
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "must not complete a snapshot"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("cancel after walk should persist the tree"));
+        assert!(
+            checkpoint
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt"),
+            "checkpoint entries={:?}",
+            checkpoint.entries
+        );
+    }
+
+    #[test]
+    fn cancel_after_finished_walk_persists_checkpoint() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, message, .. } = &envelope.event
+                    && stage == "scan"
+                    && message == "walk complete"
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "must not complete a snapshot"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("cancel after a finished walk should persist the tree"));
+        assert!(
+            checkpoint
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt"),
+            "checkpoint entries={:?}",
+            checkpoint.entries
         );
     }
 
@@ -1604,6 +1833,225 @@ mod tests {
             "expected cancel ack, got {events:?}"
         );
         assert!(engine.cancel_gate().is_cancelled(&"2".into()));
+    }
+
+    #[test]
+    fn cancel_during_extract_persists_checkpoint_for_resume() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        for index in 0..12 {
+            aifs_extractors::write_id3v23_fixture(
+                &dir.path().join(format!("track-{index}.mp3")),
+                "Night Drive",
+                "Ada",
+                "After Hours",
+                "2019",
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        }
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "2".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: true,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, current, .. } = &envelope.event
+                    && stage == "extract"
+                    && *current >= 1
+                {
+                    gate.request_cancel("2".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::ScanCompleted { .. })),
+            "cancelled extract must not complete a snapshot"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("expected extract checkpoint"));
+        assert!(
+            !checkpoint.evidence.is_empty(),
+            "checkpoint should keep extracted tags, got {:?}",
+            checkpoint.evidence
+        );
+
+        let resumed = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        });
+        let logs: Vec<_> = resumed
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter().any(|line| line.contains("Resuming session")),
+            "expected resume log, got {logs:?}"
+        );
+        let snapshot = match terminal(resumed) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let tagged = snapshot
+            .evidence
+            .iter()
+            .filter(|bag| bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive"))
+            .count();
+        assert_eq!(
+            tagged, 12,
+            "resume should skip files that already have tags, tagged={tagged} evidence={:?}",
+            snapshot.evidence
+        );
+        for entry in snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == aifs_domain::EntryKind::File)
+        {
+            let extract_bags = snapshot
+                .evidence
+                .iter()
+                .filter(|bag| {
+                    bag.asset == entry.id
+                        && matches!(
+                            bag.source,
+                            aifs_domain::EvidenceSource::MediaTags
+                                | aifs_domain::EvidenceSource::Exif
+                                | aifs_domain::EvidenceSource::DocumentMetadata
+                        )
+                })
+                .count();
+            assert_eq!(
+                extract_bags,
+                1,
+                "resume must not re-extract {} (bags={extract_bags})",
+                entry.path.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_root_does_not_carry_prior_evidence() {
+        let media = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        aifs_extractors::write_id3v23_fixture(
+            &media.path().join("show.mp3"),
+            "Night Drive",
+            "Ada",
+            "After Hours",
+            "2019",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let other = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::copy(media.path().join("show.mp3"), other.path().join("show.mp3"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: media.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => {
+                assert!(snapshot.evidence.iter().any(|bag| {
+                    bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive")
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: other.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        });
+        assert!(
+            events.iter().all(|envelope| match &envelope.event {
+                Event::Log { message, .. } => !message.contains("Resuming session"),
+                _ => true,
+            }),
+            "mismatched root must not resume, events={events:?}"
+        );
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(snapshot.session, session);
+        assert!(
+            checkpoint::roots_match(&snapshot.root, other.path()),
+            "expected other root {:?}, got {:?}",
+            other.path(),
+            snapshot.root
+        );
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "show.mp3")
+        );
+        assert!(
+            snapshot.evidence.iter().all(|bag| {
+                bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) != Some("Night Drive")
+            }),
+            "must not carry evidence from a different root, evidence={:?}",
+            snapshot.evidence
+        );
     }
 
     #[test]
@@ -2307,6 +2755,49 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn corrupt_snapshot_json_is_a_storage_error_on_resume() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hi").unwrap_or_else(|e| panic!("{e}"));
+        let db = dir.path().join("engine.sqlite");
+        let session = SessionId::new();
+        let store = aifs_store::WorkspaceStore::open(&db).unwrap_or_else(|e| panic!("{e}"));
+        store
+            .put_snapshot_json(session, "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        drop(store);
+        let mut engine = Engine::with_store_path(&db).unwrap_or_else(|e| panic!("{e}"));
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        })) {
+            Event::Failed { code, .. } => assert_eq!(code, ErrorCode::Storage),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            aifs_store::WorkspaceStore::open(&db)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .get_snapshot(session)
+                .is_err(),
+            "corrupt row must still be present so scan does not overwrite it"
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub enum WorkStatus {
     Completed,
     /// Stage stopped because [`CancelGate::is_cancelled`] became true.
     Cancelled,
+    /// A checkpoint `put_snapshot` failed.
+    PersistFailed,
 }
 
 impl CancelGate {

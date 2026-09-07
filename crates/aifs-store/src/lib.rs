@@ -100,6 +100,17 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Writes snapshot JSON for `session` without validating it (corrupt-row tests).
+    #[doc(hidden)]
+    pub fn put_snapshot_json(&self, session: SessionId, json: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO snapshots(session, captured_at, json) VALUES (?1, 0, ?2)
+             ON CONFLICT(session) DO UPDATE SET captured_at = excluded.captured_at, json = excluded.json",
+            params![session.to_string(), json],
+        )?;
+        Ok(())
+    }
+
     /// Loads the latest snapshot for a session.
     pub fn get_snapshot(
         &self,
@@ -269,6 +280,19 @@ mod tests {
             .unwrap_or_else(|| panic!("missing"));
         assert_eq!(loaded.session, snapshot.session);
         assert_eq!(loaded.root, snapshot.root);
+    }
+
+    #[test]
+    fn corrupt_snapshot_json_is_a_json_error() {
+        let store = WorkspaceStore::open_in_memory().unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        store
+            .put_snapshot_json(session, "{not-json")
+            .unwrap_or_else(|e| panic!("{e}"));
+        match store.get_snapshot(session) {
+            Err(StoreError::Json(_)) => {}
+            other => panic!("expected json error, got {other:?}"),
+        }
     }
 
     #[test]
