@@ -1,7 +1,5 @@
 //! Canned infer used until llama.cpp or a hosted backend is loaded.
 
-//! Canned infer used until llama.cpp or a hosted backend is loaded.
-
 use crate::device::{requested_n_gpu_layers, resolve_device};
 use aifs_domain::evidence::keys;
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};

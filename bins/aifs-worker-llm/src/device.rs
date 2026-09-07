@@ -206,12 +206,11 @@ mod tests {
             .unwrap_or_else(|| panic!("expected CPU retry"));
         assert_eq!(retry.0, "cpu");
         assert_eq!(retry.1, 0);
-        assert!(
-            retry
-                .2
-                .as_deref()
-                .is_some_and(|text| text.contains("out of memory") && text.contains("using cpu"))
-        );
+        assert!(retry.2.as_deref().is_some_and(|text| {
+            text.contains("GPU load failed")
+                && text.contains("out of memory")
+                && text.contains("using cpu")
+        }));
         assert!(cpu_retry_plan("cpu", retry.2, "CUDA error: out of memory").is_none());
     }
 
@@ -225,9 +224,13 @@ mod tests {
 
     #[test]
     fn missing_gguf_is_not_retried_as_gpu_failure() {
-        let error = "catalog gemma-3-4b-it is not fully downloaded";
-        assert!(!is_gpu_failure(error));
-        assert!(cpu_retry_plan("cuda", None, error).is_none());
+        let error = format!(
+            "gemma-3-4b-it is not fully downloaded under {}",
+            std::path::Path::new("/models").display()
+        );
+        assert!(error.contains("not fully downloaded"));
+        assert!(!is_gpu_failure(&error));
+        assert!(cpu_retry_plan("cuda", None, &error).is_none());
     }
 
     #[test]
