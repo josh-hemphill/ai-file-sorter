@@ -33,25 +33,29 @@ fn copy_sidecars() {
     };
     let release = profile == "release";
     let _ = fs::create_dir_all(&dest_dir);
+    if triple.is_empty() {
+        panic!("TARGET is unset; cannot name sidecar files");
+    }
     println!("cargo:rerun-if-changed={}", src_dir.display());
     for stem in SIDECAR_STEMS {
         let src = src_dir.join(format!("{stem}{ext}"));
+        let dest = dest_dir.join(format!("{stem}-{triple}{ext}"));
         println!("cargo:rerun-if-changed={}", src.display());
-        if !src.is_file() {
-            if release {
-                panic!(
-                    "missing sidecar {} — run `cargo engine-bins --release` before bundling",
-                    src.display()
-                );
+        if src.is_file() {
+            if let Err(error) = fs::copy(&src, &dest) {
+                panic!("copy {} → {}: {error}", src.display(), dest.display());
             }
             continue;
         }
-        if triple.is_empty() {
-            panic!("TARGET is unset; cannot name sidecar {stem}");
+        if release {
+            panic!(
+                "missing sidecar {} — run `cargo engine-bins --release` before bundling",
+                src.display()
+            );
         }
-        let dest = dest_dir.join(format!("{stem}-{triple}{ext}"));
-        if let Err(error) = fs::copy(&src, &dest) {
-            panic!("copy {} → {}: {error}", src.display(), dest.display());
+        // tauri_build requires externalBin paths to exist even for clippy/test.
+        if let Err(error) = fs::write(&dest, []) {
+            panic!("placeholder {} : {error}", dest.display());
         }
     }
 }
