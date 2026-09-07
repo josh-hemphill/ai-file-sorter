@@ -27,7 +27,10 @@ fn engine_bin() -> PathBuf {
 }
 
 fn run_aifs(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Output {
+    let store_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let store = store_dir.path().join("engine.sqlite");
     let output = Command::new(aifs_bin())
+        .env("AIFS_STORE", &store)
         .args(args)
         .output()
         .unwrap_or_else(|error| panic!("{error}"));

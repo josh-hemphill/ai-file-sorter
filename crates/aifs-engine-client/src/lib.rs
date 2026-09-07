@@ -81,6 +81,10 @@ pub struct EngineClient {
 impl EngineClient {
     /// Spawns `binary` and starts a stdout reader thread.
     pub fn spawn(binary: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::spawn_process(binary, None)
+    }
+
+    fn spawn_process(binary: impl AsRef<Path>, store: Option<&Path>) -> Result<Self, ClientError> {
         let binary = binary.as_ref();
         if !binary.exists() {
             return Err(ClientError::EngineNotFound(binary.display().to_string()));
@@ -90,6 +94,9 @@ impl EngineClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(store) = store {
+            command.env("AIFS_STORE", store);
+        }
         let mut child = command.spawn()?;
         let stdin = child
             .stdin
@@ -758,5 +765,112 @@ mod tests {
         let found = discover_engine_binary_from(None, Some(exe), None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(found, plain);
+    }
+
+    fn engine_bin() -> PathBuf {
+        if let Ok(path) = discover_engine_binary() {
+            return path;
+        }
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "aifs-engine-bin"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(status.success(), "cargo build -p aifs-engine-bin failed");
+        discover_engine_binary()
+            .unwrap_or_else(|error| panic!("aifs-engine must be built for client tests: {error}"))
+    }
+
+    fn scan_options() -> aifs_protocol::ScanOptions {
+        aifs_protocol::ScanOptions {
+            extract_metadata: false,
+            ..aifs_protocol::ScanOptions::default()
+        }
+    }
+
+    fn isolated_client(name: &str) -> (tempfile::TempDir, EngineClient) {
+        let store_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = store_dir.path().join("engine.sqlite");
+        let client = EngineClient::spawn_process(engine_bin(), Some(&store))
+            .unwrap_or_else(|error| panic!("{error}"));
+        client.hello(name).unwrap_or_else(|error| panic!("{error}"));
+        (store_dir, client)
+    }
+
+    #[test]
+    fn connect_hello_then_scan_returns_snapshot() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        fs::write(root.path().join("note.txt"), b"hi").unwrap_or_else(|error| panic!("{error}"));
+        let (_store, client) = isolated_client("client-hello");
+        let snapshot = client
+            .scan(root.path(), scan_options(), None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "note.txt")
+        );
+        client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn spawn_scan_without_hello_fails() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        fs::write(root.path().join("note.txt"), b"hi").unwrap_or_else(|error| panic!("{error}"));
+        let store_dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = store_dir.path().join("engine.sqlite");
+        let client = EngineClient::spawn_process(engine_bin(), Some(&store))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let error = match client.scan(root.path(), scan_options(), None) {
+            Err(error) => error,
+            Ok(_) => panic!("scan before hello must fail"),
+        };
+        match error {
+            ClientError::Engine { message, .. } => {
+                assert!(message.to_ascii_lowercase().contains("hello"), "{message}");
+            }
+            other => panic!("expected engine hello error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn scan_maps_cancelled_event_to_client_error() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        for index in 0..400 {
+            fs::write(root.path().join(format!("file-{index}.txt")), b"x")
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let (_store, client) = isolated_client("client-cancel");
+        let client = std::sync::Arc::new(client);
+        let canceller = std::sync::Arc::clone(&client);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag = std::sync::Arc::clone(&stop);
+        let canceller_thread = thread::spawn(move || {
+            while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = canceller.cancel_in_flight();
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let error = match client.scan(root.path(), scan_options(), None) {
+            Err(error) => error,
+            Ok(_) => panic!("cancelled scan must fail"),
+        };
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = canceller_thread.join();
+        assert!(
+            matches!(error, ClientError::Cancelled),
+            "expected Cancelled, got {error}"
+        );
+        let snapshot = client
+            .scan(root.path(), scan_options(), None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            snapshot.entries.len() >= 400,
+            "follow-up scan after cancel should complete, got {}",
+            snapshot.entries.len()
+        );
+        client.shutdown().unwrap_or_else(|error| panic!("{error}"));
     }
 }
