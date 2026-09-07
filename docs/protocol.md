@@ -83,7 +83,8 @@ This slice implements `hello`, `scan`, `propose`, `patch`, `plan`, `apply`,
 `put_models`, `download_model`, `probe_endpoint`, and `shutdown`. `chat` prefers
 model `RevisionPatch` JSON when the chat slot is assigned. Keyword tools
 (`search`, `inspect`, `structure`, `group`, `rename`, `validate`) run when the
-slot is off, the worker fails, or the reply is not parseable. Child revisions
+slot is off, the worker fails, or the reply is not parseable JSON with a
+`patches` key. Child revisions
 are authored by the assistant model when patches apply. The assistant never
 receives SQL or raw filesystem operations. `plan` requires accepted placements
 (the CLI `organize` command accepts all heuristic placements, then dry-runs by
@@ -123,6 +124,7 @@ backend is loaded (`RemoteModel` evidence). Default
 `cargo test --workspace` does not compile llama.cpp. Hosted probes contact the
 endpoint. Chat asks the model for `RevisionPatch` JSON and applies those
 patches; keyword `interpret()` is the fallback when the chat slot is off, the
-worker fails, or the model does not emit parseable patches.
+worker fails, or the reply is not parseable JSON with a `patches` key (a
+parseable empty `patches` array means the model is only answering).
 `api_key` on `load` is never written to logs.
 

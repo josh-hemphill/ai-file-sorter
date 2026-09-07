@@ -49,6 +49,7 @@ pub(crate) fn parse_chat_reply(text: &str) -> Option<ParsedChat> {
     if empty_object.is_some() {
         return empty_object;
     }
+    let mut patched_array = None;
     for array in json_slices(text, '[', ']') {
         let Ok(patches) = serde_json::from_str::<Vec<RevisionPatch>>(array) else {
             continue;
@@ -56,12 +57,12 @@ pub(crate) fn parse_chat_reply(text: &str) -> Option<ParsedChat> {
         if patches.is_empty() {
             continue;
         }
-        return Some(ParsedChat {
+        patched_array = Some(ParsedChat {
             message: None,
             patches,
         });
     }
-    None
+    patched_array
 }
 
 /// Placement list the chat worker can copy asset ids from.
@@ -332,6 +333,19 @@ mod tests {
             parse_chat_reply("I will not emit [] this turn.").is_none(),
             "stray empty arrays must not skip keyword fallback"
         );
+        let example = format!(
+            "[{{ \"op\":\"move_to_folder\",\"assets\":[\"{}\"],\"folder\":\"Example\" }}] then \
+[{{ \"op\":\"move_to_folder\",\"assets\":[\"{}\"],\"folder\":\"Broadcasts\" }}]",
+            asset.as_uuid(),
+            asset.as_uuid()
+        );
+        let last = parse_chat_reply(&example).unwrap_or_else(|| panic!("expected last array"));
+        match &last.patches[..] {
+            [RevisionPatch::MoveToFolder { folder, .. }] => {
+                assert_eq!(folder.as_str(), "Broadcasts");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
