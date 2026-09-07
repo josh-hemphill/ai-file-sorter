@@ -3,6 +3,7 @@
 use aifs_domain::{
     AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, RelativePath,
 };
+use aifs_protocol::FolderStyle;
 use aifs_protocol::ModelBackend;
 use aifs_protocol::worker::WorkerKind;
 use aifs_worker_client::WorkerClient;
@@ -56,7 +57,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
 
     let entry = file_entry("notes.txt", FileFamily::Document);
     let evidence = client
-        .categorize(dir.path(), &entry, vec![])
+        .categorize(dir.path(), &entry, vec![], vec![], FolderStyle::Consistent)
         .unwrap_or_else(|error| panic!("{error}"))
         .unwrap_or_else(|| panic!("categorize evidence"));
     assert!(matches!(
@@ -66,6 +67,20 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     assert_eq!(
         evidence.fact(aifs_domain::evidence::keys::CATEGORY),
         Some("Documents")
+    );
+    let inbox = client
+        .categorize(
+            dir.path(),
+            &entry,
+            vec![],
+            vec!["Inbox".into()],
+            FolderStyle::Consistent,
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("whitelisted categorize"));
+    assert_eq!(
+        inbox.fact(aifs_domain::evidence::keys::CATEGORY),
+        Some("Inbox")
     );
 
     let image = file_entry("shot.jpg", FileFamily::Image);
@@ -86,7 +101,7 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     assert!(reply.contains("group the podcasts"), "{reply}");
 
     client.unload().unwrap_or_else(|error| panic!("{error}"));
-    let failed = client.categorize(dir.path(), &entry, vec![]);
+    let failed = client.categorize(dir.path(), &entry, vec![], vec![], FolderStyle::Consistent);
     assert!(failed.is_err(), "{failed:?}");
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
 }
@@ -163,7 +178,7 @@ fn hosted_custom_endpoint_categorizes_as_remote_model() {
         .unwrap_or_else(|error| panic!("{error}"));
     let entry = file_entry("notes.txt", FileFamily::Document);
     let evidence = client
-        .categorize(dir.path(), &entry, vec![])
+        .categorize(dir.path(), &entry, vec![], vec![], FolderStyle::Consistent)
         .unwrap_or_else(|error| panic!("{error}"))
         .unwrap_or_else(|| panic!("categorize evidence"));
     assert!(matches!(
@@ -176,6 +191,68 @@ fn hosted_custom_endpoint_categorizes_as_remote_model() {
     );
     client.shutdown().unwrap_or_else(|error| panic!("{error}"));
     let _ = server.join();
+}
+
+#[test]
+fn hosted_categorize_sends_whitelist_style_and_description() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let body = r#"{"choices":[{"message":{"content":"{\"category\":\"Screenshots\",\"description\":\"a panel\"}"}}]}"#;
+    let (base, server) = serve_json("200 OK", body);
+    let mut client =
+        WorkerClient::connect(WorkerKind::Llm, worker).unwrap_or_else(|error| panic!("{error}"));
+    client
+        .load(
+            ModelBackend::CustomEndpoint {
+                base_url: base,
+                model: "local-test".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    let image = file_entry("Screenshot.png", FileFamily::Image);
+    let prior = aifs_domain::Evidence::new(
+        image.id,
+        aifs_domain::EvidenceSource::LocalModel {
+            model: "vision".into(),
+        },
+        aifs_domain::Confidence::new(0.55),
+    )
+    .with_fact(
+        aifs_domain::evidence::keys::DESCRIPTION,
+        "a settings panel UI capture",
+    );
+    let evidence = client
+        .categorize(
+            dir.path(),
+            &image,
+            vec![prior],
+            vec!["Screenshots".into(), "Pictures".into()],
+            FolderStyle::Refined,
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("categorize evidence"));
+    assert_eq!(
+        evidence.fact(aifs_domain::evidence::keys::CATEGORY),
+        Some("Screenshots")
+    );
+    client.shutdown().unwrap_or_else(|error| panic!("{error}"));
+    let request = server.join().unwrap_or_else(|error| panic!("{error:?}"));
+    assert!(
+        request.contains("a settings panel UI capture"),
+        "categorize must send the description: {request}"
+    );
+    assert!(
+        request.contains("Screenshots, Pictures") || request.contains("Screenshots"),
+        "categorize must send allowed categories: {request}"
+    );
+    assert!(
+        request.contains("refined") || request.contains("Screenshots"),
+        "categorize must send refined screenshot guidance: {request}"
+    );
 }
 
 #[test]

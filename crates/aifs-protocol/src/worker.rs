@@ -4,7 +4,8 @@
 //! observed entry, return evidence or artifacts, and exit on `shutdown`.
 
 use crate::{
-    CodecError, ErrorCode, ModelBackend, PROTOCOL_VERSION, RequestId, decode_line, encode_line,
+    CodecError, ErrorCode, FolderStyle, ModelBackend, PROTOCOL_VERSION, RequestId, decode_line,
+    encode_line,
 };
 use aifs_domain::{Evidence, ObservedEntry};
 use serde::{Deserialize, Serialize};
@@ -154,6 +155,12 @@ pub enum WorkerCommand {
         /// Prior evidence the model may read (never execute).
         #[serde(default)]
         evidence: Vec<Evidence>,
+        /// Optional allowed top-level folder names. Empty means unconstrained.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_categories: Vec<String>,
+        /// Folder naming style from settings.
+        #[serde(default)]
+        style: FolderStyle,
     },
     /// Image description for an entry. LLM worker only.
     Describe {
@@ -391,6 +398,38 @@ mod tests {
             first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
             Some(plain.as_path())
         );
+    }
+
+    #[test]
+    fn categorize_without_allowlist_fields_still_decodes() {
+        let json = serde_json::json!({
+            "type": "categorize",
+            "root": "/tmp",
+            "entry": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "path": "note.txt",
+                "kind": "file",
+                "family": "document",
+                "identity": { "size": 1 },
+                "is_hidden": false,
+                "lock": { "state": "readable" }
+            }
+        });
+        let command: WorkerCommand =
+            serde_json::from_value(json).unwrap_or_else(|error| panic!("{error}"));
+        match command {
+            WorkerCommand::Categorize {
+                allowed_categories,
+                style,
+                evidence,
+                ..
+            } => {
+                assert!(allowed_categories.is_empty());
+                assert_eq!(style, FolderStyle::Consistent);
+                assert!(evidence.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     fn load_command(api_key: Option<RedactedString>) -> WorkerCommand {

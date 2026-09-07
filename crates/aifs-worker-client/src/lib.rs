@@ -5,7 +5,7 @@ use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
 use aifs_protocol::{
-    ErrorCode, ModelBackend, RequestId, decode_line, encode_line, first_process_binary,
+    ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, encode_line, first_process_binary,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -329,11 +329,15 @@ impl WorkerClient {
         root: impl AsRef<Path>,
         entry: &ObservedEntry,
         evidence: Vec<Evidence>,
+        allowed_categories: Vec<String>,
+        style: FolderStyle,
     ) -> Result<Option<Evidence>, WorkerClientError> {
         self.infer(WorkerCommand::Categorize {
             root: root.as_ref().to_path_buf(),
             entry: entry.clone(),
             evidence,
+            allowed_categories,
+            style,
         })
     }
 

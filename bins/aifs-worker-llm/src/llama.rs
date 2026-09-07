@@ -4,11 +4,11 @@ use crate::device::{cpu_retry_plan, requested_n_gpu_layers, resolve_device};
 use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
-    CATEGORIZE_SYSTEM, CHAT_SYSTEM, DESCRIBE_SYSTEM, categorize_user, describe_user,
+    CHAT_SYSTEM, DESCRIBE_SYSTEM, categorize_system, categorize_user, describe_user,
 };
 use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
-use aifs_protocol::ModelBackend;
+use aifs_protocol::{FolderStyle, ModelBackend};
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -115,14 +115,16 @@ impl WorkerHandler for LlamaHandler {
         _root: &Path,
         entry: &ObservedEntry,
         evidence: &[Evidence],
+        allowed_categories: &[String],
+        style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         let model_id = self.require_loaded()?.info.model.clone();
         if entry.kind != EntryKind::File {
             return Ok(None);
         }
         let text = self.complete(
-            CATEGORIZE_SYSTEM,
-            &categorize_user(entry, evidence),
+            &categorize_system(allowed_categories, style),
+            &categorize_user(entry, evidence, allowed_categories, style),
             MAX_GEN_TOKENS,
         )?;
         Ok(evidence_from_text(&model_id, entry, &text, true))

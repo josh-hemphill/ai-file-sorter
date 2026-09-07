@@ -126,7 +126,11 @@ The string `prompt exceeds the llama.cpp context window` is not a GPU failure.
 `AIFS_N_GPU_LAYERS` sets offload when `n_gpu_layers` is omitted. Local describe
 loads mmproj via libmtmd: JPEG/PNG/WebP at most 8 MiB attach pixels; RAW, oversize,
 and other image types use filename + EXIF only (scan logs RAW). Hosted describe
-never uploads pixels. Default
+never uploads pixels. Scan runs **describe before categorize** so captions are
+prior evidence on the categorize turn. `categorize` accepts additive
+`allowed_categories` (whitelist) and `style` fields; omitted fields default to
+unconstrained / consistent. Screenshot/UI captures log
+`{path} · screenshot · Screenshots/UI`. Default
 `cargo test --workspace` does not compile llama.cpp. Ubuntu CI has a separate
 `llama-cpu` job that compiles the worker with `--features llama` and does not
 download Gemma. `get_models` fills each slot's

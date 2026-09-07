@@ -4,7 +4,7 @@ use aifs_domain::{Evidence, ObservedEntry};
 use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
-use aifs_protocol::{ErrorCode, ModelBackend, decode_line, encode_line};
+use aifs_protocol::{ErrorCode, FolderStyle, ModelBackend, decode_line, encode_line};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
@@ -40,8 +40,10 @@ pub trait WorkerHandler {
         root: &Path,
         entry: &ObservedEntry,
         evidence: &[Evidence],
+        allowed_categories: &[String],
+        style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
-        let _ = (root, entry, evidence);
+        let _ = (root, entry, evidence, allowed_categories, style);
         Err("categorize is not supported".to_owned())
     }
 
@@ -213,7 +215,12 @@ fn dispatch(
             root,
             entry,
             evidence,
-        } => result_inferred(id, handler.categorize(&root, &entry, &evidence)),
+            allowed_categories,
+            style,
+        } => result_inferred(
+            id,
+            handler.categorize(&root, &entry, &evidence, &allowed_categories, style),
+        ),
         WorkerCommand::Describe {
             root,
             entry,

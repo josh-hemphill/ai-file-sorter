@@ -106,6 +106,21 @@ impl FileFamily {
     }
 }
 
+/// True when the file name looks like a screenshot or UI capture.
+pub fn filename_looks_like_screenshot(file_name: &str) -> bool {
+    let name = file_name.to_ascii_lowercase();
+    name.contains("screenshot")
+        || name.contains("screen-shot")
+        || name.contains("screen_shot")
+        || name.contains("screen shot")
+}
+
+/// True when a caption looks like a screenshot or UI capture.
+pub fn description_looks_like_screenshot(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("screenshot") || text.contains("ui capture") || text.contains("screen capture")
+}
+
 /// Identity captured at scan time so apply/undo can detect that a file changed underneath.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileIdentity {
@@ -259,5 +274,20 @@ mod tests {
         };
         assert_eq!(entry.extension(), None);
         assert_eq!(entry.stem(), ".bashrc");
+    }
+
+    #[test]
+    fn screenshot_filename_and_caption_detectors() {
+        assert!(filename_looks_like_screenshot("Screenshot 2024.png"));
+        assert!(filename_looks_like_screenshot("screen-shot.jpg"));
+        assert!(filename_looks_like_screenshot("screen_shot.webp"));
+        assert!(!filename_looks_like_screenshot("DSC_0001.jpg"));
+        assert!(description_looks_like_screenshot(
+            "A UI capture of settings"
+        ));
+        assert!(description_looks_like_screenshot(
+            "this is a screenshot of a menu"
+        ));
+        assert!(!description_looks_like_screenshot("a cat on a sofa"));
     }
 }
