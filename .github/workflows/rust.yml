@@ -59,3 +59,21 @@ jobs:
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm test
       - run: pnpm exec vue-tsc --noEmit
+
+  llama-cpu:
+    name: llama.cpp worker (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clang and cmake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev pkg-config build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: llama-cpu
+      - name: test aifs-worker-llm with llama
+        env:
+          CXX: g++
+        run: cargo test -p aifs-worker-llm --features llama --all-targets

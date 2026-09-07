@@ -52,6 +52,7 @@ Equivalent without Make:
 
 ```bash
 cargo engine-bins
+cargo engine-llm
 cd apps/desktop
 pnpm install
 pnpm test
@@ -69,12 +70,13 @@ cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
-Optional llama.cpp (not compiled by default CI). CUDA/Vulkan/Metal stay inside
-`aifs-worker-llm` only:
+`make desktop` / `cargo engine-llm` compile llama.cpp into `aifs-worker-llm`
+(needs clang, CMake, and a C++ compiler). `make build` and `cargo test --workspace`
+keep the stub worker so default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
 
 ```bash
 make llama
-CXX=g++ cargo build -p aifs-worker-llm --features llama
+CXX=g++ cargo engine-llm
 CXX=g++ cargo build -p aifs-worker-llm --features llama,cuda
 cargo build -p aifs-worker-llm --features llama,vulkan
 cargo build -p aifs-worker-llm --features llama,metal   # macOS

@@ -372,14 +372,14 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
                 (
                     true,
                     format!(
-                        "{catalog_id} is already downloaded. Scan loads the LLM worker; infer uses llama.cpp when that worker is built with `--features llama`."
+                        "{catalog_id} is already downloaded. Scan loads the LLM worker. From-source `make desktop` / `cargo engine-llm` compile llama.cpp; `cargo test` still uses the stub worker."
                     ),
                 )
             } else {
                 (
                     true,
                     format!(
-                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan loads the LLM worker after download; infer uses llama.cpp when that worker is built with `--features llama`."
+                        "{catalog_id} is assigned. Use Download now to fetch the GGUF. Scan loads the LLM worker after download. From-source `make desktop` / `cargo engine-llm` compile llama.cpp; `cargo test` still uses the stub worker."
                     ),
                 )
             }
@@ -396,7 +396,7 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             }
             (
                 true,
-                "Local GGUF found. Scan loads the LLM worker; infer uses llama.cpp when that worker is built with `--features llama`."
+                "Local GGUF found. Scan loads the LLM worker. From-source `make desktop` / `cargo engine-llm` compile llama.cpp; `cargo test` still uses the stub worker."
                     .to_owned(),
             )
         }
@@ -470,7 +470,7 @@ pub fn slot_runtime(
         };
     }
     SlotRuntime::Stub {
-        detail: "Default LLM worker stubs infer. Rebuild aifs-worker-llm with `--features llama` to load GGUFs.".to_owned(),
+            detail: "Default LLM worker stubs infer. `make desktop` / `cargo engine-llm` rebuild aifs-worker-llm with llama.cpp.".to_owned(),
     }
 }
 

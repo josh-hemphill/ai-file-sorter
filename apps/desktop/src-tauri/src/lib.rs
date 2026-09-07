@@ -556,5 +556,23 @@ mod tests {
                 .any(|token| token == "aifs-engine"),
             "make build must not select the library crate: {packages}"
         );
+        let engine_llm = include_str!("../../../../.cargo/config.toml")
+            .lines()
+            .find(|line| line.starts_with("engine-llm"))
+            .unwrap_or_else(|| panic!("engine-llm alias"));
+        assert!(
+            engine_llm.contains("-p aifs-worker-llm") && engine_llm.contains("--features llama"),
+            "engine-llm must build the LLM worker with llama.cpp: {engine_llm}"
+        );
+        let makefile = include_str!("../../../../Makefile");
+        assert!(
+            makefile.contains("$(MAKE) llama"),
+            "make desktop must overwrite the stub LLM worker with llama.cpp"
+        );
+        let tauri = include_str!("../tauri.conf.json");
+        assert!(
+            tauri.contains("cargo engine-llm"),
+            "Tauri beforeDev/beforeBuild must compile llama.cpp into aifs-worker-llm: {tauri}"
+        );
     }
 }

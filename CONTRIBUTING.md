@@ -8,6 +8,8 @@ desktop app all live here (there is no nested `rust/` directory).
 - Rust stable via [`rust-toolchain.toml`](rust-toolchain.toml) (edition 2024, `rust-version` 1.98)
 - For the desktop shell: Node.js 24 LTS and pnpm 12 (`apps/desktop/package.json`)
 - Linux desktop builds need WebKitGTK 4.1 development packages (same set as CI)
+- Local llama.cpp (`make desktop` / `cargo engine-llm`): clang, CMake, and a C++ compiler
+  (`CXX=g++` on Linux)
 
 ## Everyday commands
 
@@ -20,15 +22,14 @@ cargo aifs organize fixtures/inbox-mixed
 cargo aifs compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
-`cargo aifs` is an alias for `cargo run -p aifs-cli --` (do not add a second `--`). `make build` compiles
-`aifs-engine`, `aifs`, and the four workers into `target/debug/` so discovery
-works without `$AIFS_ENGINE`.
+`cargo aifs` is an alias for `cargo run -p aifs-cli --` (do not add a second `--`). `make build` compiles `aifs-engine`, `aifs`, and the four workers (LLM **stub**)
+into `target/debug/`. `make desktop` then rebuilds `aifs-worker-llm` with llama.cpp.
 
-Optional local LLM:
+Local llama.cpp (also used by `make desktop`):
 
 ```bash
 make llama
-# or: CXX=g++ cargo build -p aifs-worker-llm --features llama
+# or: cargo engine-llm
 ```
 
 ## Layout

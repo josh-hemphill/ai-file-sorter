@@ -140,9 +140,9 @@ onUnmounted(() => {
         <h1 id="setup-title">Setup</h1>
         <p class="muted">
           This page records which local or remote model each analysis slot should use. Saving
-          does not start a model. Scan loads the LLM worker for assigned slots. Infer uses
-          llama.cpp when that worker is built with `--features llama` (CUDA/Vulkan/Metal when
-          those features are enabled); the default worker stubs infer. Propose stays heuristic
+          does not start a model. Scan loads the LLM worker for assigned slots. From-source
+          `make desktop` / `cargo engine-llm` compile llama.cpp into that worker; `cargo test`
+          still uses the stub. CUDA/Vulkan/Metal stay opt-in features. Propose stays heuristic
           if load fails. Several slots can share one downloaded GGUF — it is fetched once.
         </p>
       </div>
@@ -159,8 +159,8 @@ onUnmounted(() => {
     </header>
     <p v-if="error" class="error">{{ error }}</p>
     <p v-else-if="saved" class="ok">
-      Assignments saved. Scan will load the LLM worker for assigned slots. Infer uses llama.cpp
-      when that worker is built with `--features llama`.
+      Assignments saved. Scan will load the LLM worker for assigned slots. From-source
+      `make desktop` compiles llama.cpp; `cargo test` still uses the stub worker.
     </p>
 
     <article class="card">
