@@ -1,6 +1,8 @@
 //! Canned infer used until llama.cpp or a hosted backend is loaded.
 
-use crate::device::resolve_device;
+//! Canned infer used until llama.cpp or a hosted backend is loaded.
+
+use crate::device::{requested_n_gpu_layers, resolve_device};
 use aifs_domain::evidence::keys;
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::ModelBackend;
@@ -42,7 +44,7 @@ impl WorkerHandler for StubHandler {
         let n_gpu_layers = if device == "cpu" {
             0
         } else {
-            n_gpu_layers.unwrap_or(0)
+            requested_n_gpu_layers(n_gpu_layers).unwrap_or(0)
         };
         let loaded = LoadedModel {
             device,

@@ -1,6 +1,9 @@
-//! Device selection for the LLM worker.
+//! Device selection and GPU-failure CPU retry policy for the LLM worker.
 
 use std::path::Path;
+
+/// Process env for offload layers when `load.n_gpu_layers` is omitted.
+pub const N_GPU_LAYERS_ENV: &str = "AIFS_N_GPU_LAYERS";
 
 /// Resolves `gpu_preference` to a device id and optional fallback message.
 pub fn resolve_device(preference: &str) -> (String, Option<String>) {
@@ -71,6 +74,80 @@ fn nvidia_runtime_present() -> bool {
     Path::new("/proc/driver/nvidia/version").is_file() || Path::new("/dev/nvidia0").exists()
 }
 
+/// Parses `AIFS_N_GPU_LAYERS` / load `n_gpu_layers` text. Empty or invalid is `None`.
+pub fn parse_n_gpu_layers(raw: &str) -> Option<u32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse().ok()
+}
+
+/// Explicit `n_gpu_layers`, else `AIFS_N_GPU_LAYERS` when set and valid.
+pub fn requested_n_gpu_layers(explicit: Option<u32>) -> Option<u32> {
+    explicit.or_else(|| {
+        std::env::var(N_GPU_LAYERS_ENV)
+            .ok()
+            .as_deref()
+            .and_then(parse_n_gpu_layers)
+    })
+}
+
+/// True when `device` is an accelerator and `error` looks like GPU init or OOM.
+#[cfg(any(test, feature = "llama"))]
+pub fn should_retry_cpu(device: &str, error: &str) -> bool {
+    device != "cpu" && is_gpu_failure(error)
+}
+
+/// GPU init / OOM / driver failures. Context-window errors must not match.
+#[cfg(any(test, feature = "llama"))]
+pub fn is_gpu_failure(error: &str) -> bool {
+    if error.contains("prompt exceeds the llama.cpp context window") {
+        return false;
+    }
+    let lower = error.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "out of memory",
+        "out-of-memory",
+        "cuda",
+        "cublas",
+        "nvml",
+        "vulkan",
+        "ggml",
+        "metal",
+        "hipblas",
+        "failed to allocate",
+        "insufficient memory",
+        "device lost",
+        "no cuda",
+        "vram",
+    ];
+    if NEEDLES.iter().any(|needle| lower.contains(needle)) {
+        return true;
+    }
+    lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|word| word == "oom")
+}
+
+/// One CPU retry plan after a GPU load failure, or `None` to surface `error`.
+#[cfg(any(test, feature = "llama"))]
+pub fn cpu_retry_plan(
+    device: &str,
+    fallback: Option<String>,
+    error: &str,
+) -> Option<(String, u32, Option<String>)> {
+    if !should_retry_cpu(device, error) {
+        return None;
+    }
+    let note = format!("GPU load failed ({error}); using cpu");
+    let fallback = Some(match fallback {
+        Some(existing) if !existing.is_empty() => format!("{existing} {note}"),
+        _ => note,
+    });
+    Some(("cpu".to_owned(), 0, fallback))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +198,50 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains("Vulkan"))
         );
+    }
+
+    #[test]
+    fn gpu_oom_retries_once_on_cpu() {
+        let retry = cpu_retry_plan("cuda", None, "CUDA error: out of memory")
+            .unwrap_or_else(|| panic!("expected CPU retry"));
+        assert_eq!(retry.0, "cpu");
+        assert_eq!(retry.1, 0);
+        assert!(
+            retry
+                .2
+                .as_deref()
+                .is_some_and(|text| text.contains("out of memory") && text.contains("using cpu"))
+        );
+        assert!(cpu_retry_plan("cpu", retry.2, "CUDA error: out of memory").is_none());
+    }
+
+    #[test]
+    fn context_window_is_not_a_gpu_failure() {
+        let error = "prompt exceeds the llama.cpp context window";
+        assert!(!is_gpu_failure(error));
+        assert!(cpu_retry_plan("cuda", None, error).is_none());
+        assert!(cpu_retry_plan("vulkan", None, error).is_none());
+    }
+
+    #[test]
+    fn missing_gguf_is_not_retried_as_gpu_failure() {
+        let error = "catalog gemma-3-4b-it is not fully downloaded";
+        assert!(!is_gpu_failure(error));
+        assert!(cpu_retry_plan("cuda", None, error).is_none());
+    }
+
+    #[test]
+    fn oom_token_is_a_gpu_failure() {
+        assert!(is_gpu_failure("llama OOM while allocating KV cache"));
+        assert!(!is_gpu_failure("load a model before infer"));
+    }
+
+    #[test]
+    fn parse_n_gpu_layers_ignores_blank_and_junk() {
+        assert_eq!(parse_n_gpu_layers("32"), Some(32));
+        assert_eq!(parse_n_gpu_layers(" 0 "), Some(0));
+        assert_eq!(parse_n_gpu_layers(""), None);
+        assert_eq!(parse_n_gpu_layers("auto"), None);
+        assert_eq!(requested_n_gpu_layers(Some(8)), Some(8));
     }
 }
