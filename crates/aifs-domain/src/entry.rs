@@ -117,30 +117,25 @@ impl FileFamily {
 
 /// Date folder segment: images `YYYY-MM-DD` from EXIF, documents `YYYY-MM`.
 pub fn category_date_suffix(entry: &ObservedEntry, captured_on: Option<&str>) -> Option<String> {
-    match entry.family {
-        FileFamily::Image | FileFamily::RawImage => {
-            let value = captured_on?;
-            parse_iso_date(value).map(|_| value.to_owned())
-        }
-        FileFamily::Document
-        | FileFamily::Spreadsheet
-        | FileFamily::Presentation
-        | FileFamily::Ebook => {
-            if let Some(value) = captured_on {
-                if parse_iso_date(value).is_some() {
-                    return Some(value[..7].to_owned());
-                }
-                if parse_iso_year_month(value).is_some() {
-                    return Some(value.to_owned());
-                }
-            }
-            entry
-                .identity
-                .modified
-                .and_then(|stamp| utc_year_month_label(stamp.as_millis()))
-        }
-        _ => None,
+    if matches!(entry.family, FileFamily::Image | FileFamily::RawImage) {
+        let value = captured_on?;
+        return parse_iso_date(value).map(|_| value.to_owned());
     }
+    if !entry.family.is_document_like() {
+        return None;
+    }
+    if let Some(value) = captured_on {
+        if parse_iso_date(value).is_some() {
+            return Some(value[..7].to_owned());
+        }
+        if parse_iso_year_month(value).is_some() {
+            return Some(value.to_owned());
+        }
+    }
+    entry
+        .identity
+        .modified
+        .and_then(|stamp| utc_year_month_label(stamp.as_millis()))
 }
 
 /// True when the file name looks like a screenshot or UI capture.
