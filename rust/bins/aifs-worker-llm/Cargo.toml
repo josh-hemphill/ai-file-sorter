@@ -1,6 +1,6 @@
 [package]
 name = "aifs-worker-llm"
-description = "Isolated language-model worker (stub infer; llama.cpp is a later feature)"
+description = "Isolated language-model worker (stub by default; optional llama.cpp)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,17 +11,23 @@ rust-version.workspace = true
 name = "aifs-worker-llm"
 path = "src/main.rs"
 
-# Reserved names for later llama.cpp backends; the stub never reports an accelerator.
+# Default builds stay on the stub so workspace CI does not compile llama.cpp.
+# Enable local infer with `--features llama`, plus `cuda` / `vulkan` / `metal`.
 [features]
 default = []
-cuda = []
-vulkan = []
-metal = []
+llama = ["dep:llama-cpp-2", "dep:encoding_rs"]
+cuda = ["llama", "llama-cpp-2/cuda"]
+vulkan = ["llama", "llama-cpp-2/vulkan"]
+metal = ["llama", "llama-cpp-2/metal"]
 
 [dependencies]
 aifs-domain = { workspace = true }
 aifs-protocol = { workspace = true }
 aifs-worker-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+llama-cpp-2 = { version = "0.1.154", optional = true }
+encoding_rs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 aifs-worker-client = { workspace = true }

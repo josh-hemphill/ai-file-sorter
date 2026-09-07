@@ -42,6 +42,16 @@ cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
+Optional llama.cpp (not compiled by default CI). CUDA/Vulkan/Metal stay inside
+`aifs-worker-llm` only:
+
+```bash
+CXX=g++ cargo build -p aifs-worker-llm --features llama
+CXX=g++ cargo build -p aifs-worker-llm --features llama,cuda
+cargo build -p aifs-worker-llm --features llama,vulkan
+cargo build -p aifs-worker-llm --features llama,metal   # macOS
+```
+
 The toolchain is pinned to `stable` (`rust/rust-toolchain.toml`, edition 2024).
 `unsafe_code` is forbidden in the workspace; crash-prone native libraries belong in
 worker processes. The desktop shell uses pnpm 12 and Node.js 24 LTS.

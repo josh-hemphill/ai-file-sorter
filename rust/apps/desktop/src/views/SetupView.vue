@@ -143,9 +143,10 @@ onUnmounted(() => {
         <h1 id="setup-title">Setup</h1>
         <p class="muted">
           This page records which local or remote model each analysis slot should use. Saving
-          does not start a model. Scan loads the LLM worker for assigned slots (infer is still
-          stubbed). Propose stays heuristic if load fails. Several slots can share one downloaded
-          GGUF — it is fetched once.
+          does not start a model. Scan loads the LLM worker for assigned slots. Infer uses
+          llama.cpp when that worker is built with `--features llama` (CUDA/Vulkan/Metal when
+          those features are enabled); the default worker stubs infer. Propose stays heuristic
+          if load fails. Several slots can share one downloaded GGUF — it is fetched once.
         </p>
       </div>
       <div class="row">
@@ -161,7 +162,8 @@ onUnmounted(() => {
     </header>
     <p v-if="error" class="error">{{ error }}</p>
     <p v-else-if="saved" class="ok">
-      Assignments saved. Scan will load the LLM worker for assigned slots; infer is still stubbed.
+      Assignments saved. Scan will load the LLM worker for assigned slots. Infer uses llama.cpp
+      when that worker is built with `--features llama`.
     </p>
 
     <article class="card">
@@ -182,9 +184,9 @@ onUnmounted(() => {
       </label>
       <p class="callout">
         <Icon :path="mdiInformationOutline" :size="18" />
-        CUDA is not live in this rewrite. Matching the upstream Qt CUDA build needs NVIDIA
-        drivers, a llama.cpp worker compiled with GGML_CUDA, and this accelerator set to CUDA
-        (or Auto, which will prefer CUDA). The preference is stored now; the worker is later.
+        CUDA lives only in `aifs-worker-llm`. Build that worker with `--features llama,cuda`,
+        install NVIDIA drivers, and set this accelerator to CUDA (or Auto, which prefers CUDA).
+        The UI and engine never load CUDA.
       </p>
     </article>
 
