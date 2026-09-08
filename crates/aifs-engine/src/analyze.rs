@@ -4,6 +4,7 @@ use crate::cancel::WorkStatus;
 use crate::checkpoint::{CHECKPOINT_EVERY, has_category_evidence, has_description_evidence};
 use aifs_domain::{
     EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
+    looks_like_screenshot,
 };
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text};
@@ -65,75 +66,8 @@ pub fn analyze_into_supervised(
         .to_string();
     let mut loaded: Option<String> = None;
     let document_only = categorize.is_none() && document.is_some();
-
-    if run_categorize && let Some(slot) = categorize_slot {
-        match ensure_loaded(
-            &mut llm,
-            &mut loaded,
-            slot,
-            models,
-            &storage_dir,
-            &mut |message| on_notice(AnalyzeNotice::Log(message)),
-        ) {
-            Ok(()) => {
-                let targets: Vec<ObservedEntry> = snapshot
-                    .entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.kind == EntryKind::File
-                            && should_categorize(entry, categorize.is_some(), document_only)
-                    })
-                    .cloned()
-                    .collect();
-                let total = targets.len() as u64;
-                let mut bags = Vec::new();
-                for (index, entry) in targets.into_iter().enumerate() {
-                    if !should_continue() {
-                        snapshot.evidence.extend(bags);
-                        shutdown_llm(&mut llm, loaded.is_some());
-                        return WorkStatus::Cancelled;
-                    }
-                    on_notice(AnalyzeNotice::Progress {
-                        stage: "categorize",
-                        current: index as u64 + 1,
-                        total,
-                        path: entry.path.as_str(),
-                    });
-                    if has_category_evidence(snapshot, &entry) {
-                        continue;
-                    }
-                    let prior = prior_evidence(snapshot, &entry);
-                    match llm.categorize(&snapshot.root, &entry, prior) {
-                        Ok(Some(evidence)) => {
-                            log_category(
-                                &mut |message| on_notice(AnalyzeNotice::Log(message)),
-                                &entry,
-                                &evidence,
-                            );
-                            bags.push(evidence);
-                            if bags.len() >= CHECKPOINT_EVERY {
-                                snapshot.evidence.extend(std::mem::take(&mut bags));
-                                if !on_checkpoint(snapshot) {
-                                    shutdown_llm(&mut llm, loaded.is_some());
-                                    return WorkStatus::PersistFailed;
-                                }
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => on_notice(AnalyzeNotice::Log(format!(
-                            "categorize skipped {}: {}",
-                            entry.path.as_str(),
-                            sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
-                        ))),
-                    }
-                }
-                snapshot.evidence.extend(bags);
-            }
-            Err(message) => on_notice(AnalyzeNotice::Log(format!(
-                "Categorize load failed ({message}); folder labels stay heuristic."
-            ))),
-        }
-    }
+    let allowed_categories = settings.policy.whitelist.main.clone();
+    let style = settings.policy.style;
 
     if run_describe && let Some(slot) = vision {
         match ensure_loaded(
@@ -175,12 +109,98 @@ pub fn analyze_into_supervised(
                     if entry.family == FileFamily::RawImage {
                         on_notice(AnalyzeNotice::Log(raw_describe_log(entry.path.as_str())));
                     }
-                    match llm.describe(&snapshot.root, &entry, prior) {
+                    match llm.describe(&snapshot.root, &entry, prior.clone()) {
                         Ok(Some(evidence)) => {
                             on_notice(AnalyzeNotice::Log(format!(
                                 "described {}",
                                 entry.path.as_str()
                             )));
+                            let mut combined = prior;
+                            combined.push(evidence.clone());
+                            maybe_log_screenshot(&mut on_notice, &entry, &combined);
+                            bags.push(evidence);
+                            if bags.len() >= CHECKPOINT_EVERY {
+                                snapshot.evidence.extend(std::mem::take(&mut bags));
+                                if !on_checkpoint(snapshot) {
+                                    shutdown_llm(&mut llm, loaded.is_some());
+                                    return WorkStatus::PersistFailed;
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                        }
+                        Err(error) => {
+                            maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                            on_notice(AnalyzeNotice::Log(format!(
+                                "describe skipped {}: {}",
+                                entry.path.as_str(),
+                                sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
+                            )));
+                        }
+                    }
+                }
+                snapshot.evidence.extend(bags);
+            }
+            Err(message) => on_notice(AnalyzeNotice::Log(format!(
+                "Vision load failed ({message}); image description skipped."
+            ))),
+        }
+    }
+
+    if run_categorize && let Some(slot) = categorize_slot {
+        match ensure_loaded(
+            &mut llm,
+            &mut loaded,
+            slot,
+            models,
+            &storage_dir,
+            &mut |message| on_notice(AnalyzeNotice::Log(message)),
+        ) {
+            Ok(()) => {
+                let targets: Vec<ObservedEntry> = snapshot
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.kind == EntryKind::File
+                            && should_categorize(entry, categorize.is_some(), document_only)
+                    })
+                    .cloned()
+                    .collect();
+                let total = targets.len() as u64;
+                let mut bags = Vec::new();
+                for (index, entry) in targets.into_iter().enumerate() {
+                    if !should_continue() {
+                        snapshot.evidence.extend(bags);
+                        shutdown_llm(&mut llm, loaded.is_some());
+                        return WorkStatus::Cancelled;
+                    }
+                    on_notice(AnalyzeNotice::Progress {
+                        stage: "categorize",
+                        current: index as u64 + 1,
+                        total,
+                        path: entry.path.as_str(),
+                    });
+                    if has_category_evidence(snapshot, &entry) {
+                        continue;
+                    }
+                    let prior = prior_evidence(snapshot, &entry);
+                    if !run_describe {
+                        maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                    }
+                    match llm.categorize(
+                        &snapshot.root,
+                        &entry,
+                        prior,
+                        allowed_categories.clone(),
+                        style,
+                    ) {
+                        Ok(Some(evidence)) => {
+                            log_category(
+                                &mut |message| on_notice(AnalyzeNotice::Log(message)),
+                                &entry,
+                                &evidence,
+                            );
                             bags.push(evidence);
                             if bags.len() >= CHECKPOINT_EVERY {
                                 snapshot.evidence.extend(std::mem::take(&mut bags));
@@ -192,7 +212,7 @@ pub fn analyze_into_supervised(
                         }
                         Ok(None) => {}
                         Err(error) => on_notice(AnalyzeNotice::Log(format!(
-                            "describe skipped {}: {}",
+                            "categorize skipped {}: {}",
                             entry.path.as_str(),
                             sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
                         ))),
@@ -201,7 +221,7 @@ pub fn analyze_into_supervised(
                 snapshot.evidence.extend(bags);
             }
             Err(message) => on_notice(AnalyzeNotice::Log(format!(
-                "Vision load failed ({message}); image description skipped."
+                "Categorize load failed ({message}); folder labels stay heuristic."
             ))),
         }
     }
@@ -311,6 +331,21 @@ fn log_category(on_log: &mut impl FnMut(String), entry: &ObservedEntry, evidence
     on_log(format!("categorized {} → {label}", entry.path.as_str()));
 }
 
+fn maybe_log_screenshot(
+    on_notice: &mut impl FnMut(AnalyzeNotice<'_>),
+    entry: &ObservedEntry,
+    evidence: &[Evidence],
+) {
+    if looks_like_screenshot(entry, evidence) {
+        on_notice(AnalyzeNotice::Log(screenshot_log(entry.path.as_str())));
+    }
+}
+
+/// Scan line for screenshot/UI captures.
+pub(crate) fn screenshot_log(path: &str) -> String {
+    format!("{path} · screenshot · Screenshots/UI")
+}
+
 /// Scan line for RAW describe: EXIF and filename, never pixels.
 pub(crate) fn raw_describe_log(path: &str) -> String {
     format!("RAW {path}: describe uses EXIF and filename, not pixels")
@@ -326,5 +361,24 @@ mod tests {
             raw_describe_log("DSC_0001.CR2"),
             "RAW DSC_0001.CR2: describe uses EXIF and filename, not pixels"
         );
+    }
+
+    #[test]
+    fn screenshot_log_uses_golden_path_copy() {
+        assert_eq!(
+            screenshot_log("IMG_1042.jpg"),
+            "IMG_1042.jpg · screenshot · Screenshots/UI"
+        );
+        let entry = ObservedEntry {
+            id: aifs_domain::AssetId::new(),
+            path: aifs_domain::RelativePath::parse("Screenshot.png")
+                .unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::File,
+            family: FileFamily::Image,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        };
+        assert!(looks_like_screenshot(&entry, &[]));
     }
 }

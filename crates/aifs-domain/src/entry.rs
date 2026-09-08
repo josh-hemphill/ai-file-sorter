@@ -1,5 +1,6 @@
 //! Observed filesystem entries and their stable identity.
 
+use crate::evidence::{Evidence, keys};
 use crate::ids::AssetId;
 use crate::path::RelativePath;
 use crate::time::Timestamp;
@@ -104,6 +105,30 @@ impl FileFamily {
             Self::Data | Self::Sidecar | Self::Generic => "Other",
         }
     }
+}
+
+/// True when the file name looks like a screenshot or UI capture.
+pub fn filename_looks_like_screenshot(file_name: &str) -> bool {
+    let name = file_name.to_ascii_lowercase();
+    name.contains("screenshot")
+        || name.contains("screen-shot")
+        || name.contains("screen_shot")
+        || name.contains("screen shot")
+}
+
+/// True when a caption looks like a screenshot or UI capture.
+pub fn description_looks_like_screenshot(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("screenshot") || text.contains("ui capture") || text.contains("screen capture")
+}
+
+/// True when the file name or description evidence looks like a screenshot or UI capture.
+pub fn looks_like_screenshot(entry: &ObservedEntry, evidence: &[Evidence]) -> bool {
+    filename_looks_like_screenshot(entry.path.file_name())
+        || evidence.iter().any(|bag| {
+            bag.fact(keys::DESCRIPTION)
+                .is_some_and(description_looks_like_screenshot)
+        })
 }
 
 /// Identity captured at scan time so apply/undo can detect that a file changed underneath.
@@ -259,5 +284,39 @@ mod tests {
         };
         assert_eq!(entry.extension(), None);
         assert_eq!(entry.stem(), ".bashrc");
+    }
+
+    #[test]
+    fn screenshot_filename_and_caption_detectors() {
+        assert!(filename_looks_like_screenshot("Screenshot 2024.png"));
+        assert!(filename_looks_like_screenshot("screen-shot.jpg"));
+        assert!(filename_looks_like_screenshot("screen_shot.webp"));
+        assert!(!filename_looks_like_screenshot("DSC_0001.jpg"));
+        assert!(description_looks_like_screenshot(
+            "A UI capture of settings"
+        ));
+        assert!(description_looks_like_screenshot(
+            "this is a screenshot of a menu"
+        ));
+        assert!(!description_looks_like_screenshot("a cat on a sofa"));
+        let shot = ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse("desk.jpg").unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::File,
+            family: FileFamily::Image,
+            identity: FileIdentity::default(),
+            is_hidden: false,
+            lock: LockState::Readable,
+        };
+        let bag = crate::Evidence::new(
+            shot.id,
+            crate::EvidenceSource::LocalModel {
+                model: "vision".into(),
+            },
+            crate::Confidence::new(0.5),
+        )
+        .with_fact(keys::DESCRIPTION, "a settings panel UI capture");
+        assert!(looks_like_screenshot(&shot, &[bag]));
+        assert!(!looks_like_screenshot(&shot, &[]));
     }
 }

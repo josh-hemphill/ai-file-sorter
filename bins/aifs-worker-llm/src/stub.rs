@@ -3,7 +3,7 @@
 use crate::device::{requested_n_gpu_layers, resolve_device};
 use aifs_domain::evidence::keys;
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
-use aifs_protocol::ModelBackend;
+use aifs_protocol::{FolderStyle, ModelBackend};
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use std::path::Path;
 
@@ -64,6 +64,8 @@ impl WorkerHandler for StubHandler {
         _root: &Path,
         entry: &ObservedEntry,
         _evidence: &[Evidence],
+        allowed_categories: &[String],
+        _style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         let loaded = self.require_loaded()?;
         if entry.kind != EntryKind::File {
@@ -77,7 +79,7 @@ impl WorkerHandler for StubHandler {
                 },
                 Confidence::new(STUB_CONFIDENCE),
             )
-            .with_fact(keys::CATEGORY, entry.family.default_folder())
+            .with_fact(keys::CATEGORY, stub_category(entry, allowed_categories))
             .with_fact(keys::DESCRIPTION, stub_description(entry))
             .with_fact(keys::SUGGESTED_NAME, entry.path.file_name()),
         ))
@@ -140,6 +142,20 @@ fn model_label(backend: &ModelBackend) -> String {
         ModelBackend::Gemini { model } => format!("gemini:{model}"),
         ModelBackend::CustomEndpoint { model, .. } => format!("custom:{model}"),
     }
+}
+
+fn stub_category(entry: &ObservedEntry, allowed: &[String]) -> String {
+    let fallback = entry.family.default_folder();
+    if allowed.is_empty() {
+        return fallback.to_owned();
+    }
+    if allowed
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(fallback))
+    {
+        return fallback.to_owned();
+    }
+    allowed[0].clone()
 }
 
 fn stub_description(entry: &ObservedEntry) -> String {

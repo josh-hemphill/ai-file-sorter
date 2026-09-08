@@ -2,12 +2,12 @@
 
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
-    CATEGORIZE_SYSTEM, CHAT_SYSTEM, DESCRIBE_SYSTEM_TEXT, categorize_user, describe_user,
+    CHAT_SYSTEM, DESCRIBE_SYSTEM_TEXT, categorize_system, categorize_user, describe_user,
 };
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::{
-    ModelBackend, OPENAI_CHAT_URL, custom_chat_url, gemini_generate_url, hosted_model_label,
-    is_hosted_backend, sanitize_hosted_text,
+    FolderStyle, ModelBackend, OPENAI_CHAT_URL, custom_chat_url, gemini_generate_url,
+    hosted_model_label, is_hosted_backend, sanitize_hosted_text,
 };
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use serde::Deserialize;
@@ -85,14 +85,16 @@ impl WorkerHandler for HostedHandler {
         _root: &Path,
         entry: &ObservedEntry,
         evidence: &[Evidence],
+        allowed_categories: &[String],
+        style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         let model_id = self.require_loaded()?.info.model.clone();
         if entry.kind != EntryKind::File {
             return Ok(None);
         }
         let text = self.complete(
-            CATEGORIZE_SYSTEM,
-            &categorize_user(entry, evidence),
+            &categorize_system(allowed_categories, style),
+            &categorize_user(entry, evidence, allowed_categories, style),
             MAX_GEN_TOKENS,
         )?;
         Ok(evidence_from_text(&model_id, entry, &text, true))

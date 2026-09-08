@@ -101,12 +101,22 @@ impl WorkerHandler for LlmHandler {
         root: &Path,
         entry: &ObservedEntry,
         evidence: &[Evidence],
+        allowed_categories: &[String],
+        style: aifs_protocol::FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         match self.active {
             #[cfg(feature = "llama")]
-            Active::Llama => self.llama.categorize(root, entry, evidence),
-            Active::Hosted => self.hosted.categorize(root, entry, evidence),
-            Active::Stub => self.stub.categorize(root, entry, evidence),
+            Active::Llama => {
+                self.llama
+                    .categorize(root, entry, evidence, allowed_categories, style)
+            }
+            Active::Hosted => {
+                self.hosted
+                    .categorize(root, entry, evidence, allowed_categories, style)
+            }
+            Active::Stub => self
+                .stub
+                .categorize(root, entry, evidence, allowed_categories, style),
             Active::None => Err("load a model before infer".to_owned()),
         }
     }

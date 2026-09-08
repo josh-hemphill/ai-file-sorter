@@ -1,6 +1,7 @@
 //! Prompts for local infer. Model output is evidence, never a path or SQL.
 
-use aifs_domain::{Evidence, ObservedEntry, evidence::keys};
+use aifs_domain::{Evidence, ObservedEntry, evidence::keys, looks_like_screenshot};
+use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
 const FACT_CHARS: usize = 160;
@@ -33,14 +34,49 @@ ops: set_destination, move_to_folder, rename, accept, reject, reopen. \
 folder and destination are root-relative, never '..', never absolute, never SQL or shell. \
 Use \"patches\":[] when you are only answering. Do not emit filesystem operations.";
 
+/// Builds the system prompt for categorize, including whitelist and folder style.
+pub fn categorize_system(allowed_categories: &[String], style: FolderStyle) -> String {
+    let mut prompt = CATEGORIZE_SYSTEM.to_owned();
+    if style == FolderStyle::Refined {
+        prompt.push_str(
+            " Prefer specific folders when evidence supports them (Screenshots, Podcasts).",
+        );
+    }
+    if !allowed_categories.is_empty() {
+        prompt.push_str(" category must be one of: ");
+        prompt.push_str(&allowed_categories.join(", "));
+        prompt.push('.');
+    }
+    prompt
+}
+
 /// Builds the user turn for categorize.
-pub fn categorize_user(entry: &ObservedEntry, evidence: &[Evidence]) -> String {
-    format!(
+pub fn categorize_user(
+    entry: &ObservedEntry,
+    evidence: &[Evidence],
+    allowed_categories: &[String],
+    style: FolderStyle,
+) -> String {
+    let mut user = format!(
         "Relative path: {}\nFamily: {:?}\n{}",
         entry.path.as_str(),
         entry.family,
         format_evidence(evidence)
-    )
+    );
+    if looks_like_screenshot(entry, evidence) {
+        user.push_str("\nThis looks like a screenshot or UI capture.");
+        if style == FolderStyle::Refined {
+            user.push_str(" Prefer category Screenshots.");
+        }
+    }
+    if !allowed_categories.is_empty() {
+        user.push_str("\nAllowed categories: ");
+        user.push_str(&allowed_categories.join(", "));
+    }
+    if style == FolderStyle::Refined {
+        user.push_str("\nFolder style: refined.");
+    }
+    user
 }
 
 /// Builds the user turn for describe.
@@ -86,19 +122,22 @@ mod tests {
     use super::*;
     use aifs_domain::{AssetId, Confidence, EvidenceSource};
 
-    #[test]
-    fn prompt_includes_path_as_data_not_as_a_command() {
-        let entry = ObservedEntry {
+    fn file(path: &str, family: aifs_domain::FileFamily) -> ObservedEntry {
+        ObservedEntry {
             id: AssetId::new(),
-            path: aifs_domain::RelativePath::parse("notes.txt")
-                .unwrap_or_else(|error| panic!("{error}")),
+            path: aifs_domain::RelativePath::parse(path).unwrap_or_else(|error| panic!("{error}")),
             kind: aifs_domain::EntryKind::File,
-            family: aifs_domain::FileFamily::Document,
+            family,
             identity: aifs_domain::FileIdentity::default(),
             is_hidden: false,
             lock: aifs_domain::LockState::Readable,
-        };
-        let user = categorize_user(&entry, &[]);
+        }
+    }
+
+    #[test]
+    fn prompt_includes_path_as_data_not_as_a_command() {
+        let entry = file("notes.txt", aifs_domain::FileFamily::Document);
+        let user = categorize_user(&entry, &[], &[], FolderStyle::Consistent);
         assert!(user.contains("notes.txt"));
         assert!(!user.contains("rm "));
         assert!(CATEGORIZE_SYSTEM.contains("JSON"));
@@ -110,6 +149,30 @@ mod tests {
         assert!(CHAT_SYSTEM.contains("patches"));
         let described = describe_user(&entry, &[]);
         assert!(described.contains("notes.txt"));
+    }
+
+    #[test]
+    fn categorize_user_includes_description_whitelist_and_screenshot_hint() {
+        let shot = file("Screenshot.png", aifs_domain::FileFamily::Image);
+        let bag = Evidence::new(
+            shot.id,
+            EvidenceSource::LocalModel {
+                model: "gemma".into(),
+            },
+            Confidence::new(0.55),
+        )
+        .with_fact(keys::DESCRIPTION, "a settings panel UI capture");
+        let allowed = vec!["Screenshots".into(), "Pictures".into()];
+        let user = categorize_user(&shot, &[bag], &allowed, FolderStyle::Refined);
+        assert!(user.contains("a settings panel UI capture"));
+        assert!(user.contains("Allowed categories: Screenshots, Pictures"));
+        assert!(user.contains("screenshot or UI capture"));
+        assert!(user.contains("Prefer category Screenshots"));
+        assert!(user.contains("Folder style: refined"));
+        let system = categorize_system(&allowed, FolderStyle::Refined);
+        assert!(system.contains("category must be one of: Screenshots, Pictures"));
+        assert!(system.contains("Screenshots, Podcasts"));
+        assert!(looks_like_screenshot(&shot, &[]));
     }
 
     #[test]
@@ -133,6 +196,8 @@ mod tests {
                 lock: aifs_domain::LockState::Readable,
             },
             &[bag],
+            &[],
+            FolderStyle::Consistent,
         );
         assert!(user.len() <= EVIDENCE_CHARS + 80, "{}", user.len());
     }

@@ -3010,6 +3010,270 @@ mod tests {
     }
 
     #[test]
+    fn scan_describes_before_it_categorizes() {
+        let mut worker =
+            aifs_worker_client::WorkerClient::try_connect(aifs_protocol::worker::WorkerKind::Llm)
+                .unwrap_or_else(|| panic!("build aifs-worker-llm before this test"));
+        let llama = worker
+            .capabilities()
+            .iter()
+            .any(|capability| capability == "llama");
+        let _ = worker.shutdown();
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let models = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("Screenshot.png"), b"png").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "settings".into(),
+            command: Command::PutSettings {
+                settings: AppSettings {
+                    analyze_images: true,
+                    policy: ProposalPolicy {
+                        style: aifs_protocol::FolderStyle::Refined,
+                        whitelist: aifs_protocol::CategoryWhitelist {
+                            main: vec!["Screenshots".into(), "Documents".into()],
+                            ..aifs_protocol::CategoryWhitelist::default()
+                        },
+                        ..ProposalPolicy::default()
+                    },
+                    ..AppSettings::default()
+                },
+            },
+        })) {
+            Event::Settings { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[1].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels {
+                inventory: inventory.clone(),
+            },
+        })) {
+            Event::Models { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: None,
+            },
+        });
+        let logs: Vec<String> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        if llama {
+            assert!(
+                logs.iter().any(|message| message.contains("load failed")
+                    || message.contains("not fully downloaded")),
+                "llama worker without a verified GGUF must fail load, logs={logs:?}"
+            );
+            return;
+        }
+        let described = logs.iter().position(|line| line.contains("described"));
+        let categorized = logs.iter().position(|line| line.contains("categorized"));
+        let described = described.unwrap_or_else(|| panic!("expected describe log, logs={logs:?}"));
+        let categorized =
+            categorized.unwrap_or_else(|| panic!("expected categorize log, logs={logs:?}"));
+        assert!(
+            described < categorized,
+            "describe must run before categorize, logs={logs:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|line| line == "Screenshot.png · screenshot · Screenshots/UI"),
+            "expected screenshot scan line, logs={logs:?}"
+        );
+        let shot = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "Screenshot.png")
+            .unwrap_or_else(|| panic!("screenshot entry"));
+        assert!(
+            snapshot
+                .evidence_for(shot.id)
+                .any(|bag| bag.fact(aifs_domain::evidence::keys::DESCRIPTION).is_some()),
+            "describe evidence missing: {:?}",
+            snapshot.evidence
+        );
+    }
+
+    #[test]
+    fn cancel_after_describe_persists_descriptions_for_resume() {
+        let mut worker =
+            aifs_worker_client::WorkerClient::try_connect(aifs_protocol::worker::WorkerKind::Llm)
+                .unwrap_or_else(|| panic!("build aifs-worker-llm before this test"));
+        let llama = worker
+            .capabilities()
+            .iter()
+            .any(|capability| capability == "llama");
+        let _ = worker.shutdown();
+        if llama {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let models = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("Screenshot.png"), b"png").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "settings".into(),
+            command: Command::PutSettings {
+                settings: AppSettings {
+                    analyze_images: true,
+                    ..AppSettings::default()
+                },
+            },
+        })) {
+            Event::Settings { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[1].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::PutModels { inventory },
+        })) {
+            Event::Models { .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        let gate = engine.cancel_gate();
+        let mut events = Vec::new();
+        engine.handle_with(
+            Request {
+                id: "3".into(),
+                command: Command::Scan {
+                    root: dir.path().to_path_buf(),
+                    options: ScanOptions {
+                        extract_metadata: false,
+                        fingerprint_prefix_bytes: 32,
+                        ..ScanOptions::default()
+                    },
+                    session: Some(session),
+                },
+            },
+            &mut |envelope| {
+                if let Event::Progress { stage, current, .. } = &envelope.event
+                    && stage == "categorize"
+                    && *current >= 1
+                {
+                    gate.request_cancel("3".into());
+                }
+                events.push(envelope);
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        let checkpoint = engine
+            .stored_snapshot(session)
+            .unwrap_or_else(|| panic!("expected describe checkpoint"));
+        assert!(
+            checkpoint.evidence.iter().any(|bag| {
+                bag.fact(aifs_domain::evidence::keys::DESCRIPTION)
+                    .is_some_and(|text| text.contains("Screenshot.png"))
+            }),
+            "checkpoint should keep describe evidence, got {:?}",
+            checkpoint.evidence
+        );
+
+        let resumed = engine.handle(Request {
+            id: "4".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: false,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        });
+        let logs: Vec<_> = resumed
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter().any(|line| line.contains("Resuming session")),
+            "expected resume log, got {logs:?}"
+        );
+        let snapshot = match terminal(resumed) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        let shot = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_str() == "Screenshot.png")
+            .unwrap_or_else(|| panic!("screenshot entry"));
+        let descriptions = snapshot
+            .evidence_for(shot.id)
+            .filter(|bag| {
+                bag.fact(aifs_domain::evidence::keys::DESCRIPTION).is_some()
+                    && bag.fact(aifs_domain::evidence::keys::CATEGORY).is_none()
+            })
+            .count();
+        assert_eq!(
+            descriptions, 1,
+            "resume must not describe twice, evidence={:?}",
+            snapshot.evidence
+        );
+    }
+
+    #[test]
     fn corrupt_settings_json_is_a_storage_error() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let db = dir.path().join("engine.sqlite");
