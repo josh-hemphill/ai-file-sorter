@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +11,12 @@ import {
   VS_2026,
   applyWindowsCmakeGenerator,
   cmakeGeneratorForVsVersion,
+  clearLlamaCppSysCmakeCache,
   parseCmakeCapabilitiesGenerators,
   parseCmakeHelpGenerators,
+  parseCmdSetOutput,
   pickWindowsCmakeGenerator,
+  planWindowsLlamaBuild,
 } from './windows-cmake-generator.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +70,14 @@ test('cmakeGeneratorForVsVersion matches cmake-rs Visual Studio names', () => {
   assert.equal(cmakeGeneratorForVsVersion(17), VS_2022);
   assert.equal(cmakeGeneratorForVsVersion(16), VS_2019);
   assert.equal(cmakeGeneratorForVsVersion(14), undefined);
+});
+
+test('parseCmdSetOutput reads cmd /c set lines', () => {
+  const env = parseCmdSetOutput('INCLUDE=C:\\inc\r\nPath=C:\\ninja;C:\\old\r\nNOT A VAR\r\nLIB=C:\\lib\r\n');
+  assert.equal(env.INCLUDE, 'C:\\inc');
+  assert.equal(env.Path, 'C:\\ninja;C:\\old');
+  assert.equal(env.LIB, 'C:\\lib');
+  assert.equal(env['NOT A VAR'], undefined);
 });
 
 test('pickWindowsCmakeGenerator leaves Unix and explicit CMAKE_GENERATOR alone', () => {
@@ -133,7 +146,7 @@ test('pickWindowsCmakeGenerator uses Ninja when only VS 2026 is installed', () =
   );
 });
 
-test('pickWindowsCmakeGenerator falls back to a listed VS generator without Ninja', () => {
+test('pickWindowsCmakeGenerator does not force VS 2022 when it is not installed', () => {
   const listed = parseCmakeHelpGenerators(CMAKE_HELP_WITHOUT_VS_2026);
   assert.equal(
     pickWindowsCmakeGenerator({
@@ -143,8 +156,18 @@ test('pickWindowsCmakeGenerator falls back to a listed VS generator without Ninj
       installedVsMajors: [18],
       hasNinja: false,
     }),
-    VS_2022,
+    undefined,
   );
+  const plan = planWindowsLlamaBuild({
+    platform: 'win32',
+    listedGenerators: listed,
+    latestVsMajor: 18,
+    installedVsMajors: [18],
+    hasNinja: false,
+  });
+  assert.equal(plan.kind, 'error');
+  assert.match(plan.message, /winget install Ninja-build.Ninja/);
+  assert.match(plan.message, /llama-cpp-sys-2/);
 });
 
 test('applyWindowsCmakeGenerator writes CMAKE_GENERATOR and is a no-op on Unix', () => {
@@ -159,9 +182,11 @@ test('applyWindowsCmakeGenerator writes CMAKE_GENERATOR and is a no-op on Unix',
       installedVsMajors: [18, 17],
       hasNinja: false,
     }),
+    clearCache: () => 0,
     log: (message) => messages.push(message),
   });
-  assert.equal(chosen, VS_2022);
+  assert.equal(chosen.kind, 'set');
+  assert.equal(chosen.generator, VS_2022);
   assert.equal(env.CMAKE_GENERATOR, VS_2022);
   assert.match(messages[0], /CMAKE_GENERATOR=Visual Studio 17 2022/);
 
@@ -176,26 +201,93 @@ test('applyWindowsCmakeGenerator writes CMAKE_GENERATOR and is a no-op on Unix',
       inspectBuildTools: () => {
         throw new Error('vswhere must not run on Unix');
       },
-    }),
-    undefined,
+    }).kind,
+    'noop',
   );
   assert.equal(unixEnv.CMAKE_GENERATOR, undefined);
 
   const preset = { CMAKE_GENERATOR: 'Ninja' };
-  assert.equal(
-    applyWindowsCmakeGenerator({
-      env: preset,
-      platform: 'win32',
-      listGenerators: () => {
-        throw new Error('cmake must not run when CMAKE_GENERATOR is set');
-      },
-      inspectBuildTools: () => {
-        throw new Error('vswhere must not run when CMAKE_GENERATOR is set');
-      },
-    }),
-    undefined,
-  );
+  const kept = applyWindowsCmakeGenerator({
+    env: preset,
+    platform: 'win32',
+    listGenerators: () => {
+      throw new Error('cmake must not run when CMAKE_GENERATOR is set');
+    },
+    inspectBuildTools: () => ({ hasNinja: true, vsInstallPath: 'C:\\VS' }),
+    loadMsvc: () => true,
+    log: () => {},
+  });
+  assert.equal(kept.kind, 'keep');
   assert.equal(preset.CMAKE_GENERATOR, 'Ninja');
+});
+
+test('applyWindowsCmakeGenerator prepends bundled Ninja and loads MSVC env', () => {
+  const env = { PATH: 'C:\\old' };
+  const loaded = [];
+  const caches = [];
+  const messages = [];
+  const plan = applyWindowsCmakeGenerator({
+    env,
+    platform: 'win32',
+    listGenerators: () => parseCmakeHelpGenerators(CMAKE_HELP_WITHOUT_VS_2026),
+    inspectBuildTools: () => ({
+      latestVsMajor: 18,
+      installedVsMajors: [18],
+      hasNinja: true,
+      ninjaPath: 'C:\\VS\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe',
+      vsInstallPath: 'C:\\VS',
+    }),
+    loadMsvc: (target, path) => {
+      loaded.push(path);
+      target.INCLUDE = 'C:\\inc';
+      return true;
+    },
+    clearCache: (root) => caches.push(root),
+    repoRoot: '/repo',
+    log: (message) => messages.push(message),
+  });
+  assert.equal(plan.kind, 'set');
+  assert.equal(env.CMAKE_GENERATOR, 'Ninja');
+  assert.equal(
+    env.PATH,
+    'C:\\VS\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja;C:\\old',
+  );
+  assert.deepEqual(loaded, ['C:\\VS']);
+  assert.deepEqual(caches, ['/repo']);
+  assert.equal(env.INCLUDE, 'C:\\inc');
+  assert.match(messages[0], /CMAKE_GENERATOR=Ninja/);
+});
+
+test('applyWindowsCmakeGenerator fails closed when VS 2026 has no Ninja or VS 2022', () => {
+  const messages = [];
+  const plan = applyWindowsCmakeGenerator({
+    env: {},
+    platform: 'win32',
+    listGenerators: () => parseCmakeHelpGenerators(CMAKE_HELP_WITHOUT_VS_2026),
+    inspectBuildTools: () => ({
+      latestVsMajor: 18,
+      installedVsMajors: [18],
+      hasNinja: false,
+    }),
+    log: (message) => messages.push(message),
+  });
+  assert.equal(plan.kind, 'error');
+  assert.match(messages[0], /CMake 4.2/);
+});
+
+test('clearLlamaCppSysCmakeCache removes CMakeCache.txt under llama-cpp-sys-2', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-cmake-'));
+  const cacheDir = join(root, 'target', 'debug', 'build', 'llama-cpp-sys-2-abc', 'out', 'build');
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(join(cacheDir, 'CMakeCache.txt'), 'CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022\n');
+  const other = join(root, 'target', 'debug', 'build', 'other-crate-xyz', 'out', 'build');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, 'CMakeCache.txt'), 'keep\n');
+  const logs = [];
+  assert.equal(clearLlamaCppSysCmakeCache(root, (message) => logs.push(message)), 1);
+  assert.equal(existsSync(join(cacheDir, 'CMakeCache.txt')), false);
+  assert.equal(existsSync(join(other, 'CMakeCache.txt')), true);
+  assert.match(logs[0], /cleared 1/);
 });
 
 test('with-cmake-generator.mjs forwards the child exit code', () => {
@@ -205,6 +297,7 @@ test('with-cmake-generator.mjs forwards the child exit code', () => {
     { encoding: 'utf8' },
   );
   assert.equal(result.status, 7);
+  assert.equal(result.stderr.includes('DEP0190'), false);
 });
 
 test('with-cmake-generator.mjs does not set CMAKE_GENERATOR on Unix', () => {

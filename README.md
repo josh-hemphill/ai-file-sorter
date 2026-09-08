@@ -73,11 +73,14 @@ cargo test --workspace
 (needs clang, CMake, and a C++ compiler). `pnpm llama` and Tauri's
 `beforeDevCommand` wrap `cargo engine-llm` so Windows can compile when Visual
 Studio 2026 is installed but CMake is older than 4.2 (cmake-rs passes
-`-G "Visual Studio 18 2026"`, which those CMake builds do not know). Upgrade
-CMake to 4.2+ or set `CMAKE_GENERATOR` yourself (`Ninja`, or
-`Visual Studio 17 2022` when VS 2022 is present) if you invoke `cargo engine-llm`
-directly. `pnpm build` and `cargo test --workspace` keep the stub worker so
-default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
+`-G "Visual Studio 18 2026"`, which those CMake builds do not know). The wrapper
+uses Ninja (PATH or the copy bundled with Visual Studio) and loads `vcvarsall.bat`,
+or `Visual Studio 17 2022` only when VS 2022 is installed. Upgrade CMake to 4.2+
+or set `CMAKE_GENERATOR` yourself if you invoke `cargo engine-llm` directly.
+If a previous failed build cached the wrong generator, delete
+`target/debug/build/llama-cpp-sys-2-*` and retry. `pnpm build` and
+`cargo test --workspace` keep the stub worker so default CI stays fast.
+CUDA/Vulkan/Metal stay opt-in:
 
 ```bash
 pnpm llama

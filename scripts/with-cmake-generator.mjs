@@ -2,7 +2,8 @@
 import { spawn } from 'node:child_process';
 import { applyWindowsCmakeGenerator } from './windows-cmake-generator.mjs';
 
-applyWindowsCmakeGenerator();
+const plan = applyWindowsCmakeGenerator();
+if (plan?.kind === 'error') process.exit(1);
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) {
@@ -13,7 +14,7 @@ if (!command) {
 const child = spawn(command, args, {
   stdio: 'inherit',
   env: process.env,
-  shell: process.platform === 'win32',
+  windowsHide: true,
 });
 child.on('error', (error) => {
   console.error(error.message);
