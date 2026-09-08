@@ -16,7 +16,7 @@ Or:
 
 ```bash
 cargo engine-bins
-cargo engine-llm
+pnpm llama
 pnpm --filter desktop test
 pnpm --filter desktop tauri dev
 ```

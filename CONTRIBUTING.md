@@ -8,8 +8,11 @@ desktop app all live here (there is no nested `rust/` directory).
 - Rust stable via [`rust-toolchain.toml`](rust-toolchain.toml) (edition 2024, `rust-version` 1.98)
 - For the desktop shell: Node.js 24 LTS and pnpm 12 (root `package.json`)
 - Linux desktop builds need WebKitGTK 4.1 development packages (same set as CI)
-- Local llama.cpp (`pnpm desktop` / `pnpm llama` / `cargo engine-llm`): clang, CMake, and a C++ compiler
-  (`CXX=g++` on Linux)
+- Local llama.cpp (`pnpm desktop` / `pnpm llama`): clang, CMake, and a C++ compiler
+  (`CXX=g++` on Linux). On Windows, `pnpm llama` sets `CMAKE_GENERATOR` when cmake-rs
+  would pick Visual Studio 2026 and the installed CMake is older than 4.2. Raw
+  `cargo engine-llm` still needs CMake 4.2+ or an explicit `CMAKE_GENERATOR`
+  (`Ninja` with Ninja on `PATH`, or `Visual Studio 17 2022` if VS 2022 is installed).
 
 ## Everyday commands
 
@@ -30,7 +33,8 @@ Local llama.cpp (also used by `pnpm desktop`):
 
 ```bash
 pnpm llama
-# or: cargo engine-llm
+# Unix: cargo engine-llm
+# Windows: prefer pnpm llama, or set CMAKE_GENERATOR (see README)
 ```
 
 ## Layout

@@ -12,7 +12,10 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   assert.equal(pkg.private, true);
   assert.match(workspace, /apps\/desktop/);
   assert.equal(pkg.scripts.build, 'cargo engine-bins');
-  assert.equal(pkg.scripts.llama, 'cargo engine-llm');
+  assert.equal(
+    pkg.scripts.llama,
+    'node scripts/with-cmake-generator.mjs cargo engine-llm',
+  );
   assert.equal(pkg.scripts.cli, 'cargo aifs');
   assert.equal(pkg.scripts.test, 'pnpm build && cargo test --workspace');
   assert.equal(pkg.scripts.check, 'pnpm fmt:check && pnpm clippy && pnpm test');
@@ -22,6 +25,6 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   );
   assert.equal(
     pkg.scripts['test:desktop'],
-    'node --test scripts/workspace.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
+    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
   );
 });

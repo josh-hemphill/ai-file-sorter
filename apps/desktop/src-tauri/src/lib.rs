@@ -560,9 +560,13 @@ mod tests {
             makefile.contains("$(MAKE) llama"),
             "make desktop must overwrite the stub LLM worker with llama.cpp"
         );
+        assert!(
+            makefile.contains("node scripts/with-cmake-generator.mjs cargo engine-llm"),
+            "make llama on Windows must wrap cargo engine-llm: {makefile}"
+        );
         let pkg = include_str!("../../../../package.json");
         assert!(
-            pkg.contains("\"llama\": \"cargo engine-llm\"")
+            pkg.contains("with-cmake-generator.mjs cargo engine-llm")
                 && pkg.contains("pnpm llama")
                 && pkg.contains("tauri dev"),
             "pnpm desktop must overwrite the stub LLM worker with llama.cpp: {pkg}"
@@ -576,11 +580,14 @@ mod tests {
             let bins = line
                 .find("cargo engine-bins")
                 .unwrap_or_else(|| panic!("{hook} must run cargo engine-bins: {line}"));
+            let wrap = line.find("with-cmake-generator.mjs").unwrap_or_else(|| {
+                panic!("{hook} must wrap cargo engine-llm for Windows CMake: {line}")
+            });
             let llm = line
                 .find("cargo engine-llm")
                 .unwrap_or_else(|| panic!("{hook} must run cargo engine-llm: {line}"));
             assert!(
-                bins < llm,
+                bins < wrap && wrap < llm,
                 "{hook} must overwrite the stub worker with llama.cpp: {line}"
             );
         }

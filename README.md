@@ -53,7 +53,7 @@ Equivalent without the root scripts:
 
 ```bash
 cargo engine-bins
-cargo engine-llm
+pnpm llama
 pnpm --filter desktop test
 pnpm --filter desktop tauri dev
 ```
@@ -69,9 +69,15 @@ cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
-`pnpm desktop` / `pnpm llama` / `cargo engine-llm` compile llama.cpp into `aifs-worker-llm`
-(needs clang, CMake, and a C++ compiler). `pnpm build` and `cargo test --workspace`
-keep the stub worker so default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
+`pnpm desktop` / `pnpm llama` compile llama.cpp into `aifs-worker-llm`
+(needs clang, CMake, and a C++ compiler). `pnpm llama` and Tauri's
+`beforeDevCommand` wrap `cargo engine-llm` so Windows can compile when Visual
+Studio 2026 is installed but CMake is older than 4.2 (cmake-rs passes
+`-G "Visual Studio 18 2026"`, which those CMake builds do not know). Upgrade
+CMake to 4.2+ or set `CMAKE_GENERATOR` yourself (`Ninja`, or
+`Visual Studio 17 2022` when VS 2022 is present) if you invoke `cargo engine-llm`
+directly. `pnpm build` and `cargo test --workspace` keep the stub worker so
+default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
 
 ```bash
 pnpm llama
