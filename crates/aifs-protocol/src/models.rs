@@ -1,8 +1,8 @@
 //! Model slot configuration. Keys are stored by the engine and redacted on `get_models`.
 
 use crate::catalog::{
-    all_artifacts, artifact_bytes_on_disk, artifact_is_present, artifact_path, catalog_entry,
-    catalog_id_is_downloaded, catalog_ids_for_artifact,
+    all_artifacts, artifact_bytes_on_disk, artifact_is_verified, artifact_path, catalog_entry,
+    catalog_id_is_downloaded, catalog_ids_for_artifact, expected_sha256,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -90,7 +90,7 @@ pub enum SlotRuntime {
         /// Human explanation.
         detail: String,
     },
-    /// Local GGUF assignment whose files are not on disk.
+    /// Local GGUF assignment whose files are missing or fail SHA-256 verify.
     MissingFiles {
         /// Human explanation.
         detail: String,
@@ -232,7 +232,7 @@ pub struct ModelArtifactStatus {
     pub expected_bytes: u64,
     /// Current file size, or `0` when missing.
     pub bytes_on_disk: u64,
-    /// True when a finished file is present (incomplete `.part` files do not count).
+    /// True when the finished file is present **and** matches the catalog SHA-256.
     pub present: bool,
     /// Catalog ids that need this file.
     pub used_by: Vec<String>,
@@ -308,7 +308,7 @@ impl ModelInventory {
                     path: path.display().to_string(),
                     expected_bytes: artifact.expected_bytes,
                     bytes_on_disk,
-                    present: artifact_is_present(&path),
+                    present: artifact_is_verified(&path, &expected_sha256(artifact)),
                     used_by: catalog_ids_for_artifact(artifact.id)
                         .into_iter()
                         .map(str::to_owned)
@@ -466,7 +466,8 @@ pub fn slot_runtime(
             };
         }
         return SlotRuntime::MissingFiles {
-            detail: "Local slot assigned but the GGUF is not on disk.".to_owned(),
+            detail: "Local slot assigned but the GGUF is missing or failed SHA-256 verify."
+                .to_owned(),
         };
     }
     SlotRuntime::Stub {
@@ -580,9 +581,12 @@ mod tests {
         };
         let (_, pending) = probe_backend_at(&backend, Some(dir.path()));
         assert!(pending.contains("Download now"), "{pending}");
+        let body = b"catalog-probe-downloaded";
+        let _pin =
+            crate::ArtifactSha256Guard::pin(&[(crate::GEMMA_TEXT_FILENAME, body.as_slice())]);
         std::fs::write(
             crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
-            b"gguf",
+            body,
         )
         .unwrap_or_else(|error| panic!("{error}"));
         let (_, ready) = probe_backend_at(&backend, Some(dir.path()));
@@ -651,13 +655,25 @@ mod tests {
         let backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };
+        let verified = b"slot-runtime-llama-gguf";
+        let _pin =
+            crate::ArtifactSha256Guard::pin(&[(crate::GEMMA_TEXT_FILENAME, verified.as_slice())]);
         assert_eq!(
             slot_runtime(&backend, &llama_worker(), Some(dir.path())).kind_id(),
             "missing_files"
         );
         std::fs::write(
             crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
-            b"gguf",
+            b"slot-runtime-unverified",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            slot_runtime(&backend, &llama_worker(), Some(dir.path())).kind_id(),
+            "missing_files"
+        );
+        std::fs::write(
+            crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
+            verified,
         )
         .unwrap_or_else(|error| panic!("{error}"));
         let ready = slot_runtime(&backend, &llama_worker(), Some(dir.path()));

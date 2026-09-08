@@ -1,9 +1,10 @@
 //! Catalog GGUF downloads with progress. Shared files are fetched once.
 
 use aifs_protocol::{
-    CatalogArtifact, Envelope, Event, RequestId, artifact_is_present, artifact_path,
-    catalog_download_url, catalog_entry,
+    CatalogArtifact, Envelope, Event, RequestId, artifact_is_verified, artifact_path,
+    catalog_download_url, catalog_entry, expected_sha256,
 };
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(120);
 const BUFFER_SIZE: usize = 64 * 1024;
 
-/// Download every artifact for `catalog_id`, skipping files already on disk.
+/// Download every artifact for `catalog_id`, skipping verified files already on disk.
 pub fn download_catalog(
     storage_dir: &Path,
     catalog_id: &str,
@@ -41,7 +42,8 @@ fn download_artifact(
     emit: &mut impl FnMut(Envelope),
 ) -> Result<(), DownloadError> {
     let dest = artifact_path(storage_dir, artifact.filename);
-    if artifact_is_present(&dest) {
+    let sha256 = expected_sha256(artifact);
+    if artifact_is_verified(&dest, &sha256) {
         let size = fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
         emit_progress(
             emit,
@@ -51,6 +53,9 @@ fn download_artifact(
             format!("Already downloaded: {}", artifact.filename),
         );
         return Ok(());
+    }
+    if dest.exists() {
+        let _ = fs::remove_file(&dest);
     }
     let url = catalog_download_url(artifact.filename);
     let part = dest.with_extension("gguf.part");
@@ -64,7 +69,7 @@ fn download_artifact(
         Some(artifact.expected_bytes),
         format!("Downloading {}", artifact.filename),
     );
-    fetch_to_part(&url, &part, artifact.expected_bytes, id, emit)?;
+    fetch_to_part(&url, &part, artifact.expected_bytes, &sha256, id, emit)?;
     fs::rename(&part, &dest).map_err(|error| DownloadError::Io {
         path: dest.clone(),
         error,
@@ -84,6 +89,7 @@ fn fetch_to_part(
     url: &str,
     part: &Path,
     size_hint: u64,
+    expected_sha256: &str,
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<(), DownloadError> {
@@ -104,6 +110,7 @@ fn fetch_to_part(
         path: part.to_path_buf(),
         error,
     })?;
+    let mut hasher = Sha256::new();
     let mut buffer = [0_u8; BUFFER_SIZE];
     let mut written: u64 = 0;
     let mut last = Instant::now()
@@ -124,6 +131,7 @@ fn fetch_to_part(
                 path: part.to_path_buf(),
                 error,
             })?;
+        hasher.update(&buffer[..read]);
         written = written.saturating_add(read as u64);
         if last.elapsed() >= PROGRESS_INTERVAL {
             last = Instant::now();
@@ -141,12 +149,33 @@ fn fetch_to_part(
         error,
     })?;
     if written == 0 {
+        drop(file);
         let _ = fs::remove_file(part);
         return Err(DownloadError::Empty {
             url: url.to_owned(),
         });
     }
+    let digest = hex_lower(hasher.finalize());
+    if !digest.eq_ignore_ascii_case(expected_sha256) {
+        drop(file);
+        let _ = fs::remove_file(part);
+        return Err(DownloadError::ChecksumMismatch {
+            url: url.to_owned(),
+            expected: expected_sha256.to_owned(),
+            actual: digest,
+        });
+    }
     Ok(())
+}
+
+fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+        out.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+    }
+    out
 }
 
 fn emit_progress(
@@ -193,6 +222,15 @@ pub enum DownloadError {
         /// Request URL.
         url: String,
     },
+    /// Downloaded bytes did not match the catalog SHA-256.
+    ChecksumMismatch {
+        /// Request URL.
+        url: String,
+        /// Expected lowercase hex digest.
+        expected: String,
+        /// Actual lowercase hex digest.
+        actual: String,
+    },
     /// Filesystem failure.
     Io {
         /// Path involved.
@@ -210,6 +248,14 @@ impl std::fmt::Display for DownloadError {
             }
             Self::Http { url, message } => write!(formatter, "download {url} failed: {message}"),
             Self::Empty { url } => write!(formatter, "download {url} returned an empty file"),
+            Self::ChecksumMismatch {
+                url,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "download {url} checksum mismatch (expected {expected}, got {actual})"
+            ),
             Self::Io { path, error } => write!(formatter, "{}: {error}", path.display()),
         }
     }
