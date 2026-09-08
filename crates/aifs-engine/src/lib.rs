@@ -2909,9 +2909,16 @@ mod tests {
 
     #[test]
     fn scan_categorizes_when_llm_slot_is_assigned() {
-        aifs_worker_client::discover_worker_binary(aifs_protocol::worker::WorkerKind::Llm)
-            .unwrap_or_else(|error| panic!("build aifs-worker-llm before this test ({error})"));
+        let mut worker =
+            aifs_worker_client::WorkerClient::try_connect(aifs_protocol::worker::WorkerKind::Llm)
+                .unwrap_or_else(|| panic!("build aifs-worker-llm before this test"));
+        let llama = worker
+            .capabilities()
+            .iter()
+            .any(|capability| capability == "llama");
+        let _ = worker.shutdown();
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let models = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         fs::write(dir.path().join("note.txt"), b"hello").unwrap_or_else(|e| panic!("{e}"));
         let mut engine = Engine::new();
         engine.handle(Request {
@@ -2921,7 +2928,10 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
         });
-        let mut inventory = ModelInventory::default();
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
         inventory.slots[0].backend = ModelBackend::Catalog {
             catalog_id: "gemma-3-4b-it".into(),
         };
@@ -2957,16 +2967,29 @@ mod tests {
             matches!(bag.source, aifs_domain::EvidenceSource::LocalModel { .. })
                 && bag.fact(aifs_domain::evidence::keys::CATEGORY) == Some("Documents")
         });
-        assert!(
-            categorized,
-            "expected stub categorize evidence, evidence={:?} logs={logs:?}",
-            snapshot.evidence
-        );
-        assert!(
-            logs.iter()
-                .any(|message| message.contains("categorized") && message.contains("note.txt")),
-            "expected categorize log, logs={logs:?}"
-        );
+        if llama {
+            assert!(
+                logs.iter().any(|message| message.contains("load failed")
+                    || message.contains("not fully downloaded")),
+                "llama worker without a verified GGUF must fail load, logs={logs:?}"
+            );
+            assert!(
+                !categorized,
+                "llama worker must not emit stub LocalModel evidence, evidence={:?}",
+                snapshot.evidence
+            );
+        } else {
+            assert!(
+                categorized,
+                "expected stub categorize evidence, evidence={:?} logs={logs:?}",
+                snapshot.evidence
+            );
+            assert!(
+                logs.iter()
+                    .any(|message| message.contains("categorized") && message.contains("note.txt")),
+                "expected categorize log, logs={logs:?}"
+            );
+        }
         let revision = match terminal(engine.handle(Request {
             id: "4".into(),
             command: Command::Propose {

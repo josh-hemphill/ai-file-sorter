@@ -2,7 +2,8 @@
 #   make build          engine, CLI, and workers
 #   make test           cargo test --workspace (builds engine bins first)
 #   make check          fmt, clippy, and tests
-#   make desktop        build binaries, then Tauri/Vue dev
+#   make desktop        stub engine/workers, then llama.cpp LLM worker, then Tauri/Vue
+#   make llama          overwrite aifs-worker-llm with llama.cpp (needs a C++ compiler)
 #   make cli ARGS='scan fixtures/inbox-mixed'
 
 ENGINE_PACKAGES = aifs-engine-bin aifs-cli aifs-worker-media aifs-worker-document aifs-worker-vision aifs-worker-llm
@@ -16,9 +17,9 @@ help:
 		'make build     cargo build (engine, CLI, workers)' \
 		'make test      cargo test --workspace' \
 		'make check     fmt + clippy + test' \
-		'make desktop   build binaries and start Tauri/Vue' \
+		'make desktop   build binaries, llama worker, and start Tauri/Vue' \
 		"make cli ARGS='scan fixtures/inbox-mixed'" \
-		'make llama     optional llama.cpp LLM worker (needs a C++ compiler)'
+		'make llama     llama.cpp LLM worker (needs a C++ compiler; used by make desktop)'
 
 build:
 	cargo build $(ENGINE_PACKAGE_FLAGS)
@@ -41,6 +42,7 @@ check:
 	$(MAKE) test
 
 desktop: build
+	$(MAKE) llama
 	cd $(DESKTOP_DIR) && pnpm install && pnpm tauri dev
 
 cli: build

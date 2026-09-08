@@ -15,13 +15,15 @@ Or:
 
 ```bash
 cargo engine-bins
+cargo engine-llm
 cd apps/desktop
 pnpm install
 pnpm test
 pnpm tauri dev
 ```
 
-`tauri dev` also builds the engine and workers via `beforeDevCommand`. Packaged
+`tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
+`beforeDevCommand`. Packaged
 builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
 embed them as `externalBin` sidecars. If the engine binary is not next to the
 desktop executable, set `AIFS_ENGINE`. Discovery also accepts the Tauri sidecar

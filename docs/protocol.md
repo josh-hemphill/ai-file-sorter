@@ -119,9 +119,11 @@ slot backend and runs `categorize` / `describe` when those slots are not off.
 Model `category` is a whitelist hint for propose, not a trusted path. The LLM
 worker accepts `load` / `unload` / `categorize` / `describe` / `chat` and
 currently returns stub `local_model` evidence unless the worker is built with
-`--features llama` (optional `cuda` / `vulkan` / `metal`) or a hosted HTTP
-backend is loaded (`RemoteModel` evidence). Default
-`cargo test --workspace` does not compile llama.cpp. `get_models` fills each slot's
+llama.cpp (`make desktop` / `cargo engine-llm`, optional `cuda` / `vulkan` / `metal`)
+or a hosted HTTP backend is loaded (`RemoteModel` evidence). Default
+`cargo test --workspace` does not compile llama.cpp. Ubuntu CI has a separate
+`llama-cpu` job that compiles the worker with `--features llama` and does not
+download Gemma. `get_models` fills each slot's
 `runtime` (`off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`)
 from worker hello and files on disk; scan logs the same kinds instead of claiming
 images will be described when infer is stubbed. Hosted probes contact the
