@@ -100,7 +100,7 @@ line). Workers never open SQLite and never mutate user files.
 |--------|---------|----------------|
 | `hello` | `worker`, `protocol_version` | `ready` |
 | `extract` | `root`, `entry` | `extracted { evidence? }` |
-| `load` | `backend`, `gpu_preference`, optional `n_gpu_layers`, optional `api_key`, `storage_dir` | `loaded { device, model, n_gpu_layers, fallback? }` |
+| `load` | `backend`, `gpu_preference`, optional `n_gpu_layers`, optional `api_key`, `storage_dir` | `loaded { device, model, n_gpu_layers, fallback? }` (llama.cpp retries **once** on CPU after GPU init/OOM; `fallback` names the reason. Context-window errors are not retried. `AIFS_N_GPU_LAYERS` applies when `n_gpu_layers` is omitted.) |
 | `unload` | — | `unloaded` |
 | `categorize` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
 | `describe` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
@@ -120,7 +120,10 @@ Model `category` is a whitelist hint for propose, not a trusted path. The LLM
 worker accepts `load` / `unload` / `categorize` / `describe` / `chat` and
 currently returns stub `local_model` evidence unless the worker is built with
 llama.cpp (`make desktop` / `cargo engine-llm`, optional `cuda` / `vulkan` / `metal`)
-or a hosted HTTP backend is loaded (`RemoteModel` evidence). Default
+or a hosted HTTP backend is loaded (`RemoteModel` evidence). GPU init or OOM on
+`load` retries **once** with `n_gpu_layers=0`; scan logs `fallback` (no modal).
+The string `prompt exceeds the llama.cpp context window` is not a GPU failure.
+`AIFS_N_GPU_LAYERS` sets offload when `n_gpu_layers` is omitted. Default
 `cargo test --workspace` does not compile llama.cpp. Ubuntu CI has a separate
 `llama-cpu` job that compiles the worker with `--features llama` and does not
 download Gemma. `get_models` fills each slot's

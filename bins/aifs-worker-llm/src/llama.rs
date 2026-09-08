@@ -1,6 +1,6 @@
 //! llama.cpp backend. Compiled only with `--features llama`.
 
-use crate::device::resolve_device;
+use crate::device::{cpu_retry_plan, requested_n_gpu_layers, resolve_device};
 use crate::gguf::{GgufFiles, resolve_gguf};
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
@@ -61,7 +61,7 @@ impl WorkerHandler for LlamaHandler {
         }
         let files = resolve_gguf(&backend, storage_dir)?;
         let (device, fallback) = resolve_device(gpu_preference);
-        let n_gpu_layers = gpu_layers(&device, n_gpu_layers);
+        let n_gpu_layers = gpu_layers(&device, requested_n_gpu_layers(n_gpu_layers));
         if self.loaded.as_ref().is_some_and(|loaded| {
             loaded.weights == files.weights
                 && loaded.info.device == device
@@ -69,30 +69,15 @@ impl WorkerHandler for LlamaHandler {
         }) {
             return self.reuse_loaded(&files, device, n_gpu_layers, fallback);
         }
-        self.loaded = None;
-        let llama = self.ensure_backend()?;
-        let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
-        let model = LlamaModel::load_from_file(llama, &files.weights, &params)
-            .map_err(|error| error.to_string())?;
-        let mut info = LoadedModel {
-            device,
-            model: files.label.clone(),
-            n_gpu_layers,
-            fallback,
-        };
-        if files.mmproj.is_some() {
-            let note = "mmproj is recorded; describe uses path and EXIF until multimodal llama.cpp is enabled.";
-            info.fallback = Some(match info.fallback.take() {
-                Some(existing) => format!("{existing} {note}"),
-                None => note.to_owned(),
-            });
+        match self.try_load_weights(&files, device.clone(), n_gpu_layers, fallback.clone()) {
+            Ok(info) => Ok(info),
+            Err(error) => match cpu_retry_plan(&device, fallback, &error) {
+                Some((cpu, cpu_layers, cpu_fallback)) => {
+                    self.try_load_weights(&files, cpu, cpu_layers, cpu_fallback)
+                }
+                None => Err(error),
+            },
         }
-        self.loaded = Some(LoadedGguf {
-            model,
-            weights: files.weights,
-            info: info.clone(),
-        });
-        Ok(info)
     }
 
     fn unload(&mut self) -> Result<(), String> {
@@ -168,6 +153,39 @@ impl LlamaHandler {
             .ok_or_else(|| "load a model before infer".to_owned())
     }
 
+    fn try_load_weights(
+        &mut self,
+        files: &GgufFiles,
+        device: String,
+        n_gpu_layers: u32,
+        fallback: Option<String>,
+    ) -> Result<LoadedModel, String> {
+        self.loaded = None;
+        let llama = self.ensure_backend()?;
+        let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
+        let model = LlamaModel::load_from_file(llama, &files.weights, &params)
+            .map_err(|error| error.to_string())?;
+        let mut info = LoadedModel {
+            device,
+            model: files.label.clone(),
+            n_gpu_layers,
+            fallback,
+        };
+        if files.mmproj.is_some() {
+            let note = "mmproj is recorded; describe uses path and EXIF until multimodal llama.cpp is enabled.";
+            info.fallback = Some(match info.fallback.take() {
+                Some(existing) => format!("{existing} {note}"),
+                None => note.to_owned(),
+            });
+        }
+        self.loaded = Some(LoadedGguf {
+            model,
+            weights: files.weights.clone(),
+            info: info.clone(),
+        });
+        Ok(info)
+    }
+
     fn reuse_loaded(
         &mut self,
         files: &GgufFiles,
@@ -204,6 +222,24 @@ fn gpu_layers(device: &str, requested: Option<u32>) -> u32 {
         0
     } else {
         requested.unwrap_or(ALL_GPU_LAYERS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_device_always_offloads_zero_layers() {
+        assert_eq!(gpu_layers("cpu", Some(99)), 0);
+        assert_eq!(gpu_layers("cpu", None), 0);
+    }
+
+    #[test]
+    fn accelerator_uses_explicit_or_all_layers() {
+        assert_eq!(gpu_layers("cuda", Some(32)), 32);
+        assert_eq!(gpu_layers("cuda", None), ALL_GPU_LAYERS);
+        assert_eq!(gpu_layers("vulkan", Some(0)), 0);
     }
 }
 
