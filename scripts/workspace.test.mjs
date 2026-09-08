@@ -14,7 +14,14 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   assert.equal(pkg.scripts.build, 'cargo engine-bins');
   assert.equal(pkg.scripts.llama, 'cargo engine-llm');
   assert.equal(pkg.scripts.cli, 'cargo aifs');
-  assert.match(pkg.scripts.desktop, /pnpm llama/);
-  assert.match(pkg.scripts.desktop, /--filter desktop tauri dev/);
-  assert.match(pkg.scripts['test:desktop'], /--filter desktop test/);
+  assert.equal(pkg.scripts.test, 'pnpm build && cargo test --workspace');
+  assert.equal(pkg.scripts.check, 'pnpm fmt:check && pnpm clippy && pnpm test');
+  assert.equal(
+    pkg.scripts.desktop,
+    'pnpm build && pnpm llama && pnpm --filter desktop tauri dev',
+  );
+  assert.equal(
+    pkg.scripts['test:desktop'],
+    'node --test scripts/workspace.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
+  );
 });

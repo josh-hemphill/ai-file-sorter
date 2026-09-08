@@ -14,6 +14,7 @@ desktop app all live here (there is no nested `rust/` directory).
 ## Everyday commands
 
 ```bash
+pnpm install
 pnpm build
 pnpm test
 pnpm desktop

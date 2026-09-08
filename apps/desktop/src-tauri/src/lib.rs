@@ -547,10 +547,6 @@ mod tests {
             packages.contains("\"build\": \"cargo engine-bins\""),
             "pnpm build must compile the engine binary crates: {packages}"
         );
-        assert!(
-            !packages.contains("-p aifs-engine\""),
-            "pnpm build must not select the library crate: {packages}"
-        );
         let engine_llm = include_str!("../../../../.cargo/config.toml")
             .lines()
             .find(|line| line.starts_with("engine-llm"))
