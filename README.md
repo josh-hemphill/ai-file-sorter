@@ -27,15 +27,15 @@ and [pnpm](https://pnpm.io/) 12.
 ```bash
 git clone https://github.com/josh-hemphill/ai-file-sorter.git
 cd ai-file-sorter
-make build
-cargo aifs scan fixtures/inbox-mixed
-cargo aifs organize fixtures/inbox-mixed          # dry run
-cargo aifs organize /path/to/folder --apply
-cargo aifs chat fixtures/inbox-mixed "Move podcasts away from music"
-cargo aifs compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
+pnpm build
+pnpm cli -- scan fixtures/inbox-mixed
+pnpm cli -- organize fixtures/inbox-mixed          # dry run
+pnpm cli -- organize /path/to/folder --apply
+pnpm cli -- chat fixtures/inbox-mixed "Move podcasts away from music"
+pnpm cli -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
-`make build` compiles `aifs-engine`, the `aifs` CLI, and the media / document /
+`pnpm build` (or `make build` / `cargo engine-bins`) compiles `aifs-engine`, the `aifs` CLI, and the media / document /
 vision / LLM workers into `target/debug/`. The CLI locates `aifs-engine` next to
 itself, via `$AIFS_ENGINE`, or under `target/{debug,release}/`. There is no
 in-process fallback. Scan prefers isolated workers when those binaries are on
@@ -45,37 +45,36 @@ missing.
 Desktop (builds the engine first, then starts Tauri + Vite):
 
 ```bash
-make desktop
+pnpm install
+pnpm desktop
 ```
 
-Equivalent without Make:
+Equivalent without the root scripts:
 
 ```bash
 cargo engine-bins
 cargo engine-llm
-cd apps/desktop
-pnpm install
-pnpm test
-pnpm tauri dev
+pnpm --filter desktop test
+pnpm --filter desktop tauri dev
 ```
 
 If the engine binary is not next to the desktop executable, set `AIFS_ENGINE`.
 Packaged desktop builds embed the engine and workers as Tauri sidecars.
 
 ```bash
-make check          # fmt --check, clippy, cargo test
-make desktop-test   # Vue unit tests + vue-tsc
+pnpm check          # fmt --check, clippy, cargo test
+pnpm test:desktop   # Vue unit tests + vue-tsc
 cargo fmt --all
 cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
-`make desktop` / `cargo engine-llm` compile llama.cpp into `aifs-worker-llm`
-(needs clang, CMake, and a C++ compiler). `make build` and `cargo test --workspace`
+`pnpm desktop` / `pnpm llama` / `cargo engine-llm` compile llama.cpp into `aifs-worker-llm`
+(needs clang, CMake, and a C++ compiler). `pnpm build` and `cargo test --workspace`
 keep the stub worker so default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
 
 ```bash
-make llama
+pnpm llama
 CXX=g++ cargo engine-llm
 CXX=g++ cargo build -p aifs-worker-llm --features llama,cuda
 cargo build -p aifs-worker-llm --features llama,vulkan
