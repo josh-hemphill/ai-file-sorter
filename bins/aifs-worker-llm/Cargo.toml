@@ -15,7 +15,7 @@ path = "src/main.rs"
 # Enable local infer with `--features llama`, plus `cuda` / `vulkan` / `metal`.
 [features]
 default = []
-llama = ["dep:llama-cpp-2", "dep:encoding_rs"]
+llama = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2/mtmd"]
 cuda = ["llama", "llama-cpp-2/cuda"]
 vulkan = ["llama", "llama-cpp-2/vulkan"]
 metal = ["llama", "llama-cpp-2/metal"]
@@ -27,7 +27,7 @@ aifs-worker-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }
-llama-cpp-2 = { version = "0.1.154", optional = true }
+llama-cpp-2 = { version = "0.1.156", optional = true }
 encoding_rs = { version = "0.8", optional = true }
 
 [dev-dependencies]

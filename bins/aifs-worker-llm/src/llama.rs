@@ -1,11 +1,12 @@
 //! llama.cpp backend. Compiled only with `--features llama`.
 
 use crate::device::{cpu_retry_plan, requested_n_gpu_layers, resolve_device};
-use crate::gguf::{GgufFiles, resolve_gguf};
+use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
     CATEGORIZE_SYSTEM, CHAT_SYSTEM, DESCRIBE_SYSTEM, categorize_user, describe_user,
 };
+use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::ModelBackend;
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
@@ -14,6 +15,9 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
+use llama_cpp_2::mtmd::{
+    MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText, mtmd_default_marker,
+};
 use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -34,8 +38,21 @@ pub struct LlamaHandler {
 
 struct LoadedGguf {
     model: LlamaModel,
+    mtmd: Option<MtmdContext>,
     weights: PathBuf,
+    mmproj: Option<PathBuf>,
     info: LoadedModel,
+}
+
+/// Image attach failed; describe may fall back to filename + EXIF.
+enum ImageCompleteError {
+    Input(String),
+    Infer(String),
+}
+
+enum DescribePrompt {
+    Pixels { user: String, image: PathBuf },
+    Text { user: String },
 }
 
 impl WorkerHandler for LlamaHandler {
@@ -63,9 +80,17 @@ impl WorkerHandler for LlamaHandler {
         let (device, fallback) = resolve_device(gpu_preference);
         let n_gpu_layers = gpu_layers(&device, requested_n_gpu_layers(n_gpu_layers));
         if self.loaded.as_ref().is_some_and(|loaded| {
-            loaded.weights == files.weights
-                && loaded.info.device == device
-                && loaded.info.n_gpu_layers == n_gpu_layers
+            files.can_reuse(
+                &LoadedSession {
+                    weights: &loaded.weights,
+                    mmproj: loaded.mmproj.as_deref(),
+                    has_mtmd: loaded.mtmd.is_some(),
+                    device: &loaded.info.device,
+                    n_gpu_layers: loaded.info.n_gpu_layers,
+                },
+                &device,
+                n_gpu_layers,
+            )
         }) {
             return self.reuse_loaded(&files, device, n_gpu_layers, fallback);
         }
@@ -105,7 +130,7 @@ impl WorkerHandler for LlamaHandler {
 
     fn describe(
         &mut self,
-        _root: &Path,
+        root: &Path,
         entry: &ObservedEntry,
         evidence: &[Evidence],
     ) -> Result<Option<Evidence>, String> {
@@ -116,11 +141,21 @@ impl WorkerHandler for LlamaHandler {
         if !matches!(entry.family, FileFamily::Image | FileFamily::RawImage) {
             return Ok(None);
         }
-        let text = self.complete(
-            DESCRIBE_SYSTEM,
-            &describe_user(entry, evidence),
-            MAX_GEN_TOKENS,
-        )?;
+        let text = match self.describe_prompt(root, entry, evidence) {
+            DescribePrompt::Pixels { user, image } => {
+                match self.complete_with_image(DESCRIBE_SYSTEM, &user, &image, MAX_GEN_TOKENS) {
+                    Ok(text) => text,
+                    Err(ImageCompleteError::Input(reason)) => {
+                        let _bitmap_error = reason;
+                        self.complete(DESCRIBE_SYSTEM, &user, MAX_GEN_TOKENS)?
+                    }
+                    Err(ImageCompleteError::Infer(error)) => return Err(error),
+                }
+            }
+            DescribePrompt::Text { user } => {
+                self.complete(DESCRIBE_SYSTEM, &user, MAX_GEN_TOKENS)?
+            }
+        };
         Ok(evidence_from_text(&model_id, entry, &text, false))
     }
 
@@ -171,16 +206,26 @@ impl LlamaHandler {
             n_gpu_layers,
             fallback,
         };
-        if files.mmproj.is_some() {
-            let note = "mmproj is recorded; describe uses path and EXIF until multimodal llama.cpp is enabled.";
-            info.fallback = Some(match info.fallback.take() {
-                Some(existing) => format!("{existing} {note}"),
-                None => note.to_owned(),
-            });
-        }
+        let mtmd = match &files.mmproj {
+            Some(path) => match init_mtmd(&model, path, info.device != "cpu") {
+                Ok(ctx) => Some(ctx),
+                Err(error) => {
+                    append_fallback(
+                        &mut info.fallback,
+                        &format!(
+                            "mmproj failed to load ({error}); describe uses filename and EXIF"
+                        ),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
         self.loaded = Some(LoadedGguf {
             model,
+            mtmd,
             weights: files.weights.clone(),
+            mmproj: files.mmproj.clone(),
             info: info.clone(),
         });
         Ok(info)
@@ -215,6 +260,46 @@ impl LlamaHandler {
             .ok_or_else(|| "load a model before infer".to_owned())?;
         generate(llama, &loaded.model, system, user, max_tokens)
     }
+
+    fn describe_prompt(
+        &self,
+        root: &Path,
+        entry: &ObservedEntry,
+        evidence: &[Evidence],
+    ) -> DescribePrompt {
+        let user = describe_user(entry, evidence);
+        let image = root.join(entry.path.as_str());
+        let has_mtmd = self
+            .loaded
+            .as_ref()
+            .is_some_and(|loaded| loaded.mtmd.is_some());
+        match pixel_plan(&image, entry.family) {
+            PixelPlan::Attach if has_mtmd => DescribePrompt::Pixels { user, image },
+            PixelPlan::Attach | PixelPlan::TextOnly { .. } => DescribePrompt::Text { user },
+        }
+    }
+
+    fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        image: &Path,
+        max_tokens: i32,
+    ) -> Result<String, ImageCompleteError> {
+        let llama = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| ImageCompleteError::Infer("load a model before infer".to_owned()))?;
+        let loaded = self
+            .loaded
+            .as_ref()
+            .ok_or_else(|| ImageCompleteError::Infer("load a model before infer".to_owned()))?;
+        let mtmd = loaded
+            .mtmd
+            .as_ref()
+            .ok_or_else(|| ImageCompleteError::Input("mmproj is not loaded".to_owned()))?;
+        generate_with_image(llama, &loaded.model, mtmd, system, user, image, max_tokens)
+    }
 }
 
 fn gpu_layers(device: &str, requested: Option<u32>) -> u32 {
@@ -225,22 +310,30 @@ fn gpu_layers(device: &str, requested: Option<u32>) -> u32 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn append_fallback(fallback: &mut Option<String>, note: &str) {
+    *fallback = Some(match fallback.take() {
+        Some(existing) => format!("{existing} {note}"),
+        None => note.to_owned(),
+    });
+}
 
-    #[test]
-    fn cpu_device_always_offloads_zero_layers() {
-        assert_eq!(gpu_layers("cpu", Some(99)), 0);
-        assert_eq!(gpu_layers("cpu", None), 0);
-    }
-
-    #[test]
-    fn accelerator_uses_explicit_or_all_layers() {
-        assert_eq!(gpu_layers("cuda", Some(32)), 32);
-        assert_eq!(gpu_layers("cuda", None), ALL_GPU_LAYERS);
-        assert_eq!(gpu_layers("vulkan", Some(0)), 0);
-    }
+fn init_mtmd(model: &LlamaModel, mmproj: &Path, use_gpu: bool) -> Result<MtmdContext, String> {
+    let path = mmproj
+        .to_str()
+        .ok_or_else(|| format!("{} is not valid UTF-8", mmproj.display()))?;
+    let n_threads = i32::try_from(
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(4),
+    )
+    .unwrap_or(4);
+    let params = MtmdContextParams {
+        use_gpu,
+        print_timings: false,
+        n_threads,
+        ..MtmdContextParams::default()
+    };
+    MtmdContext::init_from_file(path, model, &params).map_err(|error| error.to_string())
 }
 
 fn evidence_from_text(
@@ -325,6 +418,99 @@ fn generate(
     Ok(output)
 }
 
+fn generate_with_image(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    mtmd: &MtmdContext,
+    system: &str,
+    user: &str,
+    image: &Path,
+    max_tokens: i32,
+) -> Result<String, ImageCompleteError> {
+    if !mtmd.support_vision() {
+        return Err(ImageCompleteError::Input(
+            "mmproj does not support vision".to_owned(),
+        ));
+    }
+    let image_path = image.to_str().ok_or_else(|| {
+        ImageCompleteError::Input(format!("{} is not valid UTF-8", image.display()))
+    })?;
+    let marker = mtmd_default_marker();
+    let user = describe_user_with_media(user, marker);
+    let prompt = chat_prompt(model, system, &user);
+    let bitmap = MtmdBitmap::from_file(mtmd, image_path, false)
+        .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
+    if bitmap.is_audio() {
+        return Err(ImageCompleteError::Input(
+            "image path decoded as audio".to_owned(),
+        ));
+    }
+    let chunks = mtmd
+        .tokenize(
+            MtmdInputText {
+                text: prompt,
+                add_special: true,
+                parse_special: true,
+            },
+            &[&bitmap],
+        )
+        .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
+    let n_prompt = chunks.total_tokens();
+    let n_ctx = usize::try_from(N_CTX).unwrap_or(0);
+    let n_gen = usize::try_from(max_tokens).unwrap_or(0);
+    if n_prompt.saturating_add(n_gen) > n_ctx {
+        return Err(ImageCompleteError::Infer(
+            "prompt exceeds the llama.cpp context window".to_owned(),
+        ));
+    }
+    let n_ctx_nz = NonZeroU32::new(N_CTX).unwrap_or(NonZeroU32::MIN);
+    let ctx_params = LlamaContextParams::default().with_n_ctx(Some(n_ctx_nz));
+    let mut ctx = model
+        .new_context(backend, ctx_params)
+        .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
+    let n_batch = i32::try_from(n_prompt.max(BATCH_FLOOR)).unwrap_or(i32::MAX);
+    let n_past = chunks
+        .eval_chunks(mtmd, &ctx, 0, 0, n_batch, true)
+        .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
+    sample_continuation(&mut ctx, model, n_past, max_tokens).map_err(ImageCompleteError::Infer)
+}
+
+/// Prefixes the libmtmd media marker so Gemma image tokens lead the user turn.
+fn describe_user_with_media(user: &str, marker: &str) -> String {
+    format!("{marker}\n{user}")
+}
+
+fn sample_continuation(
+    ctx: &mut llama_cpp_2::context::LlamaContext,
+    model: &LlamaModel,
+    mut n_cur: i32,
+    max_tokens: i32,
+) -> Result<String, String> {
+    let mut sampler = LlamaSampler::greedy();
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+    let mut output = String::new();
+    let mut batch = LlamaBatch::new(BATCH_FLOOR, 1);
+    let max = usize::try_from(max_tokens).unwrap_or(0);
+    for round in 0..max {
+        let idx = if round == 0 { -1 } else { batch.n_tokens() - 1 };
+        let token = sampler.sample(ctx, idx);
+        sampler.accept(token);
+        if model.is_eog_token(token) {
+            break;
+        }
+        if let Ok(piece) = model.token_to_piece(token, &mut decoder, true, None) {
+            output.push_str(&piece);
+        }
+        batch.clear();
+        batch
+            .add(token, n_cur, &[0], true)
+            .map_err(|error| error.to_string())?;
+        ctx.decode(&mut batch).map_err(|error| error.to_string())?;
+        n_cur = n_cur.saturating_add(1);
+    }
+    Ok(output)
+}
+
 fn chat_prompt(model: &LlamaModel, system: &str, user: &str) -> String {
     let fallback = format!("{system}\n\nUser:\n{user}\n\nAssistant:\n");
     let Ok(template) = model.chat_template(None) else {
@@ -339,4 +525,42 @@ fn chat_prompt(model: &LlamaModel, system: &str, user: &str) -> String {
     model
         .apply_chat_template(&template, &[system_msg, user_msg], true)
         .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_device_always_offloads_zero_layers() {
+        assert_eq!(gpu_layers("cpu", Some(99)), 0);
+        assert_eq!(gpu_layers("cpu", None), 0);
+    }
+
+    #[test]
+    fn accelerator_uses_explicit_or_all_layers() {
+        assert_eq!(gpu_layers("cuda", Some(32)), 32);
+        assert_eq!(gpu_layers("cuda", None), ALL_GPU_LAYERS);
+        assert_eq!(gpu_layers("vulkan", Some(0)), 0);
+    }
+
+    #[test]
+    fn media_marker_prefixes_the_user_turn() {
+        assert_eq!(
+            describe_user_with_media("Relative path: shot.jpg", "<__media__>"),
+            "<__media__>\nRelative path: shot.jpg"
+        );
+    }
+
+    #[test]
+    fn bitmap_errors_fall_back_to_text_and_infer_errors_do_not() {
+        assert!(matches!(
+            ImageCompleteError::Input("failed to load bitmap".into()),
+            ImageCompleteError::Input(_)
+        ));
+        assert!(matches!(
+            ImageCompleteError::Infer("prompt exceeds the llama.cpp context window".into()),
+            ImageCompleteError::Infer(_)
+        ));
+    }
 }
