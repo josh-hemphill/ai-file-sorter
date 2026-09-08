@@ -4,7 +4,8 @@ use crate::device::{cpu_retry_plan, requested_n_gpu_layers, resolve_device};
 use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
-    CHAT_SYSTEM, DESCRIBE_SYSTEM, categorize_system, categorize_user, describe_user,
+    CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system, categorize_user,
+    describe_user, next_document_text_budget, shrink_document_text,
 };
 use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
@@ -28,6 +29,7 @@ const CHAT_GEN_TOKENS: i32 = 512;
 const BATCH_FLOOR: usize = 512;
 const ALL_GPU_LAYERS: u32 = 999;
 const LLAMA_CONFIDENCE: f32 = 0.55;
+const CONTEXT_WINDOW_ERROR: &str = "prompt exceeds the llama.cpp context window";
 
 /// Session-lived llama.cpp backend. One GGUF is loaded at a time.
 #[derive(Default)]
@@ -122,12 +124,27 @@ impl WorkerHandler for LlamaHandler {
         if entry.kind != EntryKind::File {
             return Ok(None);
         }
-        let text = self.complete(
-            &categorize_system(allowed_categories, style),
-            &categorize_user(entry, evidence, allowed_categories, style),
-            MAX_GEN_TOKENS,
-        )?;
-        Ok(evidence_from_text(&model_id, entry, &text, true))
+        let mut evidence = evidence.to_vec();
+        let mut budget = DOCUMENT_TEXT_CHARS;
+        loop {
+            match self.complete(
+                &categorize_system(allowed_categories, style),
+                &categorize_user(entry, &evidence, allowed_categories, style),
+                MAX_GEN_TOKENS,
+            ) {
+                Ok(text) => return Ok(evidence_from_text(&model_id, entry, &text, true)),
+                Err(error) if is_context_window_error(&error) => {
+                    let Some(next) = next_document_text_budget(budget) else {
+                        return Err(error);
+                    };
+                    if !shrink_document_text(&mut evidence, next) {
+                        return Err(error);
+                    }
+                    budget = next;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn describe(
@@ -386,7 +403,7 @@ fn generate(
     let n_ctx_i32 = i32::try_from(N_CTX).unwrap_or(i32::MAX);
     let n_prompt = i32::try_from(tokens.len()).unwrap_or(i32::MAX);
     if n_prompt.saturating_add(max_tokens) > n_ctx_i32 {
-        return Err("prompt exceeds the llama.cpp context window".to_owned());
+        return Err(CONTEXT_WINDOW_ERROR.to_owned());
     }
     let batch_size = tokens.len().max(BATCH_FLOOR);
     let mut batch = LlamaBatch::new(batch_size, 1);
@@ -461,9 +478,7 @@ fn generate_with_image(
     let n_ctx = usize::try_from(N_CTX).unwrap_or(0);
     let n_gen = usize::try_from(max_tokens).unwrap_or(0);
     if n_prompt.saturating_add(n_gen) > n_ctx {
-        return Err(ImageCompleteError::Infer(
-            "prompt exceeds the llama.cpp context window".to_owned(),
-        ));
+        return Err(ImageCompleteError::Infer(CONTEXT_WINDOW_ERROR.to_owned()));
     }
     let n_ctx_nz = NonZeroU32::new(N_CTX).unwrap_or(NonZeroU32::MIN);
     let ctx_params = LlamaContextParams::default().with_n_ctx(Some(n_ctx_nz));
@@ -511,6 +526,10 @@ fn sample_continuation(
         n_cur = n_cur.saturating_add(1);
     }
     Ok(output)
+}
+
+fn is_context_window_error(error: &str) -> bool {
+    error.contains(CONTEXT_WINDOW_ERROR)
 }
 
 fn chat_prompt(model: &LlamaModel, system: &str, user: &str) -> String {

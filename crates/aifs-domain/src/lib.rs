@@ -24,7 +24,7 @@ pub mod snapshot;
 pub mod time;
 
 pub use entry::{
-    EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry,
+    EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, category_date_suffix,
     description_looks_like_screenshot, filename_looks_like_screenshot, looks_like_screenshot,
 };
 pub use evidence::{Evidence, EvidenceSource};
@@ -43,4 +43,4 @@ pub use snapshot::{
     DirectoryRoleKind, DirectoryRoleMatch, ProjectMatch, ProjectStrength, SkipReason, SkippedEntry,
     WorkspaceSnapshot,
 };
-pub use time::Timestamp;
+pub use time::{Timestamp, parse_iso_date, utc_year_month_label};

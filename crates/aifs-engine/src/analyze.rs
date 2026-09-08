@@ -7,7 +7,9 @@ use aifs_domain::{
     looks_like_screenshot,
 };
 use aifs_protocol::worker::WorkerKind;
-use aifs_protocol::{AppSettings, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text};
+use aifs_protocol::{
+    AppSettings, FolderStyle, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text,
+};
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
 /// Log line or categorize/describe progress from supervised analysis.
@@ -39,14 +41,10 @@ pub fn analyze_into_supervised(
     let categorize = slot(models, "categorize").filter(|slot| !is_off(&slot.backend));
     let vision = slot(models, "vision").filter(|slot| !is_off(&slot.backend));
     let document = slot(models, "document").filter(|slot| !is_off(&slot.backend));
-    let categorize_slot = categorize.or(if settings.analyze_documents {
-        document
-    } else {
-        None
-    });
-    let run_categorize = categorize_slot.is_some();
+    let run_categorize = categorize.is_some();
     let run_describe = settings.analyze_images && vision.is_some();
-    if !run_categorize && !run_describe {
+    let run_document = settings.analyze_documents && document.is_some();
+    if !run_categorize && !run_describe && !run_document {
         return WorkStatus::Completed;
     }
 
@@ -65,7 +63,6 @@ pub fn analyze_into_supervised(
         .display()
         .to_string();
     let mut loaded: Option<String> = None;
-    let document_only = categorize.is_none() && document.is_some();
     let allowed_categories = settings.policy.whitelist.main.clone();
     let style = settings.policy.style;
 
@@ -148,85 +145,173 @@ pub fn analyze_into_supervised(
         }
     }
 
-    if run_categorize && let Some(slot) = categorize_slot {
-        match ensure_loaded(
-            &mut llm,
-            &mut loaded,
-            slot,
+    if run_categorize && let Some(slot) = categorize {
+        let targets: Vec<ObservedEntry> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| should_include_in_categorize(entry, run_document))
+            .cloned()
+            .collect();
+        match categorize_targets(CategorizePass {
+            llm: &mut llm,
+            loaded: &mut loaded,
+            snapshot,
             models,
-            &storage_dir,
-            &mut |message| on_notice(AnalyzeNotice::Log(message)),
-        ) {
-            Ok(()) => {
-                let targets: Vec<ObservedEntry> = snapshot
-                    .entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.kind == EntryKind::File
-                            && should_categorize(entry, categorize.is_some(), document_only)
-                    })
-                    .cloned()
-                    .collect();
-                let total = targets.len() as u64;
-                let mut bags = Vec::new();
-                for (index, entry) in targets.into_iter().enumerate() {
-                    if !should_continue() {
-                        snapshot.evidence.extend(bags);
-                        shutdown_llm(&mut llm, loaded.is_some());
-                        return WorkStatus::Cancelled;
-                    }
-                    on_notice(AnalyzeNotice::Progress {
-                        stage: "categorize",
-                        current: index as u64 + 1,
-                        total,
-                        path: entry.path.as_str(),
-                    });
-                    if has_category_evidence(snapshot, &entry) {
-                        continue;
-                    }
-                    let prior = prior_evidence(snapshot, &entry);
-                    if !run_describe {
-                        maybe_log_screenshot(&mut on_notice, &entry, &prior);
-                    }
-                    match llm.categorize(
-                        &snapshot.root,
-                        &entry,
-                        prior,
-                        allowed_categories.clone(),
-                        style,
-                    ) {
-                        Ok(Some(evidence)) => {
-                            log_category(
-                                &mut |message| on_notice(AnalyzeNotice::Log(message)),
-                                &entry,
-                                &evidence,
-                            );
-                            bags.push(evidence);
-                            if bags.len() >= CHECKPOINT_EVERY {
-                                snapshot.evidence.extend(std::mem::take(&mut bags));
-                                if !on_checkpoint(snapshot) {
-                                    shutdown_llm(&mut llm, loaded.is_some());
-                                    return WorkStatus::PersistFailed;
-                                }
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => on_notice(AnalyzeNotice::Log(format!(
-                            "categorize skipped {}: {}",
-                            entry.path.as_str(),
-                            sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
-                        ))),
-                    }
-                }
-                snapshot.evidence.extend(bags);
-            }
-            Err(message) => on_notice(AnalyzeNotice::Log(format!(
-                "Categorize load failed ({message}); folder labels stay heuristic."
-            ))),
+            storage_dir: &storage_dir,
+            slot,
+            targets,
+            allowed_categories: &allowed_categories,
+            style,
+            log_screenshots: !run_describe,
+            load_failed: "Categorize load failed",
+            on_notice: &mut on_notice,
+            on_checkpoint: &mut on_checkpoint,
+            should_continue: &mut should_continue,
+        }) {
+            WorkStatus::Completed => {}
+            other => return other,
+        }
+    }
+
+    if run_document && let Some(slot) = document {
+        let targets: Vec<ObservedEntry> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| should_include_in_document(entry))
+            .cloned()
+            .collect();
+        match categorize_targets(CategorizePass {
+            llm: &mut llm,
+            loaded: &mut loaded,
+            snapshot,
+            models,
+            storage_dir: &storage_dir,
+            slot,
+            targets,
+            allowed_categories: &allowed_categories,
+            style,
+            log_screenshots: !run_describe,
+            load_failed: "Document load failed",
+            on_notice: &mut on_notice,
+            on_checkpoint: &mut on_checkpoint,
+            should_continue: &mut should_continue,
+        }) {
+            WorkStatus::Completed => {}
+            other => return other,
         }
     }
 
     shutdown_llm(&mut llm, loaded.is_some());
+    WorkStatus::Completed
+}
+
+struct CategorizePass<'a, Notice, Checkpoint, Continue>
+where
+    Notice: FnMut(AnalyzeNotice<'_>),
+    Checkpoint: FnMut(&WorkspaceSnapshot) -> bool,
+    Continue: FnMut() -> bool,
+{
+    llm: &'a mut WorkerClient,
+    loaded: &'a mut Option<String>,
+    snapshot: &'a mut WorkspaceSnapshot,
+    models: &'a ModelInventory,
+    storage_dir: &'a str,
+    slot: &'a ModelSlot,
+    targets: Vec<ObservedEntry>,
+    allowed_categories: &'a [String],
+    style: FolderStyle,
+    log_screenshots: bool,
+    load_failed: &'a str,
+    on_notice: &'a mut Notice,
+    on_checkpoint: &'a mut Checkpoint,
+    should_continue: &'a mut Continue,
+}
+
+fn categorize_targets<Notice, Checkpoint, Continue>(
+    pass: CategorizePass<'_, Notice, Checkpoint, Continue>,
+) -> WorkStatus
+where
+    Notice: FnMut(AnalyzeNotice<'_>),
+    Checkpoint: FnMut(&WorkspaceSnapshot) -> bool,
+    Continue: FnMut() -> bool,
+{
+    let CategorizePass {
+        llm,
+        loaded,
+        snapshot,
+        models,
+        storage_dir,
+        slot,
+        targets,
+        allowed_categories,
+        style,
+        log_screenshots,
+        load_failed,
+        on_notice,
+        on_checkpoint,
+        should_continue,
+    } = pass;
+    match ensure_loaded(llm, loaded, slot, models, storage_dir, &mut |message| {
+        on_notice(AnalyzeNotice::Log(message));
+    }) {
+        Ok(()) => {
+            let total = targets.len() as u64;
+            let mut bags = Vec::new();
+            for (index, entry) in targets.into_iter().enumerate() {
+                if !should_continue() {
+                    snapshot.evidence.extend(bags);
+                    shutdown_llm(llm, loaded.is_some());
+                    return WorkStatus::Cancelled;
+                }
+                on_notice(AnalyzeNotice::Progress {
+                    stage: "categorize",
+                    current: index as u64 + 1,
+                    total,
+                    path: entry.path.as_str(),
+                });
+                if has_category_evidence(snapshot, &entry) {
+                    continue;
+                }
+                let prior = prior_evidence(snapshot, &entry);
+                if log_screenshots {
+                    maybe_log_screenshot(on_notice, &entry, &prior);
+                }
+                match llm.categorize(
+                    &snapshot.root,
+                    &entry,
+                    prior,
+                    allowed_categories.to_vec(),
+                    style,
+                ) {
+                    Ok(Some(evidence)) => {
+                        log_category(
+                            &mut |message| on_notice(AnalyzeNotice::Log(message)),
+                            &entry,
+                            &evidence,
+                        );
+                        bags.push(evidence);
+                        if bags.len() >= CHECKPOINT_EVERY {
+                            snapshot.evidence.extend(std::mem::take(&mut bags));
+                            if !on_checkpoint(snapshot) {
+                                shutdown_llm(llm, loaded.is_some());
+                                return WorkStatus::PersistFailed;
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => on_notice(AnalyzeNotice::Log(format!(
+                        "categorize skipped {}: {}",
+                        entry.path.as_str(),
+                        sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
+                    ))),
+                }
+            }
+            snapshot.evidence.extend(bags);
+        }
+        Err(message) => on_notice(AnalyzeNotice::Log(format!(
+            "{load_failed} ({message}); folder labels stay heuristic."
+        ))),
+    }
     WorkStatus::Completed
 }
 
@@ -237,18 +322,12 @@ fn shutdown_llm(llm: &mut WorkerClient, loaded: bool) {
     let _ = llm.shutdown();
 }
 
-fn should_categorize(entry: &ObservedEntry, categorize_on: bool, document_only: bool) -> bool {
-    if categorize_on {
-        return true;
-    }
-    document_only
-        && matches!(
-            entry.family,
-            FileFamily::Document
-                | FileFamily::Spreadsheet
-                | FileFamily::Presentation
-                | FileFamily::Ebook
-        )
+fn should_include_in_categorize(entry: &ObservedEntry, run_document: bool) -> bool {
+    entry.kind == EntryKind::File && !(run_document && entry.family.is_document_like())
+}
+
+fn should_include_in_document(entry: &ObservedEntry) -> bool {
+    entry.kind == EntryKind::File && entry.family.is_document_like()
 }
 
 fn slot<'a>(models: &'a ModelInventory, id: &str) -> Option<&'a ModelSlot> {
@@ -380,5 +459,34 @@ mod tests {
             lock: aifs_domain::LockState::Readable,
         };
         assert!(looks_like_screenshot(&entry, &[]));
+    }
+
+    fn file(path: &str, family: FileFamily) -> ObservedEntry {
+        ObservedEntry {
+            id: aifs_domain::AssetId::new(),
+            path: aifs_domain::RelativePath::parse(path).unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::File,
+            family,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        }
+    }
+
+    #[test]
+    fn document_pass_excludes_office_files_from_categorize() {
+        let note = file("note.txt", FileFamily::Document);
+        let sheet = file("sheet.xlsx", FileFamily::Spreadsheet);
+        let shot = file("shot.jpg", FileFamily::Image);
+        let song = file("clip.mp3", FileFamily::Audio);
+        assert!(!should_include_in_categorize(&note, true));
+        assert!(!should_include_in_categorize(&sheet, true));
+        assert!(should_include_in_categorize(&shot, true));
+        assert!(should_include_in_categorize(&song, true));
+        assert!(should_include_in_categorize(&note, false));
+        assert!(should_include_in_document(&note));
+        assert!(should_include_in_document(&sheet));
+        assert!(!should_include_in_document(&shot));
+        assert!(!should_include_in_document(&song));
     }
 }

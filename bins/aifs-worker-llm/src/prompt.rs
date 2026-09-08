@@ -5,7 +5,9 @@ use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
 const FACT_CHARS: usize = 160;
-const DOCUMENT_TEXT_CHARS: usize = 400;
+pub(crate) const DOCUMENT_TEXT_CHARS: usize = 400;
+#[cfg(any(test, feature = "llama"))]
+const DOCUMENT_TEXT_FLOOR: usize = 50;
 
 /// System prompt for folder labels.
 pub const CATEGORIZE_SYSTEM: &str = "You label files for a desktop organizer. \
@@ -109,6 +111,38 @@ fn format_evidence(evidence: &[Evidence]) -> String {
     truncate(&joined, EVIDENCE_CHARS)
 }
 
+/// Next halved `document.text` budget, stopping at the floor.
+#[cfg(any(test, feature = "llama"))]
+pub fn next_document_text_budget(current: usize) -> Option<usize> {
+    if current <= DOCUMENT_TEXT_FLOOR {
+        return None;
+    }
+    let next = current / 2;
+    if next < DOCUMENT_TEXT_FLOOR {
+        Some(DOCUMENT_TEXT_FLOOR)
+    } else {
+        Some(next)
+    }
+}
+
+/// Truncates `document.text` facts in place. Returns true when any fact shortened.
+#[cfg(any(test, feature = "llama"))]
+pub fn shrink_document_text(evidence: &mut [Evidence], max_chars: usize) -> bool {
+    let mut changed = false;
+    for bag in evidence.iter_mut() {
+        let Some(text) = bag.facts.get(keys::DOCUMENT_TEXT) else {
+            continue;
+        };
+        if text.chars().count() <= max_chars {
+            continue;
+        }
+        let truncated = truncate(text, max_chars);
+        bag.facts.insert(keys::DOCUMENT_TEXT.to_owned(), truncated);
+        changed = true;
+    }
+    changed
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     let count = value.chars().count();
     if count <= max_chars {
@@ -200,5 +234,35 @@ mod tests {
             FolderStyle::Consistent,
         );
         assert!(user.len() <= EVIDENCE_CHARS + 80, "{}", user.len());
+    }
+
+    #[test]
+    fn document_text_budget_halves_then_floors() {
+        assert_eq!(next_document_text_budget(DOCUMENT_TEXT_CHARS), Some(200));
+        assert_eq!(next_document_text_budget(200), Some(100));
+        assert_eq!(next_document_text_budget(100), Some(50));
+        assert_eq!(next_document_text_budget(50), None);
+        assert_eq!(next_document_text_budget(75), Some(50));
+        let long = "x".repeat(400);
+        let mut bag = Evidence::new(
+            AssetId::new(),
+            EvidenceSource::DocumentMetadata,
+            Confidence::new(1.0),
+        )
+        .with_fact(keys::DOCUMENT_TEXT, long);
+        assert!(shrink_document_text(std::slice::from_mut(&mut bag), 200));
+        assert_eq!(
+            bag.fact(keys::DOCUMENT_TEXT)
+                .map(|text| text.chars().count()),
+            Some(200)
+        );
+        assert!(shrink_document_text(std::slice::from_mut(&mut bag), 100));
+        assert_eq!(
+            bag.fact(keys::DOCUMENT_TEXT)
+                .map(|text| text.chars().count()),
+            Some(100)
+        );
+        assert!(!shrink_document_text(std::slice::from_mut(&mut bag), 100));
+        assert!(!shrink_document_text(std::slice::from_mut(&mut bag), 400));
     }
 }

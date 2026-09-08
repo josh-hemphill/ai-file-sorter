@@ -58,9 +58,20 @@ fn copy_tree(src: &Path, dst: &Path) {
         if meta.is_dir() {
             copy_tree(&entry.path(), &to);
         } else {
-            fs::copy(entry.path(), to).unwrap_or_else(|error| panic!("{error}"));
+            fs::copy(entry.path(), &to).unwrap_or_else(|error| panic!("{error}"));
+            pin_copied_mtime(&to);
         }
     }
+}
+
+/// Pins copied fixture files to 2021-07-15 so document date suffixes stay stable.
+fn pin_copied_mtime(path: &Path) {
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("{error}"));
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_626_307_200_000))
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 #[test]
