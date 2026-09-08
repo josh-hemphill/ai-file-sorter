@@ -542,19 +542,10 @@ mod tests {
             !alias.split_whitespace().any(|token| token == "aifs-engine"),
             "engine-bins must not pass -p aifs-engine: {alias}"
         );
-        let packages = include_str!("../../../../Makefile")
-            .lines()
-            .find(|line| line.starts_with("ENGINE_PACKAGES"))
-            .unwrap_or_else(|| panic!("ENGINE_PACKAGES"));
+        let packages = include_str!("../../../../package.json");
         assert!(
-            packages.contains("aifs-engine-bin"),
-            "make build must compile the engine binary crate: {packages}"
-        );
-        assert!(
-            !packages
-                .split_whitespace()
-                .any(|token| token == "aifs-engine"),
-            "make build must not select the library crate: {packages}"
+            packages.contains("\"build\": \"cargo engine-bins\""),
+            "pnpm build must compile the engine binary crates: {packages}"
         );
         let engine_llm = include_str!("../../../../.cargo/config.toml")
             .lines()
@@ -568,6 +559,13 @@ mod tests {
         assert!(
             makefile.contains("$(MAKE) llama"),
             "make desktop must overwrite the stub LLM worker with llama.cpp"
+        );
+        let pkg = include_str!("../../../../package.json");
+        assert!(
+            pkg.contains("\"llama\": \"cargo engine-llm\"")
+                && pkg.contains("pnpm llama")
+                && pkg.contains("tauri dev"),
+            "pnpm desktop must overwrite the stub LLM worker with llama.cpp: {pkg}"
         );
         let tauri = include_str!("../tauri.conf.json");
         for hook in ["beforeDevCommand", "beforeBuildCommand"] {

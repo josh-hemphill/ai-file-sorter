@@ -45,20 +45,17 @@ jobs:
   desktop-ui:
     name: Vue typecheck
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v2
         with:
           version: 12.3.4
           runtime: node@24
-          package-json-file: apps/desktop/package.json
+          package-json-file: package.json
           cache: true
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
-      - run: pnpm test
-      - run: pnpm exec vue-tsc --noEmit
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:desktop
 
   llama-cpu:
     name: llama.cpp worker (ubuntu)

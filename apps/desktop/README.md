@@ -3,12 +3,13 @@
 Tauri 2 shell + Vue 3 UI. The WebView never opens user files; it calls typed
 commands that forward JSONL to `aifs-engine`.
 
-Requires pnpm 12 (pinned in `package.json` as `packageManager`) and Node.js 24 LTS.
+Requires pnpm 12 (pinned in the root `package.json` as `packageManager`) and Node.js 24 LTS.
 
 From the **repository root**:
 
 ```bash
-make desktop
+pnpm install
+pnpm desktop
 ```
 
 Or:
@@ -16,10 +17,8 @@ Or:
 ```bash
 cargo engine-bins
 cargo engine-llm
-cd apps/desktop
-pnpm install
-pnpm test
-pnpm tauri dev
+pnpm --filter desktop test
+pnpm --filter desktop tauri dev
 ```
 
 `tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
