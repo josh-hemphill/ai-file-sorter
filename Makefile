@@ -15,7 +15,7 @@ help:
 		'pnpm check     fmt + clippy + test' \
 		'pnpm desktop   build binaries, llama worker, and start Tauri/Vue' \
 		'pnpm cli -- scan fixtures/inbox-mixed' \
-		'pnpm llama     llama.cpp LLM worker (needs a C++ compiler; used by pnpm desktop)' \
+		'pnpm llama     llama.cpp LLM worker (needs a C++ compiler; used by pnpm desktop; wraps CMAKE_GENERATOR on Windows)' \
 		'make …         same targets without going through pnpm (cargo still runs)'
 
 build:
@@ -48,4 +48,8 @@ cli: build
 	./target/debug/aifs $(ARGS)
 
 llama:
+ifeq ($(OS),Windows_NT)
+	node scripts/with-cmake-generator.mjs cargo engine-llm
+else
 	CXX=$${CXX:-g++} cargo engine-llm
+endif

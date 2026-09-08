@@ -1,3 +1,5 @@
+# Do not set CMAKE_GENERATOR here: Linux llama CI uses Unix Makefiles.
+# Windows VS 2026 + CMake < 4.2 is handled by scripts/with-cmake-generator.mjs.
 [alias]
 aifs = "run -p aifs-cli --"
 fmt-all = "fmt --all"
