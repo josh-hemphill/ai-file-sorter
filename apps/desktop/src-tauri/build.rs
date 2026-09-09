@@ -4,6 +4,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+include!("sidecar_copy.rs");
+
 /// Process stems copied into `binaries/` for Tauri `externalBin`.
 const SIDECAR_STEMS: &[&str] = &[
     "aifs-engine",
@@ -22,6 +24,8 @@ fn main() {
 ///
 /// Debug builds write empty placeholders when the real binaries are missing so
 /// `tauri_build` can compile `aifs-desktop` during clippy/test. Release panics.
+/// Copies are skipped when the destination already matches so `tauri dev` does
+/// not see a sidecar mtime change and rebuild forever.
 fn copy_sidecars() {
     let triple = env::var("TARGET").unwrap_or_default();
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
@@ -39,13 +43,14 @@ fn copy_sidecars() {
     if triple.is_empty() {
         panic!("TARGET is unset; cannot name sidecar files");
     }
-    println!("cargo:rerun-if-changed={}", src_dir.display());
+    // Watch each sidecar source, not the whole target profile directory: compiling
+    // aifs-desktop writes into target/{profile} and would retrigger this script.
     for stem in SIDECAR_STEMS {
         let src = src_dir.join(format!("{stem}{ext}"));
         let dest = dest_dir.join(format!("{stem}-{triple}{ext}"));
         println!("cargo:rerun-if-changed={}", src.display());
         if src.is_file() {
-            if let Err(error) = fs::copy(&src, &dest) {
+            if let Err(error) = copy_if_changed(&src, &dest) {
                 panic!("copy {} → {}: {error}", src.display(), dest.display());
             }
             continue;
@@ -57,7 +62,7 @@ fn copy_sidecars() {
             );
         }
         // tauri_build requires externalBin paths to exist even for clippy/test.
-        if let Err(error) = fs::write(&dest, []) {
+        if let Err(error) = write_if_changed(&dest, &[]) {
             panic!("placeholder {} : {error}", dest.display());
         }
     }
