@@ -591,5 +591,23 @@ mod tests {
                 "{hook} must overwrite the stub worker with llama.cpp: {line}"
             );
         }
+        let build = include_str!("../build.rs");
+        assert!(
+            !build.contains("src_dir.display()"),
+            "watching the whole target profile directory retriggers tauri dev: {build}"
+        );
+        assert!(
+            build.contains("copy_if_changed") && build.contains("write_if_changed"),
+            "sidecar copies must skip identical destinations: {build}"
+        );
+        let ignore = include_str!("../.taurignore");
+        assert!(
+            ignore.contains("binaries/") && ignore.contains("gen/"),
+            "tauri dev must ignore sidecar copies and generated schemas: {ignore}"
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "../sidecar_copy.rs"]
+mod sidecar_copy;
