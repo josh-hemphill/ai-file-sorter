@@ -6,6 +6,10 @@
   root so `cargo`, `make`, and rust-analyzer work without a nested `rust/` directory.
 - Removed the C++/Qt application, vendored native dependencies, and Qt CI from this
   fork. Development continues as the isolated Rust engine, CLI, and Tauri/Vue workspace.
+- Desktop engine commands (scan, download, chat, settings, models) now run off the
+  WebView thread so model downloads and other I/O no longer freeze the UI. Catalog
+  SHA-256 results are cached by file metadata so Setup does not re-hash multi-GB
+  GGUFs on every `get_models`. Downloads honor `cancel` between chunks.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

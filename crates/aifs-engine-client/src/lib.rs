@@ -473,6 +473,7 @@ impl EngineClient {
         for envelope in envelopes {
             match envelope.event {
                 Event::Models { inventory } => return Ok(inventory),
+                Event::Cancelled => return Err(ClientError::Cancelled),
                 Event::Failed { code, message, .. } => {
                     return Err(ClientError::Engine { code, message });
                 }

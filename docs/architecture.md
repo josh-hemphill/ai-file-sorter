@@ -23,6 +23,10 @@ Rules:
 
 - The UI process never opens user files, SQLite, or model runtimes. It only talks to the
   engine over the protocol in `crates/aifs-protocol`.
+- Tauri commands that wait on the engine (scan, download, chat, settings, models) run on
+  a blocking worker thread. Progress and log events are emitted from that thread so the
+  WebView can paint. Native folder dialogs stay on the UI thread. `cancel` is a short
+  stdin write on the UI thread so it is not queued behind a download.
 - The Tauri shell launches a fixed engine binary with scoped capabilities. Release builds
   fail loudly if the engine is missing; there is no in-process fallback. Packaged apps
   embed `aifs-engine` and the four workers as Tauri `externalBin` sidecars (named

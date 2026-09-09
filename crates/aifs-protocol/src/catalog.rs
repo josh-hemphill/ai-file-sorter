@@ -3,13 +3,24 @@
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 static CATALOG_BASE_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
 static SHA256_OVERRIDES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 static CATALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
+static SHA256_CACHE: Mutex<BTreeMap<DigestCacheKey, String>> = Mutex::new(BTreeMap::new());
+
+const FINGERPRINT_LEN: usize = 64;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DigestCacheKey {
+    path: PathBuf,
+    len: u64,
+    head: [u8; FINGERPRINT_LEN],
+    tail: [u8; FINGERPRINT_LEN],
+}
 
 /// Hugging Face resolve URL used when `AIFS_CATALOG_BASE` is unset.
 pub const DEFAULT_CATALOG_BASE: &str =
@@ -271,6 +282,52 @@ pub fn artifact_is_verified(path: &Path, expected_sha256: &str) -> bool {
     file_sha256_hex(path).is_ok_and(|hex| hex.eq_ignore_ascii_case(expected_sha256))
 }
 
+/// Records `digest` for `path`'s current metadata so later verifies skip a re-read.
+pub fn remember_file_digest(path: &Path, digest: &str) {
+    let Ok(key) = digest_cache_key(path) else {
+        return;
+    };
+    store_cached_digest(key, digest.to_ascii_lowercase());
+}
+
+fn digest_cache_key(path: &Path) -> io::Result<DigestCacheKey> {
+    let meta = std::fs::metadata(path)?;
+    let len = meta.len();
+    let (head, tail) = read_head_tail(path, len)?;
+    Ok(DigestCacheKey {
+        path: path.to_path_buf(),
+        len,
+        head,
+        tail,
+    })
+}
+
+fn read_head_tail(
+    path: &Path,
+    len: u64,
+) -> io::Result<([u8; FINGERPRINT_LEN], [u8; FINGERPRINT_LEN])> {
+    let mut file = File::open(path)?;
+    let mut head = [0_u8; FINGERPRINT_LEN];
+    let mut tail = [0_u8; FINGERPRINT_LEN];
+    let head_n = len.min(FINGERPRINT_LEN as u64) as usize;
+    file.read_exact(&mut head[..head_n])?;
+    if len <= FINGERPRINT_LEN as u64 {
+        tail[..head_n].copy_from_slice(&head[..head_n]);
+        return Ok((head, tail));
+    }
+    file.seek(SeekFrom::End(-(FINGERPRINT_LEN as i64)))?;
+    file.read_exact(&mut tail)?;
+    Ok((head, tail))
+}
+
+fn store_cached_digest(key: DigestCacheKey, digest: String) {
+    let Ok(mut cache) = SHA256_CACHE.lock() else {
+        return;
+    };
+    cache.retain(|existing, _| existing.path != key.path);
+    cache.insert(key, digest);
+}
+
 /// Bytes on disk for a finished file, or `0` when missing.
 pub fn artifact_bytes_on_disk(path: &Path) -> u64 {
     std::fs::metadata(path)
@@ -294,6 +351,18 @@ pub fn catalog_id_is_downloaded(storage_dir: &Path, catalog_id: &str) -> bool {
 }
 
 fn file_sha256_hex(path: &Path) -> io::Result<String> {
+    let key = digest_cache_key(path)?;
+    if let Ok(cache) = SHA256_CACHE.lock()
+        && let Some(digest) = cache.get(&key)
+    {
+        return Ok(digest.clone());
+    }
+    let digest = hash_file_sha256(path)?;
+    store_cached_digest(key, digest.clone());
+    Ok(digest)
+}
+
+fn hash_file_sha256(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -374,5 +443,23 @@ mod tests {
     fn catalog_url_uses_override_base() {
         let url = catalog_download_url(GEMMA_TEXT_FILENAME);
         assert!(url.ends_with(GEMMA_TEXT_FILENAME), "{url}");
+    }
+
+    #[test]
+    fn remembered_digest_matches_until_the_file_changes() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = dir.path().join("cached.gguf");
+        let body = b"cached-weights";
+        fs::write(&path, body).unwrap_or_else(|error| panic!("{error}"));
+        let digest = sha256_hex(body);
+        remember_file_digest(&path, &digest);
+        assert!(artifact_is_verified(&path, &digest));
+        fs::write(&path, b"changed-weights").unwrap_or_else(|error| panic!("{error}"));
+        assert!(!artifact_is_verified(&path, &digest));
+        let next = sha256_hex(b"changed-weights");
+        remember_file_digest(&path, &next);
+        assert!(artifact_is_verified(&path, &next));
+        fs::write(&path, b"changed-WEIGHTS").unwrap_or_else(|error| panic!("{error}"));
+        assert!(!artifact_is_verified(&path, &next));
     }
 }

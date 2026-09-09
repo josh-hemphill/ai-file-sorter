@@ -2,7 +2,7 @@
 
 use aifs_protocol::{
     CatalogArtifact, Envelope, Event, RequestId, artifact_is_verified, artifact_path,
-    catalog_download_url, catalog_entry, expected_sha256,
+    catalog_download_url, catalog_entry, expected_sha256, remember_file_digest,
 };
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -21,7 +21,11 @@ pub fn download_catalog(
     catalog_id: &str,
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), DownloadError> {
+    if is_cancelled() {
+        return Err(DownloadError::Cancelled);
+    }
     let entry = catalog_entry(catalog_id).ok_or_else(|| DownloadError::UnknownCatalog {
         catalog_id: catalog_id.to_owned(),
     })?;
@@ -30,7 +34,10 @@ pub fn download_catalog(
         error,
     })?;
     for artifact in entry.artifacts {
-        download_artifact(storage_dir, artifact, id, emit)?;
+        if is_cancelled() {
+            return Err(DownloadError::Cancelled);
+        }
+        download_artifact(storage_dir, artifact, id, emit, is_cancelled)?;
     }
     Ok(())
 }
@@ -40,6 +47,7 @@ fn download_artifact(
     artifact: &CatalogArtifact,
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), DownloadError> {
     let dest = artifact_path(storage_dir, artifact.filename);
     let sha256 = expected_sha256(artifact);
@@ -69,11 +77,20 @@ fn download_artifact(
         Some(artifact.expected_bytes),
         format!("Downloading {}", artifact.filename),
     );
-    fetch_to_part(&url, &part, artifact.expected_bytes, &sha256, id, emit)?;
+    let digest = fetch_to_part(
+        &url,
+        &part,
+        artifact.expected_bytes,
+        &sha256,
+        id,
+        emit,
+        is_cancelled,
+    )?;
     fs::rename(&part, &dest).map_err(|error| DownloadError::Io {
         path: dest.clone(),
         error,
     })?;
+    remember_file_digest(&dest, &digest);
     let size = fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
     emit_progress(
         emit,
@@ -92,7 +109,11 @@ fn fetch_to_part(
     expected_sha256: &str,
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
-) -> Result<(), DownloadError> {
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<String, DownloadError> {
+    if is_cancelled() {
+        return Err(DownloadError::Cancelled);
+    }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(READ_TIMEOUT)
@@ -117,6 +138,11 @@ fn fetch_to_part(
         .checked_sub(PROGRESS_INTERVAL)
         .unwrap_or_else(Instant::now);
     loop {
+        if is_cancelled() {
+            drop(file);
+            let _ = fs::remove_file(part);
+            return Err(DownloadError::Cancelled);
+        }
         let read = reader
             .read(&mut buffer)
             .map_err(|error| DownloadError::Io {
@@ -165,7 +191,7 @@ fn fetch_to_part(
             actual: digest,
         });
     }
-    Ok(())
+    Ok(digest)
 }
 
 fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
@@ -210,6 +236,8 @@ pub enum DownloadError {
         /// Requested id.
         catalog_id: String,
     },
+    /// The in-flight download noticed a cancel request.
+    Cancelled,
     /// HTTP or TLS failure.
     Http {
         /// Request URL.
@@ -246,6 +274,7 @@ impl std::fmt::Display for DownloadError {
             Self::UnknownCatalog { catalog_id } => {
                 write!(formatter, "Unknown catalog id {catalog_id}")
             }
+            Self::Cancelled => write!(formatter, "download cancelled"),
             Self::Http { url, message } => write!(formatter, "download {url} failed: {message}"),
             Self::Empty { url } => write!(formatter, "download {url} returned an empty file"),
             Self::ChecksumMismatch {

@@ -1,5 +1,10 @@
 //! Tauri shell: launches `aifs-engine` and forwards typed commands. No scan or
 //! mutation happens in this process beyond spawning the engine.
+//!
+//! Engine I/O is blocking JSONL. Commands that wait on it run on Tokio's
+//! blocking pool so the WebView event loop stays free. Native folder dialogs
+//! and cancel stay on the UI thread (dialogs require it; cancel must not queue
+//! behind a download).
 
 use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, PlanIssue, ProposalRevision, RevisionAuthor,
@@ -14,8 +19,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
+/// Shared engine child. `Clone` so async commands can move a handle into `spawn_blocking`.
+#[derive(Clone)]
 struct EngineState {
-    client: Mutex<Option<Arc<EngineClient>>>,
+    client: Arc<Mutex<Option<Arc<EngineClient>>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -89,12 +96,14 @@ fn with_client<T>(
 }
 
 fn ensure_client(state: &EngineState) -> Result<(), String> {
-    let mut guard = state
-        .client
-        .lock()
-        .map_err(|_| "engine lock poisoned".to_owned())?;
-    if guard.is_some() {
-        return Ok(());
+    {
+        let guard = state
+            .client
+            .lock()
+            .map_err(|_| "engine lock poisoned".to_owned())?;
+        if guard.is_some() {
+            return Ok(());
+        }
     }
     let binary = discover_engine_binary().map_err(|error| {
         if cfg!(debug_assertions) {
@@ -105,13 +114,40 @@ fn ensure_client(state: &EngineState) -> Result<(), String> {
     })?;
     let client =
         EngineClient::connect(binary, "aifs-desktop").map_err(|error| error.to_string())?;
+    let mut guard = state
+        .client
+        .lock()
+        .map_err(|_| "engine lock poisoned".to_owned())?;
+    if guard.is_some() {
+        return Ok(());
+    }
     *guard = Some(Arc::new(client));
     Ok(())
 }
 
+fn with_ready_client<T>(
+    state: &EngineState,
+    fun: impl FnOnce(&EngineClient) -> Result<T, String>,
+) -> Result<T, String> {
+    ensure_client(state)?;
+    with_client(state, fun)
+}
+
+/// Runs blocking engine stdio off the WebView thread.
+async fn run_blocking<T, F>(fun: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(fun)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
-fn connect_engine(state: State<EngineState>) -> Result<(), String> {
-    ensure_client(&state)
+async fn connect_engine(state: State<'_, EngineState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    run_blocking(move || ensure_client(&state)).await
 }
 
 #[tauri::command]
@@ -163,71 +199,82 @@ fn resolve_policy(
 }
 
 #[tauri::command]
-fn scan_root(
+async fn scan_root(
     app: AppHandle,
-    state: State<EngineState>,
+    state: State<'_, EngineState>,
     args: ScanArgs,
 ) -> Result<WorkspaceSnapshot, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        let (options, _) = resolve_policy(client, &args.preset)?;
-        let envelopes = client
-            .request_with_events(
-                aifs_protocol::Command::Scan {
-                    root: args.root.clone().into(),
-                    options,
-                    session: args.session,
-                },
-                |envelope| {
-                    forward_engine_event(&app, &envelope.event);
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        for envelope in envelopes {
-            match envelope.event {
-                Event::ScanCompleted { snapshot } => return Ok(snapshot),
-                Event::Cancelled => return Err("request cancelled".to_owned()),
-                Event::Failed { message, .. } => return Err(message),
-                _ => {}
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let (options, _) = resolve_policy(client, &args.preset)?;
+            let envelopes = client
+                .request_with_events(
+                    aifs_protocol::Command::Scan {
+                        root: args.root.clone().into(),
+                        options,
+                        session: args.session,
+                    },
+                    |envelope| {
+                        forward_engine_event(&app, &envelope.event);
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            for envelope in envelopes {
+                match envelope.event {
+                    Event::ScanCompleted { snapshot } => return Ok(snapshot),
+                    Event::Cancelled => return Err("request cancelled".to_owned()),
+                    Event::Failed { message, .. } => return Err(message),
+                    _ => {}
+                }
             }
-        }
-        Err("scan ended without a snapshot".to_owned())
+            Err("scan ended without a snapshot".to_owned())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn propose_session(
-    state: State<EngineState>,
+async fn propose_session(
+    state: State<'_, EngineState>,
     session: SessionId,
     preset: String,
 ) -> Result<ProposalRevision, String> {
-    with_client(&state, |client| {
-        let (_, policy) = resolve_policy(client, &preset)?;
-        client
-            .propose(session, policy)
-            .map_err(|error| error.to_string())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let (_, policy) = resolve_policy(client, &preset)?;
+            client
+                .propose(session, policy)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn patch_revision(
-    state: State<EngineState>,
+async fn patch_revision(
+    state: State<'_, EngineState>,
     session: SessionId,
     base_revision: RevisionId,
     summary: String,
     patches: Vec<RevisionPatch>,
 ) -> Result<ProposalRevision, String> {
-    with_client(&state, |client| {
-        client
-            .patch(
-                session,
-                base_revision,
-                RevisionAuthor::User,
-                summary,
-                patches,
-            )
-            .map_err(|error| error.to_string())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client
+                .patch(
+                    session,
+                    base_revision,
+                    RevisionAuthor::User,
+                    summary,
+                    patches,
+                )
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[derive(Serialize)]
@@ -237,86 +284,98 @@ struct PlanResult {
 }
 
 #[tauri::command]
-fn plan_revision(
-    state: State<EngineState>,
+async fn plan_revision(
+    state: State<'_, EngineState>,
     session: SessionId,
     revision: RevisionId,
 ) -> Result<PlanResult, String> {
-    with_client(&state, |client| {
-        let envelopes = client
-            .request_with_events(aifs_protocol::Command::Plan { session, revision }, |_| {})
-            .map_err(|error| error.to_string())?;
-        for envelope in envelopes {
-            match envelope.event {
-                Event::Planned { plan, issues } => {
-                    return Ok(PlanResult {
-                        plan: Some(plan),
-                        issues,
-                    });
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let envelopes = client
+                .request_with_events(aifs_protocol::Command::Plan { session, revision }, |_| {})
+                .map_err(|error| error.to_string())?;
+            for envelope in envelopes {
+                match envelope.event {
+                    Event::Planned { plan, issues } => {
+                        return Ok(PlanResult {
+                            plan: Some(plan),
+                            issues,
+                        });
+                    }
+                    Event::Failed {
+                        message, issues, ..
+                    } => {
+                        return Ok(PlanResult {
+                            plan: None,
+                            issues: if issues.is_empty() {
+                                vec![PlanIssue::error("plan_rejected", message, Vec::new())]
+                            } else {
+                                issues
+                            },
+                        });
+                    }
+                    _ => {}
                 }
-                Event::Failed {
-                    message, issues, ..
-                } => {
-                    return Ok(PlanResult {
-                        plan: None,
-                        issues: if issues.is_empty() {
-                            vec![PlanIssue::error("plan_rejected", message, Vec::new())]
-                        } else {
-                            issues
-                        },
-                    });
-                }
-                _ => {}
             }
-        }
-        Err("plan ended without a result".to_owned())
+            Err("plan ended without a result".to_owned())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn apply_plan(
+async fn apply_plan(
     app: AppHandle,
-    state: State<EngineState>,
+    state: State<'_, EngineState>,
     session: SessionId,
     plan: PlanId,
     dry_run: bool,
 ) -> Result<ApplyJournal, String> {
-    with_client(&state, |client| {
-        let envelopes = client
-            .request_with_events(
-                aifs_protocol::Command::Apply {
-                    session,
-                    plan,
-                    dry_run,
-                },
-                |envelope| {
-                    forward_engine_event(&app, &envelope.event);
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        for envelope in envelopes {
-            match envelope.event {
-                Event::Journal { journal } => return Ok(journal),
-                Event::Cancelled => return Err("request cancelled".to_owned()),
-                Event::Failed { message, .. } => return Err(message),
-                _ => {}
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let envelopes = client
+                .request_with_events(
+                    aifs_protocol::Command::Apply {
+                        session,
+                        plan,
+                        dry_run,
+                    },
+                    |envelope| {
+                        forward_engine_event(&app, &envelope.event);
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            for envelope in envelopes {
+                match envelope.event {
+                    Event::Journal { journal } => return Ok(journal),
+                    Event::Cancelled => return Err("request cancelled".to_owned()),
+                    Event::Failed { message, .. } => return Err(message),
+                    _ => {}
+                }
             }
-        }
-        Err("apply ended without a journal".to_owned())
+            Err("apply ended without a journal".to_owned())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn undo_journal(
-    state: State<EngineState>,
+async fn undo_journal(
+    state: State<'_, EngineState>,
     session: SessionId,
     journal: JournalId,
 ) -> Result<ApplyJournal, String> {
-    with_client(&state, |client| {
-        client
-            .undo(session, journal)
-            .map_err(|error| error.to_string())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client
+                .undo(session, journal)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[derive(Serialize)]
@@ -326,23 +385,28 @@ struct ChatResult {
 }
 
 #[tauri::command]
-fn chat_revision(
-    state: State<EngineState>,
+async fn chat_revision(
+    state: State<'_, EngineState>,
     session: SessionId,
     revision: RevisionId,
     utterance: String,
 ) -> Result<ChatResult, String> {
-    with_client(&state, |client| {
-        let reply = client
-            .chat(session, revision, utterance)
-            .map_err(|error| error.to_string())?;
-        Ok(ChatResult {
-            message: reply.message,
-            revision: reply.revision,
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let reply = client
+                .chat(session, revision, utterance)
+                .map_err(|error| error.to_string())?;
+            Ok(ChatResult {
+                message: reply.message,
+                revision: reply.revision,
+            })
         })
     })
+    .await
 }
 
+/// Stays on the UI thread so cancel is not queued behind a blocking scan/download.
 #[tauri::command]
 fn cancel_in_flight(state: State<EngineState>) -> Result<(), String> {
     let client = clone_client(&state)?;
@@ -350,42 +414,57 @@ fn cancel_in_flight(state: State<EngineState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_settings(state: State<EngineState>) -> Result<AppSettings, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        client.get_settings().map_err(|error| error.to_string())
+async fn get_settings(state: State<'_, EngineState>) -> Result<AppSettings, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client.get_settings().map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn put_settings(state: State<EngineState>, settings: AppSettings) -> Result<AppSettings, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        client
-            .put_settings(settings)
-            .map_err(|error| error.to_string())
+async fn put_settings(
+    state: State<'_, EngineState>,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client
+                .put_settings(settings)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn get_models(state: State<EngineState>) -> Result<ModelInventory, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        client.get_models().map_err(|error| error.to_string())
+async fn get_models(state: State<'_, EngineState>) -> Result<ModelInventory, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client.get_models().map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn put_models(
-    state: State<EngineState>,
+async fn put_models(
+    state: State<'_, EngineState>,
     inventory: ModelInventory,
 ) -> Result<ModelInventory, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        client
-            .put_models(inventory)
-            .map_err(|error| error.to_string())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client
+                .put_models(inventory)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,40 +476,50 @@ struct ProbeArgs {
 }
 
 #[tauri::command]
-fn probe_endpoint(state: State<EngineState>, args: ProbeArgs) -> Result<(bool, String), String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        client
-            .probe_endpoint(args.backend, args.api_key)
-            .map_err(|error| error.to_string())
+async fn probe_endpoint(
+    state: State<'_, EngineState>,
+    args: ProbeArgs,
+) -> Result<(bool, String), String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            client
+                .probe_endpoint(args.backend, args.api_key)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-fn download_model(
+async fn download_model(
     app: AppHandle,
-    state: State<EngineState>,
+    state: State<'_, EngineState>,
     catalog_id: String,
 ) -> Result<ModelInventory, String> {
-    ensure_client(&state)?;
-    with_client(&state, |client| {
-        let envelopes = client
-            .request_with_events(
-                aifs_protocol::Command::DownloadModel { catalog_id },
-                |envelope| {
-                    forward_engine_event(&app, &envelope.event);
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        for envelope in envelopes {
-            match envelope.event {
-                Event::Models { inventory } => return Ok(inventory),
-                Event::Failed { message, .. } => return Err(message),
-                _ => {}
+    let state = state.inner().clone();
+    run_blocking(move || {
+        with_ready_client(&state, |client| {
+            let envelopes = client
+                .request_with_events(
+                    aifs_protocol::Command::DownloadModel { catalog_id },
+                    |envelope| {
+                        forward_engine_event(&app, &envelope.event);
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            for envelope in envelopes {
+                match envelope.event {
+                    Event::Models { inventory } => return Ok(inventory),
+                    Event::Cancelled => return Err("request cancelled".to_owned()),
+                    Event::Failed { message, .. } => return Err(message),
+                    _ => {}
+                }
             }
-        }
-        Err("download ended without models".to_owned())
+            Err("download ended without models".to_owned())
+        })
     })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -439,7 +528,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState {
-            client: Mutex::new(None),
+            client: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             connect_engine,
@@ -604,6 +693,50 @@ mod tests {
         assert!(
             ignore.contains("binaries/") && ignore.contains("gen/"),
             "tauri dev must ignore sidecar copies and generated schemas: {ignore}"
+        );
+    }
+
+    #[test]
+    fn engine_io_commands_are_async_and_folder_dialog_stays_sync() {
+        let src = include_str!("lib.rs");
+        let impl_src = src
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_else(|| panic!("production source"));
+        assert!(
+            impl_src.contains("spawn_blocking"),
+            "engine I/O must use spawn_blocking so the WebView thread stays free"
+        );
+        for name in [
+            "connect_engine",
+            "scan_root",
+            "propose_session",
+            "patch_revision",
+            "plan_revision",
+            "apply_plan",
+            "undo_journal",
+            "chat_revision",
+            "get_settings",
+            "put_settings",
+            "get_models",
+            "put_models",
+            "probe_endpoint",
+            "download_model",
+        ] {
+            let async_fn = format!("async fn {name}");
+            assert!(
+                impl_src.contains(&async_fn),
+                "{name} must be async so Tauri does not run it on the UI thread"
+            );
+        }
+        assert!(
+            impl_src.contains("fn pick_folder(") && !impl_src.contains("async fn pick_folder"),
+            "pick_folder must stay sync; native dialogs need the UI thread"
+        );
+        assert!(
+            impl_src.contains("fn cancel_in_flight(")
+                && !impl_src.contains("async fn cancel_in_flight"),
+            "cancel_in_flight must stay sync so it is not queued behind a blocking worker"
         );
     }
 }
