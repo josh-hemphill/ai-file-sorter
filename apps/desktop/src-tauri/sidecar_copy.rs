@@ -60,15 +60,14 @@ mod sidecar_copy_tests {
     use super::{copy_if_changed, files_have_same_contents, write_if_changed};
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
+        let n = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("aifs-sidecar-copy-{}-{nanos}", std::process::id()));
+            std::env::temp_dir().join(format!("aifs-sidecar-copy-{}-{n}", std::process::id()));
         fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
         dir
     }
