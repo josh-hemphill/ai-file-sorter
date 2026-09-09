@@ -30,7 +30,7 @@ diagnostic only.
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
 | `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` scanned from disk; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, or `missing_files`) |
 | `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime` is not stored) |
-| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed) |
+| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed; `cancel` stops between chunks and removes the `.part` file) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
 Every request has an `id` chosen by the client. Events echo that `id`; unsolicited events
@@ -48,8 +48,8 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
 
-`cancel` is decoded on a stdin reader thread so a long `scan` can notice the flag
-between files. A cancelled scan emits `cancelled` for the scan id and does **not**
+`cancel` is decoded on a stdin reader thread so a long `scan` or `download_model`
+can notice the flag between files or download chunks. A cancelled scan emits `cancelled` for the scan id and does **not**
 emit `scan_completed`. If walk/relationships finished, the engine still writes a
 **checkpoint** snapshot for that `session` (extract/analyze evidence flushed every
 8 new bags; skips do not count). The next `scan` with the same `session` and root carries matching

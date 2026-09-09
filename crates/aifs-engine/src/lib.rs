@@ -376,13 +376,19 @@ impl Engine {
                 return;
             }
         }
-        match download::download_catalog(&dir, catalog_id, id, emit) {
+        let cancel_id = id.clone();
+        match download::download_catalog(&dir, catalog_id, id, emit, &|| {
+            self.should_stop(&cancel_id)
+        }) {
             Ok(()) => emit(Envelope::reply(
                 id,
                 Event::Models {
                     inventory: present_models(inventory),
                 },
             )),
+            Err(download::DownloadError::Cancelled) => {
+                emit(Envelope::reply(id, Event::Cancelled));
+            }
             Err(download::DownloadError::UnknownCatalog { catalog_id }) => emit(Envelope::reply(
                 id,
                 Event::Failed {
@@ -3720,6 +3726,50 @@ mod tests {
             Event::Failed { code, .. } => assert_eq!(code, ErrorCode::InvalidRequest),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn prearmed_cancel_stops_download_without_fetching() {
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let files = [(
+            aifs_protocol::GEMMA_TEXT_FILENAME,
+            b"text-weights".as_slice(),
+        )];
+        let (base, hits) = spawn_catalog_http(&files);
+        let _fixture = aifs_protocol::CatalogTestGuard::pin(&base, &files);
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels {
+                inventory: ModelInventory {
+                    storage_dir: models.path().display().to_string(),
+                    ..ModelInventory::default()
+                },
+            },
+        }));
+        engine.request_cancel("dl".into());
+        let events = engine.handle(Request {
+            id: "dl".into(),
+            command: Command::DownloadModel {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+        });
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Cancelled)),
+            "expected cancelled, got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|envelope| matches!(envelope.event, Event::Models { .. })),
+            "cancelled download must not return models: {events:?}"
+        );
+        assert_eq!(hit_count(&hits, aifs_protocol::GEMMA_TEXT_FILENAME), 0);
+        let dest = models.path().join(aifs_protocol::GEMMA_TEXT_FILENAME);
+        assert!(!dest.exists(), "{}", dest.display());
     }
 
     #[test]

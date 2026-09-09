@@ -9,7 +9,14 @@ import {
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import Icon from "../components/Icon.vue";
 import ModelSlotCard from "../components/ModelSlotCard.vue";
-import { connectEngine, downloadModel, getModels, onEngineProgress, putModels } from "../engine";
+import {
+  cancelInFlight,
+  connectEngine,
+  downloadModel,
+  getModels,
+  onEngineProgress,
+  putModels,
+} from "../engine";
 import {
   catalogArtifacts,
   catalogIsDownloaded,
@@ -105,10 +112,19 @@ async function download(catalogId: string) {
     const result = await downloadModel(catalogId);
     inventory.value = withPresentedRuntime(inventory.value, result);
   } catch (cause) {
-    error.value = String(cause);
+    const text = String(cause);
+    error.value = /cancelled/i.test(text) ? "Download cancelled." : text;
   } finally {
     busy.value = false;
     downloadingId.value = null;
+  }
+}
+
+async function cancelDownload() {
+  try {
+    await cancelInFlight();
+  } catch (cause) {
+    error.value = String(cause);
   }
 }
 
@@ -217,6 +233,7 @@ onUnmounted(() => {
       <div v-if="downloadingId" class="download-progress">
         <progress :value="downloadPercent" max="100" />
         <span class="muted">{{ downloadProgress?.message }} ({{ downloadPercent }}%)</span>
+        <button type="button" @click="cancelDownload">Cancel download</button>
       </div>
     </article>
 
