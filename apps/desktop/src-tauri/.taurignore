@@ -1,3 +1,6 @@
 # Sidecar copies live here. Watching them makes `tauri dev` rebuild forever:
 # build.rs copies the engine, the watcher restarts cargo, copy updates mtime again.
 binaries/
+# tauri_build rewrites ACL schemas on each compile.
+gen/
+

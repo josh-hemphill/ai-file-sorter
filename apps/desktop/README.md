@@ -25,6 +25,6 @@ pnpm --filter desktop tauri dev
 `beforeDevCommand`. Packaged
 builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
 embed them as `externalBin` sidecars. `src-tauri/.taurignore` excludes `binaries/`
-so copying sidecars does not restart `tauri dev`. If the engine binary is not next to the
+and `gen/` so sidecar copies and generated ACL schemas do not restart `tauri dev`. If the engine binary is not next to the
 desktop executable, set `AIFS_ENGINE`. Discovery also accepts the Tauri sidecar
 filename (`aifs-engine-{target-triple}`).

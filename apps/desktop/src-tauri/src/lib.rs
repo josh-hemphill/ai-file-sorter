@@ -602,8 +602,8 @@ mod tests {
         );
         let ignore = include_str!("../.taurignore");
         assert!(
-            ignore.contains("binaries/"),
-            "tauri dev must ignore sidecar copies: {ignore}"
+            ignore.contains("binaries/") && ignore.contains("gen/"),
+            "tauri dev must ignore sidecar copies and generated schemas: {ignore}"
         );
     }
 }
