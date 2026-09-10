@@ -233,7 +233,15 @@ pub fn cap_first_gpu_layers(first: u32, free_vram_bytes: Option<u64>) -> u32 {
 /// Best-effort free VRAM in bytes. `None` when no probe is available.
 #[cfg(any(test, feature = "llama"))]
 pub fn probe_free_vram() -> Option<u64> {
-    parse_nvidia_smi_free_mib(&nvidia_smi_free_mib_csv()?).or_else(linux_sysfs_vram_free)
+    first_free_vram_probe(nvidia_smi_free_mib_csv().as_deref(), None).or_else(linux_sysfs_vram_free)
+}
+
+/// Prefers a parsed nvidia-smi CSV; otherwise the sysfs byte count.
+#[cfg(any(test, feature = "llama"))]
+fn first_free_vram_probe(nvidia_csv: Option<&str>, sysfs_bytes: Option<u64>) -> Option<u64> {
+    nvidia_csv
+        .and_then(parse_nvidia_smi_free_mib)
+        .or(sysfs_bytes)
 }
 
 #[cfg(any(test, feature = "llama"))]
@@ -541,6 +549,13 @@ mod tests {
         );
         assert_eq!(parse_nvidia_smi_free_mib(""), None);
         assert_eq!(parse_nvidia_smi_free_mib("N/A"), None);
+        assert_eq!(first_free_vram_probe(None, Some(100)), Some(100));
+        assert_eq!(first_free_vram_probe(Some("N/A"), Some(100)), Some(100));
+        assert_eq!(
+            first_free_vram_probe(Some("2048"), Some(100)),
+            Some(2048 * 1024 * 1024)
+        );
+        assert_eq!(first_free_vram_probe(None, None), None);
     }
 
     #[test]
