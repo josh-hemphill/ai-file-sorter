@@ -45,48 +45,14 @@ Waves are ordered by user pain and dependency, not calendar. Waves 1–4 can
 land independently of each other after wave 0; do them in this order unless a
 later wave is blocking a golden-path phase.
 
-### Wave 1 — Resume catalog downloads
+### Wave 1 — Resume catalog downloads (landed)
 
 **Why it matters.** Gemma 3 4B Q4 is ~2.5 GiB (`GEMMA_TEXT_BYTES`).
-`crates/aifs-engine/src/download.rs` deletes the `.part` file on start **and**
-on `cancel`, and never sends HTTP `Range`. A dropped Wi-Fi session or a Setup
-cancel restarts from byte 0. Upstream `LLMDownloader` keeps the partial,
-resumes when `Accept-Ranges` allows it, and falls back to a full GET if Range
-fails.
 
-**Do**
-
-- Keep `.part` on cancel and on clean process exit. Delete it only on checksum
-  mismatch, empty body, or a Range resume that the server rejects after a
-  full-GET retry.
-- `HEAD` (or a probe GET) for `Accept-Ranges: bytes`. If present and `.part`
-  has `n > 0` bytes below `expected_bytes`, request `Range: bytes=n-`.
-- Hash incrementally from the existing `.part` bytes, then continue. Do not
-  trust a `.part` whose length is already ≥ catalog size without a digest
-  check — treat that as corrupt and restart.
-- If the server answers 200 instead of 206, truncate `.part` and download
-  from scratch (upstream’s Range-failure retry).
-- After a completed fetch, keep today’s SHA-256 gate and GGUF-magic-is-not-
-  enough policy.
-
-**Do not**
-
-- Skip SHA-256 because the file starts with `GGUF`.
-- Resume into a dest `.gguf` that failed verification; dest stays
-  all-or-nothing.
-
-**Touch**
-
-- `crates/aifs-engine/src/download.rs` — keep/resume `.part`; Range GET.
-- Engine tests around `download_model_*` and the tiny catalog HTTP fixture.
-  Checksum mismatch must still delete `.part` (existing
-  `download_model_rejects_checksum_mismatch_and_leaves_no_file`).
-- Add tests: cancel mid-body leaves `.part`; second `download_model` with
-  Range support continues; server ignoring Range still succeeds via full GET.
-- [`protocol.md`](protocol.md) — `download_model` currently says cancel
-  *removes* the `.part` file. Change that when this lands.
-
-**Depends on.** Nothing in later waves. Engine-only; no llama.cpp.
+**Done.** `.part` is kept on cancel; HTTP `Range` resumes when the server
+answers 206; a `200` (ignored Range) or `416` restarts from byte 0;
+transport / 5xx / 429 keep `.part`. SHA-256 still gates the finished file.
+See `crates/aifs-engine/src/download.rs`.
 
 ### Wave 2 — Fit prompts to the real context window
 

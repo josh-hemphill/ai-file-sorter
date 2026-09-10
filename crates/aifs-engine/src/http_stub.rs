@@ -68,7 +68,7 @@ fn serve_once(
     (format!("http://{addr}{path}"), handle)
 }
 
-fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+pub(crate) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut buf = Vec::new();
