@@ -10,8 +10,8 @@ use crate::gguf_meta::read_block_count;
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
     CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system, categorize_user,
-    describe_user, drop_oldest_chars, next_document_text_budget, oldest_user_drop_start,
-    prompt_token_keep, shrink_prompt_evidence,
+    describe_user, drop_oldest_chars, drop_oldest_user_tokens, next_document_text_budget,
+    prompt_token_keep, protected_prefix_len, shrink_prompt_evidence,
 };
 use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
@@ -545,28 +545,30 @@ fn generate(
     if tokens.is_empty() {
         return Err("prompt produced no tokens".to_owned());
     }
-    let n_protected = system_prompt_tokens(model, system);
+    let probe = system_prompt_tokens(model, system);
+    let n_protected = protected_prefix_len(&tokens, &probe);
     let mut last_error = None;
     for n_ctx in context_size_attempts(resolve_n_ctx()) {
         let keep = prompt_token_keep(n_ctx, max_tokens);
-        let used = match oldest_user_drop_start(tokens.len(), keep, n_protected) {
-            Ok(None) => tokens.clone(),
-            Ok(Some(start)) => match fit {
-                PromptFit::DropOldestUser => keep_prefix_and_suffix(&tokens, n_protected, start),
-                PromptFit::ErrorIfOver => {
+        let used = if tokens.len() <= keep {
+            tokens.clone()
+        } else {
+            match (fit, n_protected) {
+                (PromptFit::DropOldestUser, Some(protected)) => {
+                    match drop_oldest_user_tokens(&tokens, keep, protected) {
+                        Ok(used) if !used.is_empty() => used,
+                        _ => {
+                            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
+                            break;
+                        }
+                    }
+                }
+                (PromptFit::ErrorIfOver, _) | (PromptFit::DropOldestUser, None) => {
                     last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
                     break;
                 }
-            },
-            Err(()) => {
-                last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
-                break;
             }
         };
-        if used.is_empty() {
-            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
-            break;
-        }
         let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(n_ctx_nz))
@@ -587,20 +589,11 @@ fn generate(
     Err(last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()))
 }
 
-fn system_prompt_tokens(model: &LlamaModel, system: &str) -> usize {
+fn system_prompt_tokens(model: &LlamaModel, system: &str) -> Vec<llama_cpp_2::token::LlamaToken> {
     let prompt = chat_prompt(model, system, "");
     model
         .str_to_token(&prompt, AddBos::Always)
-        .map(|tokens| tokens.len())
-        .unwrap_or(0)
-}
-
-fn keep_prefix_and_suffix<T: Clone>(items: &[T], prefix: usize, suffix_from: usize) -> Vec<T> {
-    let prefix = prefix.min(items.len());
-    let suffix_from = suffix_from.max(prefix).min(items.len());
-    let mut kept = items[..prefix].to_vec();
-    kept.extend_from_slice(&items[suffix_from..]);
-    kept
+        .unwrap_or_default()
 }
 
 fn decode_tokens(
@@ -666,7 +659,6 @@ fn generate_with_image(
             "image path decoded as audio".to_owned(),
         ));
     }
-    const MIN_USER_CHARS: usize = 32;
     let mut body = user.to_owned();
     let n_gen = usize::try_from(max_tokens).unwrap_or(0);
     let mut last_error = None;
@@ -684,14 +676,14 @@ fn generate_with_image(
             )
             .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
         let n_prompt = chunks.total_tokens();
-        let mut fits = false;
+        let mut overflowed = false;
         for n_ctx in context_size_attempts(resolve_n_ctx()) {
             let n_ctx_usize = usize::try_from(n_ctx).unwrap_or(0);
             if n_prompt.saturating_add(n_gen) > n_ctx_usize {
+                overflowed = true;
                 last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
                 continue;
             }
-            fits = true;
             let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(Some(n_ctx_nz))
@@ -714,14 +706,15 @@ fn generate_with_image(
             return sample_continuation(&mut ctx, model, n_past, max_tokens)
                 .map_err(ImageCompleteError::Infer);
         }
-        if fits {
+        if !overflowed || body.is_empty() {
             break;
         }
         let next_keep = body.chars().count() / 2;
-        if next_keep < MIN_USER_CHARS {
-            break;
-        }
-        body = drop_oldest_chars(&body, next_keep);
+        body = if next_keep == 0 {
+            String::new()
+        } else {
+            drop_oldest_chars(&body, next_keep)
+        };
     }
     Err(ImageCompleteError::Infer(
         last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()),
@@ -810,13 +803,13 @@ mod tests {
     }
 
     #[test]
-    fn keep_prefix_and_suffix_drops_the_middle() {
-        let tokens = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        assert_eq!(
-            keep_prefix_and_suffix(&tokens, 3, 6),
-            vec![0, 1, 2, 6, 7, 8, 9]
-        );
-        assert_eq!(keep_prefix_and_suffix(&tokens, 3, 3), tokens);
+    fn image_user_shrink_keeps_the_media_marker() {
+        let body = drop_oldest_chars("abcdefghij", 4);
+        let wrapped = describe_user_with_media(&body, "<__media__>");
+        assert_eq!(wrapped, "<__media__>\nghij");
+        assert!(wrapped.starts_with("<__media__>\n"));
+        let empty = describe_user_with_media("", "<__media__>");
+        assert_eq!(empty, "<__media__>\n");
     }
 
     #[test]

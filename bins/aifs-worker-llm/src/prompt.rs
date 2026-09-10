@@ -190,6 +190,52 @@ pub fn oldest_user_drop_start(
     Ok(Some(n_protected + overflow))
 }
 
+/// Longest shared prefix of `left` and `right`.
+#[cfg(any(test, feature = "llama"))]
+pub fn common_prefix_len<T: PartialEq>(left: &[T], right: &[T]) -> usize {
+    left.iter()
+        .zip(right.iter())
+        .take_while(|(a, b)| a == b)
+        .count()
+}
+
+/// Protected system-prefix length taken from the *same* full prompt tokens.
+///
+/// `probe` is the tokenization of the system turn with an empty user. `None` when
+/// there is no shared prefix (fail closed rather than drop BOS/system).
+#[cfg(any(test, feature = "llama"))]
+pub fn protected_prefix_len<T: PartialEq>(full: &[T], probe: &[T]) -> Option<usize> {
+    let n = common_prefix_len(full, probe);
+    if n == 0 {
+        None
+    } else {
+        Some(n.min(full.len()))
+    }
+}
+
+/// Drops oldest user tokens, keeping `tokens[..n_protected]` plus a suffix that fits `n_keep`.
+#[cfg(any(test, feature = "llama"))]
+pub fn drop_oldest_user_tokens<T: Clone>(
+    tokens: &[T],
+    n_keep: usize,
+    n_protected: usize,
+) -> Result<Vec<T>, ()> {
+    match oldest_user_drop_start(tokens.len(), n_keep, n_protected)? {
+        None => Ok(tokens.to_vec()),
+        Some(start) => Ok(keep_prefix_and_suffix(tokens, n_protected, start)),
+    }
+}
+
+/// `items[..prefix]` plus `items[suffix_from..]`.
+#[cfg(any(test, feature = "llama"))]
+pub fn keep_prefix_and_suffix<T: Clone>(items: &[T], prefix: usize, suffix_from: usize) -> Vec<T> {
+    let prefix = prefix.min(items.len());
+    let suffix_from = suffix_from.max(prefix).min(items.len());
+    let mut kept = items[..prefix].to_vec();
+    kept.extend_from_slice(&items[suffix_from..]);
+    kept
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     let count = value.chars().count();
     if count <= max_chars {
@@ -340,5 +386,34 @@ mod tests {
         assert_eq!(oldest_user_drop_start(10, 7, 3), Ok(Some(6)));
         assert_eq!(oldest_user_drop_start(10, 2, 3), Err(()));
         assert_eq!(oldest_user_drop_start(5, 0, 0), Err(()));
+        let tokens: Vec<u32> = (0..10).collect();
+        assert_eq!(
+            keep_prefix_and_suffix(&tokens, 3, 6),
+            vec![0, 1, 2, 6, 7, 8, 9]
+        );
+        assert_eq!(
+            drop_oldest_user_tokens(&tokens, 7, 3).unwrap_or_else(|_| panic!("fit")),
+            vec![0, 1, 2, 6, 7, 8, 9]
+        );
+        assert_eq!(
+            drop_oldest_user_tokens(&tokens, 3, 3).unwrap_or_else(|_| panic!("system only")),
+            vec![0, 1, 2]
+        );
+        assert_eq!(oldest_user_drop_start(10, 3, 3), Ok(Some(10)));
+        assert_eq!(protected_prefix_len(&tokens, &tokens[..4]), Some(4));
+        assert_eq!(protected_prefix_len(&tokens, &[99_u32, 100]), None);
+        let empty: [u32; 0] = [];
+        assert_eq!(protected_prefix_len(&tokens, &empty), None);
+        let mut bag = Evidence::new(
+            AssetId::new(),
+            EvidenceSource::DocumentMetadata,
+            Confidence::new(1.0),
+        )
+        .with_fact(keys::DOCUMENT_TEXT, "x".repeat(400));
+        assert!(shrink_prompt_evidence(std::slice::from_mut(&mut bag), 50));
+        let after_shrink =
+            drop_oldest_user_tokens(&tokens, 7, 3).unwrap_or_else(|_| panic!("drop after shrink"));
+        assert_eq!(after_shrink.first(), Some(&0));
+        assert_eq!(after_shrink.len(), 7);
     }
 }
