@@ -112,7 +112,7 @@ impl WorkerHandler for LlamaHandler {
             gpu_layer_load_attempts(&device, n_gpu_layers, explicit, block_count, free_vram);
         let reduced_ngl = matches!(
             (layer_attempts.first(), uncapped_first),
-            (Some(capped), Some(full)) if *capped < *full
+            (Some(capped), Some(full)) if *capped < full
         );
         let mut last_error = None;
         let mut last_fallback = fallback;
