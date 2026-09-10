@@ -24,7 +24,9 @@ pnpm --filter desktop tauri dev
 `tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
 `beforeDevCommand`. Packaged
 builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
-embed them as `externalBin` sidecars. `src-tauri/.taurignore` excludes `binaries/`
+embed them as `externalBin` sidecars. Release packaging passes `--packaged` to
+the llama build (Windows/Linux SSE4.2 + `GGML_AVX2=OFF`; macOS `CMAKE_*` rpath, no
+Homebrew ggml). `src-tauri/.taurignore` excludes `binaries/`
 and `gen/` so sidecar copies and generated ACL schemas do not restart `tauri dev`. If the engine binary is not next to the
 desktop executable, set `AIFS_ENGINE`. Discovery also accepts the Tauri sidecar
 filename (`aifs-engine-{target-triple}`).

@@ -92,29 +92,22 @@ still fire every 15s so engine idle 180s does not trip on a healthy infer.
 Hosted HTTP mid-body cancel is unchanged. See
 `crates/aifs-worker-client` and `crates/aifs-engine/src/analyze.rs`.
 
-### Wave 5 — Packaged ggml (when we ship a llama sidecar)
+### Wave 5 — Packaged ggml (landed)
 
 **Why it matters.** Upstream 1.9.1 builds Windows/Linux ggml with
 `GGML_NATIVE=OFF` / SSE4.2 so packaged CPUs without AVX2 still run. macOS
 1.7.3 sets rpath and refuses Homebrew `libggml`. This fork’s isolation helps,
 but a shipped `aifs-worker-llm` still dlopens ggml next to itself.
 
-**Do**
-
-- When (and only when) desktop packaging embeds the llama-enabled worker:
-  cmake `GGML_NATIVE=OFF` for Windows and Linux CPU wheels; document the
-  generator flags next to `pnpm llama`.
-- On macOS packages, rpath the bundled ggml and do not fall back to Homebrew.
-
-**Do not**
-
-- Change default CI or `cargo test --workspace` to native-tune or to compile
-  llama.
-- Un-park the Microsoft Store / CUDA matrix in the golden path just to land
-  this. Wave 5 is packaging, not scan UX.
-
-**Depends on.** A decision to ship llama in the Tauri bundle. Until then,
-leave cmake at llama-cpp-2 defaults for local `pnpm llama` builds.
+**Done.** Tauri `beforeBuildCommand` runs `with-cmake-generator.mjs --packaged`.
+Windows/Linux strip `target-cpu=native`, add SSE4.2 rustc features, and set
+`GGML_SSE42=ON` / `GGML_AVX2=OFF` (and related ISA flags) because
+llama-cpp-sys-2 ignores `CMAKE_ARGS`, overwrites `GGML_NATIVE` from RUSTFLAGS,
+and vendored ggml still defaults AVX2 on when `GGML_NATIVE=OFF`. macOS sets
+`CMAKE_INSTALL_RPATH=@loader_path` and `CMAKE_IGNORE_PREFIX_PATH` for Homebrew.
+`pnpm llama` / `beforeDevCommand` stay on llama-cpp-2 defaults. Default
+`cargo test --workspace` still does not compile llama.cpp. See
+`scripts/packaged-ggml.mjs`.
 
 ## Out of scope (will not take from upstream)
 

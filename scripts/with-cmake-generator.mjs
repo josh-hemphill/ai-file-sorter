@@ -1,16 +1,24 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { applyLlamaCudaBuildEnv } from './llama-cuda-env.mjs';
+import { applyPackagedGgmlEnv } from './packaged-ggml.mjs';
 import { applyWindowsCmakeGenerator } from './windows-cmake-generator.mjs';
-
-const [command, ...args] = process.argv.slice(2);
-if (!command) {
-  console.error('usage: with-cmake-generator.mjs <command> [args...]');
-  process.exit(2);
-}
 
 applyWindowsCmakeGenerator();
 applyLlamaCudaBuildEnv();
+
+const argv = process.argv.slice(2);
+const packaged = argv[0] === '--packaged';
+if (packaged) {
+  argv.shift();
+  applyPackagedGgmlEnv({ packaged: true });
+}
+
+const [command, ...args] = argv;
+if (!command) {
+  console.error('usage: with-cmake-generator.mjs [--packaged] <command> [args...]');
+  process.exit(2);
+}
 
 const child = spawn(command, args, {
   stdio: 'inherit',

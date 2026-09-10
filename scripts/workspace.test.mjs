@@ -29,6 +29,6 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   );
   assert.equal(
     pkg.scripts['test:desktop'],
-    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
+    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
   );
 });
