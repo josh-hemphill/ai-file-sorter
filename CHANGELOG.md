@@ -33,6 +33,9 @@
 - Scan cancel during local `categorize` / `describe` kills `aifs-worker-llm`
   instead of waiting the infer timeout. The in-flight file is skipped; finished
   bags still checkpoint. The next scan that needs a model starts a new worker.
+- Packaged Tauri llama sidecars build ggml with `GGML_NATIVE=OFF` on
+  Windows/Linux and `@loader_path` rpath (no Homebrew fallback) on macOS.
+  Local `pnpm llama` is unchanged.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

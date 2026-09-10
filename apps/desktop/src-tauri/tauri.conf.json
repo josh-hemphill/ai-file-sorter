@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cargo engine-bins --manifest-path ../../Cargo.toml && node ../../scripts/with-cmake-generator.mjs cargo engine-llm --manifest-path ../../Cargo.toml && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cargo engine-bins --manifest-path ../../Cargo.toml --release && node ../../scripts/with-cmake-generator.mjs cargo engine-llm --manifest-path ../../Cargo.toml --release && pnpm build",
+    "beforeBuildCommand": "cargo engine-bins --manifest-path ../../Cargo.toml --release && node ../../scripts/with-cmake-generator.mjs --packaged cargo engine-llm --manifest-path ../../Cargo.toml --release && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
