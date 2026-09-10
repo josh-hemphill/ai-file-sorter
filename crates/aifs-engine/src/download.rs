@@ -137,7 +137,7 @@ fn fetch_to_part<E: FnMut(Envelope)>(job: &mut FetchJob<'_, E>) -> Result<String
     match fetch_once(job, resume_from) {
         Ok(digest) => Ok(digest),
         Err(DownloadError::Cancelled) => Err(DownloadError::Cancelled),
-        Err(error) if resume_from > 0 && matches!(error, DownloadError::Http { .. }) => {
+        Err(DownloadError::RangeRejected { .. }) if resume_from > 0 => {
             let _ = fs::remove_file(job.part);
             fetch_once(job, 0)
         }
@@ -165,16 +165,26 @@ fn fetch_once<E: FnMut(Envelope)>(
     if resume_from > 0 {
         request = request.set("Range", &format!("bytes={resume_from}-"));
     }
-    let response = request.call().map_err(|error| DownloadError::Http {
-        url: job.url.to_owned(),
-        message: error.to_string(),
-    })?;
+    let response = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(416, response)) if resume_from > 0 => {
+            drop(response);
+            return Err(DownloadError::RangeRejected {
+                url: job.url.to_owned(),
+            });
+        }
+        Err(error) => {
+            return Err(DownloadError::Http {
+                url: job.url.to_owned(),
+                message: error.to_string(),
+            });
+        }
+    };
     let status = response.status();
     let append = resume_from > 0 && status == HTTP_PARTIAL_CONTENT;
     if resume_from > 0 && status != HTTP_PARTIAL_CONTENT && status != HTTP_OK {
-        return Err(DownloadError::Http {
+        return Err(DownloadError::RangeRejected {
             url: job.url.to_owned(),
-            message: format!("unexpected status {status} for ranged GET"),
         });
     }
     let remaining = response
@@ -350,6 +360,11 @@ pub enum DownloadError {
         /// ureq message.
         message: String,
     },
+    /// The server rejected a ranged GET (`416` or a non-200/206 resume status).
+    RangeRejected {
+        /// Request URL.
+        url: String,
+    },
     /// Empty body.
     Empty {
         /// Request URL.
@@ -381,6 +396,9 @@ impl std::fmt::Display for DownloadError {
             }
             Self::Cancelled => write!(formatter, "download cancelled"),
             Self::Http { url, message } => write!(formatter, "download {url} failed: {message}"),
+            Self::RangeRejected { url } => {
+                write!(formatter, "download {url} range not satisfiable")
+            }
             Self::Empty { url } => write!(formatter, "download {url} returned an empty file"),
             Self::ChecksumMismatch {
                 url,
@@ -413,6 +431,8 @@ mod tests {
     enum RangeMode {
         Honor,
         Ignore,
+        Unsatisfiable,
+        Drop,
     }
 
     struct CatalogHttp {
@@ -473,16 +493,25 @@ mod tests {
                         .unwrap_or_else(|error| panic!("{error}"))
                         .push(header);
                 }
+                if bodies.contains_key(filename) {
+                    let mut counts = hits_thread.lock().unwrap_or_else(|error| panic!("{error}"));
+                    *counts.entry(filename.to_owned()).or_insert(0) += 1;
+                }
+                if matches!(range, RangeMode::Drop) && range_header.is_some() {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                if matches!(range, RangeMode::Unsatisfiable) && range_header.is_some() {
+                    let header = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(header.as_bytes());
+                    continue;
+                }
                 let Some(body) = bodies.get(filename) else {
                     let header =
                         "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                     let _ = stream.write_all(header.as_bytes());
                     continue;
                 };
-                {
-                    let mut counts = hits_thread.lock().unwrap_or_else(|error| panic!("{error}"));
-                    *counts.entry(filename.to_owned()).or_insert(0) += 1;
-                }
                 let start = match (&range, range_header.as_deref()) {
                     (RangeMode::Honor, Some(header)) => parse_range_start(header).unwrap_or(0),
                     _ => 0,
@@ -639,6 +668,52 @@ mod tests {
         let saved = fs::read(&dest).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(saved, body);
         assert!(!part.exists());
+    }
+
+    #[test]
+    fn unsatisfiable_range_restarts_with_a_full_get() {
+        let body = b"range-rejected-then-full";
+        let files = [
+            (GEMMA_TEXT_FILENAME, body.as_slice()),
+            (GEMMA_MMPROJ_FILENAME, b"mmproj".as_slice()),
+        ];
+        let fixture = pin_catalog(&files, RangeMode::Unsatisfiable, None);
+        let dest = artifact_path(fixture.storage.path(), GEMMA_TEXT_FILENAME);
+        let part = part_path(&dest);
+        fs::write(&part, &body[..6]).unwrap_or_else(|error| panic!("{error}"));
+        download(fixture.storage.path(), None).unwrap_or_else(|error| panic!("{error}"));
+        let saved = fs::read(&dest).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(saved, body);
+        assert!(!part.exists());
+        let ranges = fixture
+            .ranges
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            ranges.iter().any(|header| header == "bytes=6-"),
+            "expected a Range attempt, got {ranges:?}"
+        );
+        assert_eq!(hit_count(&fixture.hits, GEMMA_TEXT_FILENAME), 2);
+    }
+
+    #[test]
+    fn dropped_range_request_keeps_partial_file() {
+        let body = b"keep-this-prefix-and-the-rest";
+        let files = [
+            (GEMMA_TEXT_FILENAME, body.as_slice()),
+            (GEMMA_MMPROJ_FILENAME, b"mmproj".as_slice()),
+        ];
+        let fixture = pin_catalog(&files, RangeMode::Drop, None);
+        let dest = artifact_path(fixture.storage.path(), GEMMA_TEXT_FILENAME);
+        let part = part_path(&dest);
+        fs::write(&part, &body[..6]).unwrap_or_else(|error| panic!("{error}"));
+        let error = download(fixture.storage.path(), None)
+            .err()
+            .unwrap_or_else(|| panic!("expected transport failure"));
+        assert!(matches!(error, DownloadError::Http { .. }), "{error}");
+        let kept = fs::read(&part).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(kept, &body[..6]);
+        assert!(!dest.exists(), "failed resume must not write dest");
     }
 
     #[test]
