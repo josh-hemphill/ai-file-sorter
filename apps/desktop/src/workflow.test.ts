@@ -11,6 +11,7 @@ import {
   planCounts,
   previewRows,
   rememberRoot,
+  retainProgressMessage,
   skippedReasonLabel,
 } from "./workflow.ts";
 import type { ProposalRevision } from "./types";
@@ -27,6 +28,16 @@ test("rememberRoot prepends and caps at eight", () => {
   assert.equal(many.length, 8);
   assert.equal(many[0], "/9");
   assert.ok(!many.includes("/8"));
+});
+
+test("retainProgressMessage keeps the last path across working heartbeats", () => {
+  const path = "Music/What Is Love?.mp3";
+  assert.equal(retainProgressMessage(undefined, path), path);
+  assert.equal(retainProgressMessage(path, "working"), path);
+  assert.equal(retainProgressMessage(path, "Working"), path);
+  assert.equal(retainProgressMessage(path, "  "), path);
+  assert.equal(retainProgressMessage(path, "Music/next.mp3"), "Music/next.mp3");
+  assert.equal(retainProgressMessage(undefined, "working"), "working");
 });
 
 test("constraintLabel hides tagged JSON", () => {
