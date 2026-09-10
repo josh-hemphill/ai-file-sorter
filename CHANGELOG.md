@@ -19,8 +19,9 @@
   resume, token-budget prompts, a lighter first `n_gpu_layers` guess, infer
   cancel, packaged ggml) in `docs/upstream-model-plan.md`.
 - Catalog GGUF downloads keep the `.part` file on cancel and resume with HTTP
-  `Range` when the server answers 206. A 200 response or Range HTTP error
-  restarts from byte 0. SHA-256 still gates the finished file.
+  `Range` when the server answers 206. A `200` (ignored Range) or `416`
+  restarts from byte 0. Transport, 5xx, and 429 errors keep `.part`. SHA-256
+  still gates the finished file.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

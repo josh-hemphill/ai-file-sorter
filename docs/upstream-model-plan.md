@@ -50,8 +50,9 @@ later wave is blocking a golden-path phase.
 **Why it matters.** Gemma 3 4B Q4 is ~2.5 GiB (`GEMMA_TEXT_BYTES`).
 
 **Done.** `.part` is kept on cancel; HTTP `Range` resumes when the server
-answers 206; a 200 or Range HTTP error restarts from byte 0; SHA-256 still
-gates the finished file. See `crates/aifs-engine/src/download.rs`.
+answers 206; a `200` (ignored Range) or `416` restarts from byte 0;
+transport / 5xx / 429 keep `.part`. SHA-256 still gates the finished file.
+See `crates/aifs-engine/src/download.rs`.
 
 ### Wave 2 — Fit prompts to the real context window
 
