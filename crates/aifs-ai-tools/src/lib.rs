@@ -2,7 +2,8 @@
 
 use aifs_domain::{
     AssetId, Bundle, BundleConstraint, BundleKind, EntryKind, Evidence, FileFamily, ObservedEntry,
-    Placement, ProposalRevision, RelativePath, RevisionPatch, WorkspaceSnapshot, evidence::keys,
+    Placement, ProposalRevision, RelativePath, RevisionPatch, WorkspaceSnapshot,
+    escape_path_segment, evidence::keys,
 };
 use aifs_planner::validate;
 use std::collections::BTreeSet;
@@ -538,12 +539,9 @@ fn name_from_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> Op
 }
 
 fn sanitize_filename(value: &str) -> String {
-    // Same hostile-character rules as the planner, plus whitespace → `_`.
     let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_control() || "<>:\"/\\|?*".contains(ch) {
-            out.push('_');
-        } else if ch.is_whitespace() {
+    for ch in escape_path_segment(value).chars() {
+        if ch.is_whitespace() {
             if !out.ends_with('_') {
                 out.push('_');
             }
