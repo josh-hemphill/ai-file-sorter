@@ -15,8 +15,9 @@ the engine, CLI, and Tauri 2 + Vue 3 workspace.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/domain-model.md`](docs/domain-model.md),
-[`docs/protocol.md`](docs/protocol.md), and the
-[`golden-path execution plan`](docs/golden-path-execution-plan.md).
+[`docs/protocol.md`](docs/protocol.md), the
+[`golden-path execution plan`](docs/golden-path-execution-plan.md), and the
+[`upstream model-runtime plan`](docs/upstream-model-plan.md).
 
 ## From source
 

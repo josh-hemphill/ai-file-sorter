@@ -11,6 +11,9 @@ Do not estimate calendar time from this document. Sequence is by dependency and 
 shell and protocol first, then transparency, then mixed-tree intelligence, then
 review/apply, then settings/setup, then real model inference, then scale.
 
+Local llama.cpp / catalog-download follow-ups taken from upstream Qt live in
+[`upstream-model-plan.md`](upstream-model-plan.md).
+
 ## Success state
 
 A skeptical user can:
@@ -407,7 +410,9 @@ Work:
 
 - Setup view with four `ModelSlotCard`s, storage directory, backend preference.
 - Built-in catalog (Gemma 3 4B IT text/visual, optional others) with download
-  progress through `download_model` (hash verify, shared storage).
+  progress through `download_model` (hash verify, shared storage). HTTP Range
+  resume for the ~2.5 GiB Gemma GGUF is
+  [`upstream-model-plan.md`](upstream-model-plan.md) wave 1.
 - Custom GGUF + optional mmproj; OpenAI / Gemini / custom endpoint probe.
 - Redacted `get_models`. Keys never in renderer storage.
 - Status chip on the workspace: which slots are ready / stub / off.
@@ -426,6 +431,9 @@ Work:
   (document), `categorize` (text LLM), `chat` (assistant).
 - Engine analysis pipeline calls workers with timeouts, CPU fallback messaging,
   and per-file `log` lines (`IMG_1042.jpg · screenshot · Screenshots/UI`).
+  Prompt fit, first `n_gpu_layers` guess, and killing the LLM worker on scan
+  cancel are sequenced in [`upstream-model-plan.md`](upstream-model-plan.md)
+  (waves 2–4), not as Qt ports.
 - Persist evidence as it arrives; skip already-analyzed identities on resume.
 - Assistant chat uses the chat slot instead of keyword-only interpret, but
   still may only emit `RevisionPatch`es.
@@ -512,9 +520,12 @@ errors.
 ## Out of scope until the path is solid
 
 - Full i18n catalogs (keep strings structured so they can be extracted).
-- Microsoft Store / CUDA packaging matrix.
+- Microsoft Store / CUDA packaging matrix (ggml SSE4.2 / macOS rpath when a
+  llama sidecar ships: [`upstream-model-plan.md`](upstream-model-plan.md) wave 5).
 - Learning-from-reviews as a silent recategorizer.
 - In-process fallback of the engine into the UI.
+
+Local model download resume (Setup, Phase 5) is wave 1 of that same plan.
 
 ## Checklist against the UX review
 

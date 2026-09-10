@@ -15,6 +15,9 @@
   probes, fewer GPU layers before CPU fallback, context-window allocation
   fallbacks (`AIFS_CTX_TOKENS`, then 2048/1024/512), and one CPU reload if infer
   OOMs. Prompt shrink now covers image descriptions as well as document text.
+- Documented the remaining upstream model-runtime waves (catalog download
+  resume, token-budget prompts, a lighter first `n_gpu_layers` guess, infer
+  cancel, packaged ggml) in `docs/upstream-model-plan.md`.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
