@@ -4,9 +4,10 @@
 #   pnpm check / make check     fmt, clippy, and tests
 #   pnpm desktop                stub engine/workers, then llama.cpp LLM worker, then Tauri/Vue
 #   pnpm llama                  overwrite aifs-worker-llm with llama.cpp (needs a C++ compiler)
+#   pnpm llama:cuda             same with CUDA (pins GPU SM; cargo looks idle on llama-cpp-sys-2)
 #   pnpm cli -- scan fixtures/inbox-mixed
 
-.PHONY: build test desktop-test check fmt clippy desktop cli llama help
+.PHONY: build test desktop-test check fmt clippy desktop cli llama llama-cuda help
 
 help:
 	@printf '%s\n' \
@@ -16,6 +17,7 @@ help:
 		'pnpm desktop   build binaries, llama worker, and start Tauri/Vue' \
 		'pnpm cli -- scan fixtures/inbox-mixed' \
 		'pnpm llama     llama.cpp LLM worker (needs a C++ compiler; used by pnpm desktop; wraps CMAKE_GENERATOR on Windows)' \
+		'pnpm llama:cuda llama.cpp LLM worker with CUDA (pins GPU SM; cargo looks idle while nvcc runs)' \
 		'make …         same targets without going through pnpm (cargo still runs)'
 
 build:
@@ -53,3 +55,6 @@ ifeq ($(OS),Windows_NT)
 else
 	CXX=$${CXX:-g++} cargo engine-llm
 endif
+
+llama-cuda:
+	node scripts/with-cmake-generator.mjs cargo engine-llm --features llama,cuda

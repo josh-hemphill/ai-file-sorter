@@ -83,10 +83,31 @@ default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
 ```bash
 pnpm llama
 CXX=g++ cargo engine-llm
-CXX=g++ cargo build -p aifs-worker-llm --features llama,cuda
+pnpm llama:cuda
 cargo build -p aifs-worker-llm --features llama,vulkan
 cargo build -p aifs-worker-llm --features llama,metal   # macOS
 ```
+
+A CUDA build spends most of its time in `llama-cpp-sys-2`'s CMake step. Cargo's
+bar stays on that crate with no further output because cmake-rs hides nvcc
+unless `CMAKE_VERBOSE` is set. If `CMAKE_CUDA_ARCHITECTURES` is unset, llama.cpp
+compiles Maxwell through Blackwell (often 15–60 minutes, or longer if all-core
+nvcc starts swapping). That is not a Cargo deadlock.
+
+`pnpm llama:cuda` (and `make llama-cuda`) detect the GPU SM via `nvidia-smi`,
+pin `CMAKE_CUDA_ARCHITECTURES`, cap `CMAKE_BUILD_PARALLEL_LEVEL` at 4, and set
+`CXX=g++` on Linux when those are unset. Equivalent by hand:
+
+```bash
+CMAKE_CUDA_ARCHITECTURES=86 CMAKE_BUILD_PARALLEL_LEVEL=4 CXX=g++ \
+  cargo build -p aifs-worker-llm --features llama,cuda
+```
+
+SM examples: `75` Turing, `86` RTX 30, `89` RTX 40, `90` Hopper, `120a` Blackwell.
+`ps` / Task Manager should show `nvcc` / `cmake` while it runs. `CMAKE_VERBOSE=1`
+or `cargo build -vv` prints the CMake log. If a multi-arch compile already
+started, stop it and `cargo clean -p llama-cpp-sys-2` before rebuilding with a
+pin (`llama-cpp-sys-2` does not rebuild when only `CMAKE_*` env vars change).
 
 Linux desktop packages (Debian/Ubuntu), matching CI:
 

@@ -17,7 +17,7 @@ pub enum RelativePathError {
     /// The path contains a `..` segment.
     #[error("path escapes the root with '..': {0}")]
     ParentTraversal(String),
-    /// A segment contains a character that no supported filesystem accepts.
+    /// A segment contains a control character (including NUL).
     #[error("segment '{segment}' contains forbidden character {character:?}")]
     ForbiddenCharacter {
         /// Offending segment.
@@ -36,7 +36,6 @@ pub enum RelativePathError {
     NotAFileName(String),
 }
 
-const FORBIDDEN_CHARACTERS: [char; 8] = ['<', '>', ':', '"', '\\', '|', '?', '*'];
 const RESERVED_NAMES: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -60,7 +59,8 @@ impl RelativePath {
     }
 
     /// Parses and validates a candidate path. Backslashes are treated as separators so
-    /// user-typed Windows paths still normalise.
+    /// user-typed Windows paths still normalise. Song-title punctuation (`?`, `:`, `|`,
+    /// quotes) is kept; use [`escape_path_segment`] when *creating* a Windows-safe name.
     pub fn parse(value: &str) -> Result<Self, RelativePathError> {
         let unified = value.replace('\\', "/");
         let trimmed = unified.trim();
@@ -195,11 +195,35 @@ fn has_drive_prefix(value: &str) -> bool {
     matches!((chars.next(), chars.next()), (Some(letter), Some(':')) if letter.is_ascii_alphabetic())
 }
 
+/// Windows-safe encoding of one path segment. Keeps the title readable instead of
+/// dropping `?` / `:` / `|` / quotes that music files commonly use.
+pub fn escape_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        out.push(escape_segment_char(ch));
+    }
+    let trimmed = out.trim().trim_matches('.').trim();
+    trimmed.to_owned()
+}
+
+fn escape_segment_char(ch: char) -> char {
+    match ch {
+        '<' => '\u{FF1C}',
+        '>' => '\u{FF1E}',
+        ':' => '\u{FF1A}',
+        '"' => '\u{FF02}',
+        '/' => '\u{FF0F}',
+        '\\' => '\u{FF3C}',
+        '|' => '\u{FF5C}',
+        '?' => '\u{FF1F}',
+        '*' => '\u{FF0A}',
+        ch if ch.is_control() => ' ',
+        ch => ch,
+    }
+}
+
 fn validate_segment(segment: &str) -> Result<(), RelativePathError> {
-    if let Some(character) = segment
-        .chars()
-        .find(|ch| FORBIDDEN_CHARACTERS.contains(ch) || ch.is_control())
-    {
+    if let Some(character) = segment.chars().find(|ch| ch.is_control()) {
         return Err(RelativePathError::ForbiddenCharacter {
             segment: segment.to_owned(),
             character,
@@ -297,9 +321,35 @@ mod tests {
             Err(RelativePathError::TrailingSpaceOrDot(_))
         ));
         assert!(matches!(
-            RelativePath::parse("a/b|c"),
+            RelativePath::parse("a/\u{0001}b"),
             Err(RelativePathError::ForbiddenCharacter { .. })
         ));
+    }
+
+    #[test]
+    fn keeps_song_title_punctuation_in_observed_paths() {
+        let path =
+            RelativePath::parse(r#"Music/What Is Love?.mp3"#).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(path.as_str(), "Music/What Is Love?.mp3");
+        let colon = RelativePath::parse("Music/Love: Live.flac").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(colon.as_str(), "Music/Love: Live.flac");
+        let pipe = RelativePath::parse("a/b|c").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(pipe.as_str(), "a/b|c");
+    }
+
+    #[test]
+    fn escape_path_segment_maps_windows_illegal_title_chars() {
+        assert_eq!(
+            escape_path_segment(r#"What Is Love?"#),
+            "What Is Love\u{FF1F}"
+        );
+        assert_eq!(escape_path_segment("AC/DC"), "AC\u{FF0F}DC");
+        assert_eq!(
+            escape_path_segment("Live: Tokyo | 2024"),
+            "Live\u{FF1A} Tokyo \u{FF5C} 2024"
+        );
+        assert_eq!(escape_path_segment("  ..  "), "");
+        assert_eq!(escape_path_segment("ok"), "ok");
     }
 
     #[test]
