@@ -119,7 +119,7 @@ slot backend and runs `categorize` / `describe` when those slots are not off.
 Model `category` is a whitelist hint for propose, not a trusted path. The LLM
 worker accepts `load` / `unload` / `categorize` / `describe` / `chat` and
 currently returns stub `local_model` evidence unless the worker is built with
-llama.cpp (`pnpm desktop` / `pnpm llama` / `cargo engine-llm`, optional `cuda` / `vulkan` / `metal`)
+llama.cpp (`pnpm desktop` / `pnpm llama` / `cargo engine-llm`, optional `cuda` via `pnpm llama:cuda` / `vulkan` / `metal`)
 or a hosted HTTP backend is loaded (`RemoteModel` evidence). GPU init or OOM on
 `load` first retries fewer offload layers (from GGUF `block_count` when readable),
 then **once** with `n_gpu_layers=0`; infer OOM reloads CPU once. Scan logs
