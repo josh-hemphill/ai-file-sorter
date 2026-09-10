@@ -104,3 +104,7 @@ download, local/remote endpoints per analysis slot) is a separate first-run surf
 The implementation sequence for that workspace — live scan/analysis stream, mixed-tree
 folder roles, review-by-unit, preview diff, settings, and setup — is
 [`golden-path-execution-plan.md`](golden-path-execution-plan.md).
+
+Local catalog download, llama.cpp load recovery, and prompt/cancel follow-ups
+taken from upstream Qt (without porting the C++ runtime) are sequenced in
+[`upstream-model-plan.md`](upstream-model-plan.md).

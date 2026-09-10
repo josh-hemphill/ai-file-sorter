@@ -2,7 +2,7 @@
 
 use crate::catalog::{
     all_artifacts, artifact_bytes_on_disk, artifact_is_verified, artifact_path, catalog_entry,
-    catalog_id_is_downloaded, catalog_ids_for_artifact, expected_sha256,
+    catalog_id_is_downloaded, catalog_ids_for_artifact, expected_sha256, has_gguf_header,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -388,11 +388,18 @@ pub fn probe_backend_at(backend: &ModelBackend, storage_dir: Option<&Path>) -> (
             if !Path::new(path).is_file() {
                 return (false, format!("{path} was not found"));
             }
+            if !has_gguf_header(Path::new(path)) {
+                return (false, format!("{path} is not a GGUF file"));
+            }
             if let Some(proj) = mmproj
                 && !proj.is_empty()
-                && !Path::new(proj).is_file()
             {
-                return (false, format!("{proj} was not found"));
+                if !Path::new(proj).is_file() {
+                    return (false, format!("{proj} was not found"));
+                }
+                if !has_gguf_header(Path::new(proj)) {
+                    return (false, format!("{proj} is not a GGUF file"));
+                }
             }
             (
                 true,
@@ -481,12 +488,12 @@ fn local_weights_present(backend: &ModelBackend, storage_dir: Option<&Path>) -> 
             storage_dir.is_some_and(|dir| catalog_id_is_downloaded(dir, catalog_id))
         }
         ModelBackend::LocalGguf { path, mmproj } => {
-            if !Path::new(path).is_file() {
+            if !has_gguf_header(Path::new(path)) {
                 return false;
             }
             match mmproj.as_deref().filter(|proj| !proj.is_empty()) {
                 None => true,
-                Some(proj) => Path::new(proj).is_file(),
+                Some(proj) => has_gguf_header(Path::new(proj)),
             }
         }
         ModelBackend::Off
@@ -681,12 +688,16 @@ mod tests {
         assert!(ready.is_live_infer());
     }
 
+    fn write_gguf_stub(path: &std::path::Path) {
+        std::fs::write(path, b"GGUF\x03\x00\x00\x00").unwrap_or_else(|error| panic!("{error}"));
+    }
+
     #[test]
     fn slot_runtime_local_gguf_checks_weights_and_mmproj() {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let weights = dir.path().join("model.gguf");
         let proj = dir.path().join("mmproj.gguf");
-        std::fs::write(&weights, b"gguf").unwrap_or_else(|error| panic!("{error}"));
+        write_gguf_stub(&weights);
         let missing_proj = ModelBackend::LocalGguf {
             path: weights.display().to_string(),
             mmproj: Some(proj.display().to_string()),
@@ -698,12 +709,28 @@ mod tests {
         std::fs::write(&proj, b"proj").unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(
             slot_runtime(&missing_proj, &llama_worker(), None).kind_id(),
+            "missing_files"
+        );
+        write_gguf_stub(&proj);
+        assert_eq!(
+            slot_runtime(&missing_proj, &llama_worker(), None).kind_id(),
             "llama"
         );
         assert_eq!(
             slot_runtime(&missing_proj, &LlmWorkerStatus::Missing, None).kind_id(),
             "missing_worker"
         );
+        let html = ModelBackend::LocalGguf {
+            path: weights.display().to_string(),
+            mmproj: None,
+        };
+        std::fs::write(&weights, b"<!DOCTYPE html>").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            slot_runtime(&html, &llama_worker(), None).kind_id(),
+            "missing_files"
+        );
+        let (_, message) = probe_backend_at(&html, None);
+        assert!(message.contains("not a GGUF"), "{message}");
     }
 
     #[test]

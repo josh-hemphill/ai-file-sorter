@@ -10,6 +10,14 @@
   WebView thread so model downloads and other I/O no longer freeze the UI. Catalog
   SHA-256 results are cached by file metadata so Setup does not re-hash multi-GB
   GGUFs on every `get_models`. Downloads honor `cancel` between chunks.
+- Local LLM load now matches upstream's recovery shape more closely: GGUF magic
+  checks for custom paths, Metal reported as `MTL`, Windows CUDA/Vulkan device
+  probes, fewer GPU layers before CPU fallback, context-window allocation
+  fallbacks (`AIFS_CTX_TOKENS`, then 2048/1024/512), and one CPU reload if infer
+  OOMs. Prompt shrink now covers image descriptions as well as document text.
+- Documented the remaining upstream model-runtime waves (catalog download
+  resume, token-budget prompts, a lighter first `n_gpu_layers` guess, infer
+  cancel, packaged ggml) in `docs/upstream-model-plan.md`.
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.

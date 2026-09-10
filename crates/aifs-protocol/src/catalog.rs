@@ -267,11 +267,31 @@ pub fn artifact_path(storage_dir: &Path, filename: &str) -> PathBuf {
     storage_dir.join(filename)
 }
 
+/// GGUF magic bytes (`GGUF`).
+pub const GGUF_MAGIC: &[u8; 4] = b"GGUF";
+
 /// True when a finished GGUF is on disk (`.part` files do not count).
 pub fn artifact_is_present(path: &Path) -> bool {
     std::fs::metadata(path)
         .map(|meta| meta.is_file() && meta.len() > 0)
         .unwrap_or(false)
+}
+
+/// True when `path` is a `.gguf` file name, case-insensitively.
+pub fn is_gguf_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+}
+
+/// True when the file exists and starts with the GGUF magic header.
+pub fn has_gguf_header(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic)
+        .is_ok_and(|_| &magic == GGUF_MAGIC)
 }
 
 /// True when `path` is present and its SHA-256 matches `expected_sha256`.
@@ -443,6 +463,20 @@ mod tests {
     fn catalog_url_uses_override_base() {
         let url = catalog_download_url(GEMMA_TEXT_FILENAME);
         assert!(url.ends_with(GEMMA_TEXT_FILENAME), "{url}");
+    }
+
+    #[test]
+    fn gguf_header_requires_magic_bytes() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = dir.path().join("model.gguf");
+        assert!(is_gguf_file_path(&path));
+        assert!(!is_gguf_file_path(&dir.path().join("model.bin")));
+        fs::write(&path, b"gguf").unwrap_or_else(|error| panic!("{error}"));
+        assert!(artifact_is_present(&path));
+        assert!(!has_gguf_header(&path));
+        fs::write(&path, b"GGUF\x03\x00\x00\x00").unwrap_or_else(|error| panic!("{error}"));
+        assert!(has_gguf_header(&path));
+        assert!(!has_gguf_header(&dir.path().join("missing.gguf")));
     }
 
     #[test]

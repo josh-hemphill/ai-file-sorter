@@ -2,6 +2,7 @@
 
 use aifs_protocol::{
     ModelBackend, artifact_is_present, artifact_path, catalog_entry, catalog_id_is_downloaded,
+    has_gguf_header,
 };
 use std::path::{Path, PathBuf};
 
@@ -100,11 +101,17 @@ fn resolve_local(path: &str, mmproj: Option<&str>) -> Result<GgufFiles, String> 
     if !artifact_is_present(&weights) {
         return Err(format!("{} was not found", weights.display()));
     }
+    if !has_gguf_header(&weights) {
+        return Err(format!("{} is not a GGUF file", weights.display()));
+    }
     let mmproj = match mmproj.map(str::trim).filter(|value| !value.is_empty()) {
         Some(proj) => {
             let path = PathBuf::from(proj);
             if !artifact_is_present(&path) {
                 return Err(format!("{} was not found", path.display()));
+            }
+            if !has_gguf_header(&path) {
+                return Err(format!("{} is not a GGUF file", path.display()));
             }
             Some(path)
         }
@@ -276,5 +283,34 @@ mod tests {
         .err()
         .unwrap_or_else(|| panic!("missing GGUF must fail"));
         assert!(error.contains("not fully downloaded"), "{error}");
+    }
+
+    #[test]
+    fn local_path_must_be_a_gguf() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = dir.path().join("model.gguf");
+        std::fs::write(&path, b"<!DOCTYPE html>").unwrap_or_else(|error| panic!("{error}"));
+        let error = resolve_gguf(
+            &ModelBackend::LocalGguf {
+                path: path.display().to_string(),
+                mmproj: None,
+            },
+            &dir.path().display().to_string(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("HTML must not load as GGUF"));
+        assert!(error.contains("not a GGUF"), "{error}");
+        crate::gguf_meta::write_gguf_with_block_count(&path, "llama.block_count", 16)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let files = resolve_gguf(
+            &ModelBackend::LocalGguf {
+                path: path.display().to_string(),
+                mmproj: None,
+            },
+            &dir.path().display().to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(files.weights, path);
+        assert_eq!(crate::gguf_meta::read_block_count(&path), Some(16));
     }
 }
