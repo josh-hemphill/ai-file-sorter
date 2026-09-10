@@ -13,8 +13,8 @@ desktop app all live here (there is no nested `rust/` directory).
   would pick Visual Studio 2026 and the installed CMake is older than 4.2. Raw
   `cargo engine-llm` still needs CMake 4.2+ or an explicit `CMAKE_GENERATOR`
   (`Ninja` with Ninja on `PATH`, or `Visual Studio 17 2022` if VS 2022 is installed).
-  Packaged desktop builds add `--packaged` so Windows/Linux ggml stays off
-  `-march=native` (SSE4.2 rustc features) and macOS sets `CMAKE_INSTALL_RPATH`
+  Packaged desktop builds add `--packaged` so Windows/Linux ggml stays on
+  SSE4.2 (`GGML_AVX2=OFF`, no `-march=native`) and macOS sets `CMAKE_INSTALL_RPATH`
   instead of loading Homebrew `libggml`.
 
 ## Everyday commands

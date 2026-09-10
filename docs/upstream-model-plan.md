@@ -100,12 +100,14 @@ Hosted HTTP mid-body cancel is unchanged. See
 but a shipped `aifs-worker-llm` still dlopens ggml next to itself.
 
 **Done.** Tauri `beforeBuildCommand` runs `with-cmake-generator.mjs --packaged`.
-Windows/Linux strip `target-cpu=native` and add `-C target-feature=+sse4.2` so
-llama-cpp-sys-2 keeps `GGML_NATIVE=OFF` (it ignores `CMAKE_ARGS` and overwrites
-`GGML_NATIVE` from RUSTFLAGS). macOS sets `CMAKE_INSTALL_RPATH=@loader_path`
-and `CMAKE_IGNORE_PREFIX_PATH` for Homebrew. `pnpm llama` / `beforeDevCommand`
-stay on llama-cpp-2 defaults. Default `cargo test --workspace` still does not
-compile llama.cpp. See `scripts/packaged-ggml.mjs`.
+Windows/Linux strip `target-cpu=native`, add SSE4.2 rustc features, and set
+`GGML_SSE42=ON` / `GGML_AVX2=OFF` (and related ISA flags) because
+llama-cpp-sys-2 ignores `CMAKE_ARGS`, overwrites `GGML_NATIVE` from RUSTFLAGS,
+and vendored ggml still defaults AVX2 on when `GGML_NATIVE=OFF`. macOS sets
+`CMAKE_INSTALL_RPATH=@loader_path` and `CMAKE_IGNORE_PREFIX_PATH` for Homebrew.
+`pnpm llama` / `beforeDevCommand` stay on llama-cpp-2 defaults. Default
+`cargo test --workspace` still does not compile llama.cpp. See
+`scripts/packaged-ggml.mjs`.
 
 ## Out of scope (will not take from upstream)
 

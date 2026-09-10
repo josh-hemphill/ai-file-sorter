@@ -33,9 +33,10 @@
 - Scan cancel during local `categorize` / `describe` kills `aifs-worker-llm`
   instead of waiting the infer timeout. The in-flight file is skipped; finished
   bags still checkpoint. The next scan that needs a model starts a new worker.
-- Packaged Tauri llama sidecars pin Windows/Linux rustc to SSE4.2 (llama-cpp-sys-2
-  then keeps `GGML_NATIVE` off) and set macOS `CMAKE_INSTALL_RPATH=@loader_path`
-  (no Homebrew prefix). Local `pnpm llama` is unchanged.
+- Packaged Tauri llama sidecars pin Windows/Linux rustc to SSE4.2, force
+  `GGML_AVX2=OFF` (and related ISA flags) so ggml does not host-tune AVX2, and
+  set macOS `CMAKE_INSTALL_RPATH=@loader_path` (no Homebrew prefix). Local
+  `pnpm llama` is unchanged.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
