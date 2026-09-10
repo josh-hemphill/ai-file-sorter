@@ -10,6 +10,9 @@
   WebView thread so model downloads and other I/O no longer freeze the UI. Catalog
   SHA-256 results are cached by file metadata so Setup does not re-hash multi-GB
   GGUFs on every `get_models`. Downloads honor `cancel` between chunks.
+- `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
+  cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
+  instead of looking hung while nvcc builds every default architecture.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
