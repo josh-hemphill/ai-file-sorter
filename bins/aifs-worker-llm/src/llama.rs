@@ -10,7 +10,8 @@ use crate::gguf_meta::read_block_count;
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
     CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system, categorize_user,
-    describe_user, next_document_text_budget, shrink_prompt_evidence,
+    describe_user, drop_oldest_chars, drop_oldest_user_tokens, next_document_text_budget,
+    prompt_token_keep, protected_prefix_len, shrink_prompt_evidence,
 };
 use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
@@ -168,19 +169,21 @@ impl WorkerHandler for LlamaHandler {
         }
         let mut evidence = evidence.to_vec();
         let mut budget = DOCUMENT_TEXT_CHARS;
+        let system = categorize_system(allowed_categories, style);
         loop {
-            match self.complete(
-                &categorize_system(allowed_categories, style),
-                &categorize_user(entry, &evidence, allowed_categories, style),
-                MAX_GEN_TOKENS,
-            ) {
+            let user = categorize_user(entry, &evidence, allowed_categories, style);
+            match self.complete(&system, &user, MAX_GEN_TOKENS, PromptFit::ErrorIfOver) {
                 Ok(text) => return Ok(evidence_from_text(&model_id, entry, &text, true)),
                 Err(error) if is_context_window_error(&error) => {
                     let Some(next) = next_document_text_budget(budget) else {
-                        return Err(error);
+                        return self
+                            .complete(&system, &user, MAX_GEN_TOKENS, PromptFit::DropOldestUser)
+                            .map(|text| evidence_from_text(&model_id, entry, &text, true));
                     };
                     if !shrink_prompt_evidence(&mut evidence, next) {
-                        return Err(error);
+                        return self
+                            .complete(&system, &user, MAX_GEN_TOKENS, PromptFit::DropOldestUser)
+                            .map(|text| evidence_from_text(&model_id, entry, &text, true));
                     }
                     budget = next;
                 }
@@ -208,14 +211,22 @@ impl WorkerHandler for LlamaHandler {
                     Ok(text) => text,
                     Err(ImageCompleteError::Input(reason)) => {
                         let _bitmap_error = reason;
-                        self.complete(DESCRIBE_SYSTEM, &user, MAX_GEN_TOKENS)?
+                        self.complete(
+                            DESCRIBE_SYSTEM,
+                            &user,
+                            MAX_GEN_TOKENS,
+                            PromptFit::DropOldestUser,
+                        )?
                     }
                     Err(ImageCompleteError::Infer(error)) => return Err(error),
                 }
             }
-            DescribePrompt::Text { user } => {
-                self.complete(DESCRIBE_SYSTEM, &user, MAX_GEN_TOKENS)?
-            }
+            DescribePrompt::Text { user } => self.complete(
+                DESCRIBE_SYSTEM,
+                &user,
+                MAX_GEN_TOKENS,
+                PromptFit::DropOldestUser,
+            )?,
         };
         Ok(evidence_from_text(&model_id, entry, &text, false))
     }
@@ -227,7 +238,12 @@ impl WorkerHandler for LlamaHandler {
         } else {
             format!("{utterance}\n\nContext:\n{context}")
         };
-        self.complete(CHAT_SYSTEM, &user, CHAT_GEN_TOKENS)
+        self.complete(
+            CHAT_SYSTEM,
+            &user,
+            CHAT_GEN_TOKENS,
+            PromptFit::DropOldestUser,
+        )
     }
 }
 
@@ -310,10 +326,16 @@ impl LlamaHandler {
         Ok(loaded.info.clone())
     }
 
-    fn complete(&mut self, system: &str, user: &str, max_tokens: i32) -> Result<String, String> {
-        match self.complete_once(system, user, max_tokens) {
+    fn complete(
+        &mut self,
+        system: &str,
+        user: &str,
+        max_tokens: i32,
+        fit: PromptFit,
+    ) -> Result<String, String> {
+        match self.complete_once(system, user, max_tokens, fit) {
             Ok(text) => Ok(text),
-            Err(error) => self.retry_complete_on_cpu(system, user, max_tokens, error),
+            Err(error) => self.retry_complete_on_cpu(system, user, max_tokens, fit, error),
         }
     }
 
@@ -322,6 +344,7 @@ impl LlamaHandler {
         system: &str,
         user: &str,
         max_tokens: i32,
+        fit: PromptFit,
     ) -> Result<String, String> {
         let llama = self
             .backend
@@ -331,7 +354,7 @@ impl LlamaHandler {
             .loaded
             .as_ref()
             .ok_or_else(|| "load a model before infer".to_owned())?;
-        generate(llama, &loaded.model, system, user, max_tokens)
+        generate(llama, &loaded.model, system, user, max_tokens, fit)
     }
 
     fn retry_complete_on_cpu(
@@ -339,6 +362,7 @@ impl LlamaHandler {
         system: &str,
         user: &str,
         max_tokens: i32,
+        fit: PromptFit,
         error: String,
     ) -> Result<String, String> {
         let device = self
@@ -360,7 +384,7 @@ impl LlamaHandler {
         let mut fallback = Some(format!("GPU infer failed ({error}); using cpu"));
         append_fallback(&mut fallback, "reloaded on cpu");
         self.try_load_weights(&files, "cpu".to_owned(), 0, fallback)?;
-        self.complete_once(system, user, max_tokens)
+        self.complete_once(system, user, max_tokens, fit)
     }
 
     fn describe_prompt(
@@ -500,12 +524,19 @@ fn evidence_from_text(
     Some(bag)
 }
 
+#[derive(Clone, Copy)]
+enum PromptFit {
+    ErrorIfOver,
+    DropOldestUser,
+}
+
 fn generate(
     backend: &LlamaBackend,
     model: &LlamaModel,
     system: &str,
     user: &str,
     max_tokens: i32,
+    fit: PromptFit,
 ) -> Result<String, String> {
     let prompt = chat_prompt(model, system, user);
     let tokens = model
@@ -514,14 +545,30 @@ fn generate(
     if tokens.is_empty() {
         return Err("prompt produced no tokens".to_owned());
     }
-    let n_prompt = i32::try_from(tokens.len()).unwrap_or(i32::MAX);
+    let probe = system_prompt_tokens(model, system);
+    let n_protected = protected_prefix_len(&tokens, &probe);
     let mut last_error = None;
     for n_ctx in context_size_attempts(resolve_n_ctx()) {
-        let n_ctx_i32 = i32::try_from(n_ctx).unwrap_or(i32::MAX);
-        if n_prompt.saturating_add(max_tokens) > n_ctx_i32 {
-            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
-            continue;
-        }
+        let keep = prompt_token_keep(n_ctx, max_tokens);
+        let used = if tokens.len() <= keep {
+            tokens.clone()
+        } else {
+            match (fit, n_protected) {
+                (PromptFit::DropOldestUser, Some(protected)) => {
+                    match drop_oldest_user_tokens(&tokens, keep, protected) {
+                        Ok(used) if !used.is_empty() => used,
+                        _ => {
+                            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
+                            break;
+                        }
+                    }
+                }
+                (PromptFit::ErrorIfOver, _) | (PromptFit::DropOldestUser, None) => {
+                    last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
+                    break;
+                }
+            }
+        };
         let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(n_ctx_nz))
@@ -537,9 +584,16 @@ fn generate(
                 continue;
             }
         };
-        return decode_tokens(model, &mut ctx, &tokens, max_tokens);
+        return decode_tokens(model, &mut ctx, &used, max_tokens);
     }
     Err(last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()))
+}
+
+fn system_prompt_tokens(model: &LlamaModel, system: &str) -> Vec<llama_cpp_2::token::LlamaToken> {
+    let prompt = chat_prompt(model, system, "");
+    model
+        .str_to_token(&prompt, AddBos::Always)
+        .unwrap_or_default()
 }
 
 fn decode_tokens(
@@ -598,8 +652,6 @@ fn generate_with_image(
         ImageCompleteError::Input(format!("{} is not valid UTF-8", image.display()))
     })?;
     let marker = mtmd_default_marker();
-    let user = describe_user_with_media(user, marker);
-    let prompt = chat_prompt(model, system, &user);
     let bitmap = MtmdBitmap::from_file(mtmd, image_path, false)
         .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
     if bitmap.is_audio() {
@@ -607,46 +659,62 @@ fn generate_with_image(
             "image path decoded as audio".to_owned(),
         ));
     }
-    let chunks = mtmd
-        .tokenize(
-            MtmdInputText {
-                text: prompt,
-                add_special: true,
-                parse_special: true,
-            },
-            &[&bitmap],
-        )
-        .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
-    let n_prompt = chunks.total_tokens();
+    let mut body = user.to_owned();
     let n_gen = usize::try_from(max_tokens).unwrap_or(0);
     let mut last_error = None;
-    for n_ctx in context_size_attempts(resolve_n_ctx()) {
-        let n_ctx_usize = usize::try_from(n_ctx).unwrap_or(0);
-        if n_prompt.saturating_add(n_gen) > n_ctx_usize {
-            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
-            continue;
-        }
-        let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(Some(n_ctx_nz))
-            .with_n_batch(n_ctx);
-        let mut ctx = match model.new_context(backend, ctx_params) {
-            Ok(ctx) => ctx,
-            Err(error) => {
-                let error = error.to_string();
-                if is_gpu_failure(&error) {
-                    return Err(ImageCompleteError::Infer(error));
-                }
-                last_error = Some(error);
+    loop {
+        let wrapped = describe_user_with_media(&body, marker);
+        let prompt = chat_prompt(model, system, &wrapped);
+        let chunks = mtmd
+            .tokenize(
+                MtmdInputText {
+                    text: prompt,
+                    add_special: true,
+                    parse_special: true,
+                },
+                &[&bitmap],
+            )
+            .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
+        let n_prompt = chunks.total_tokens();
+        let mut overflowed = false;
+        for n_ctx in context_size_attempts(resolve_n_ctx()) {
+            let n_ctx_usize = usize::try_from(n_ctx).unwrap_or(0);
+            if n_prompt.saturating_add(n_gen) > n_ctx_usize {
+                overflowed = true;
+                last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
                 continue;
             }
+            let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
+            let ctx_params = LlamaContextParams::default()
+                .with_n_ctx(Some(n_ctx_nz))
+                .with_n_batch(n_ctx);
+            let mut ctx = match model.new_context(backend, ctx_params) {
+                Ok(ctx) => ctx,
+                Err(error) => {
+                    let error = error.to_string();
+                    if is_gpu_failure(&error) {
+                        return Err(ImageCompleteError::Infer(error));
+                    }
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            let n_batch = i32::try_from(n_prompt.max(BATCH_FLOOR)).unwrap_or(i32::MAX);
+            let n_past = chunks
+                .eval_chunks(mtmd, &ctx, 0, 0, n_batch, true)
+                .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
+            return sample_continuation(&mut ctx, model, n_past, max_tokens)
+                .map_err(ImageCompleteError::Infer);
+        }
+        if !overflowed || body.is_empty() {
+            break;
+        }
+        let next_keep = body.chars().count() / 2;
+        body = if next_keep == 0 {
+            String::new()
+        } else {
+            drop_oldest_chars(&body, next_keep)
         };
-        let n_batch = i32::try_from(n_prompt.max(BATCH_FLOOR)).unwrap_or(i32::MAX);
-        let n_past = chunks
-            .eval_chunks(mtmd, &ctx, 0, 0, n_batch, true)
-            .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
-        return sample_continuation(&mut ctx, model, n_past, max_tokens)
-            .map_err(ImageCompleteError::Infer);
     }
     Err(ImageCompleteError::Infer(
         last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()),
@@ -732,6 +800,16 @@ mod tests {
             describe_user_with_media("Relative path: shot.jpg", "<__media__>"),
             "<__media__>\nRelative path: shot.jpg"
         );
+    }
+
+    #[test]
+    fn image_user_shrink_keeps_the_media_marker() {
+        let body = drop_oldest_chars("abcdefghij", 4);
+        let wrapped = describe_user_with_media(&body, "<__media__>");
+        assert_eq!(wrapped, "<__media__>\nghij");
+        assert!(wrapped.starts_with("<__media__>\n"));
+        let empty = describe_user_with_media("", "<__media__>");
+        assert_eq!(empty, "<__media__>\n");
     }
 
     #[test]
