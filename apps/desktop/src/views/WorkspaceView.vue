@@ -48,6 +48,7 @@ import {
   planCounts,
   previewRows,
   rememberRoot,
+  retainProgressMessage,
   roleKindLabel,
   skippedReasonLabel,
   journalBelongsToPlan,
@@ -161,6 +162,17 @@ const analysisStages = computed(() =>
     ...stageProgress.value[stage.id],
   })),
 );
+const busyStatusText = computed(() => {
+  if (!progress.value) {
+    return "Working…";
+  }
+  const retained =
+    stageProgress.value[progress.value.stage]?.message ?? progress.value.message;
+  const total = progress.value.total ? `/${progress.value.total}` : "";
+  const pathBit =
+    retained && retained.toLowerCase() !== "working" ? ` — ${retained}` : "";
+  return `Working… ${progress.value.stage} ${progress.value.current}${total}${pathBit}`;
+});
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
 watch(
@@ -447,7 +459,10 @@ onMounted(async () => {
       [event.stage]: {
         current: event.current,
         total: event.total,
-        message: event.message,
+        message: retainProgressMessage(
+          stageProgress.value[event.stage]?.message,
+          event.message,
+        ),
       },
     };
   });
@@ -708,14 +723,7 @@ function familyOf(entry: ObservedEntry): string {
       <footer class="status">
         <div class="status-copy">
           <WorkflowStepper :current="step" />
-          <span v-if="busy">
-            Working…
-            <template v-if="progress">
-              {{ progress.stage }} {{ progress.current
-              }}<template v-if="progress.total">/{{ progress.total }}</template>
-              — {{ progress.message }}
-            </template>
-          </span>
+          <span v-if="busy" class="status-line" :title="busyStatusText">{{ busyStatusText }}</span>
           <span v-else-if="engineError" class="error">{{ engineError }}</span>
           <span v-else-if="snapshot">
             {{ files.length }} files · {{ snapshot.bundles.length }} bundles ·

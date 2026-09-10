@@ -1,5 +1,6 @@
 //! Turns model text into untrusted evidence facts. Never treats output as a path or SQL.
 
+use aifs_domain::escape_path_segment;
 use aifs_domain::evidence::keys;
 use serde::Deserialize;
 
@@ -58,20 +59,9 @@ fn sanitize_label(value: Option<&str>) -> Option<String> {
     if value.is_empty() || value.contains('/') || value.contains('\\') {
         return None;
     }
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_control() || "/\\".contains(ch) {
-            break;
-        }
-        if "<>:\"|?*".contains(ch) {
-            continue;
-        }
-        out.push(ch);
-        if out.chars().count() >= CATEGORY_CHARS {
-            break;
-        }
-    }
-    let trimmed = out.trim().trim_matches('.').trim();
+    let escaped = escape_path_segment(value);
+    let trimmed: String = escaped.chars().take(CATEGORY_CHARS).collect();
+    let trimmed = trimmed.trim().trim_matches('.').trim();
     if trimmed.is_empty() || trimmed == ".." {
         None
     } else {
@@ -103,12 +93,9 @@ fn filename_only(value: Option<&str>) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return None;
     }
-    let cleaned: String = name
-        .chars()
-        .filter(|ch| !ch.is_control() && !"<>:\"|?*".contains(*ch))
-        .take(NAME_CHARS)
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.');
+    let escaped = escape_path_segment(name);
+    let trimmed: String = escaped.chars().take(NAME_CHARS).collect();
+    let trimmed = trimmed.trim().trim_matches('.');
     if trimmed.is_empty() {
         None
     } else {
@@ -166,5 +153,18 @@ mod tests {
     #[test]
     fn garbage_is_none() {
         assert!(parse_infer_json("Documents folder please").is_none());
+    }
+
+    #[test]
+    fn song_title_punctuation_is_escaped_not_stripped() {
+        let parsed = parse_infer_json(
+            r#"{"category":"Music?","suggested_name":"What Is Love?.mp3","description":"ok"}"#,
+        )
+        .unwrap_or_else(|| panic!("expected json"));
+        assert_eq!(parsed.category.as_deref(), Some("Music\u{FF1F}"));
+        assert_eq!(
+            parsed.suggested_name.as_deref(),
+            Some("What Is Love\u{FF1F}.mp3")
+        );
     }
 }
