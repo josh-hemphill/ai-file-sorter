@@ -163,6 +163,10 @@ pub fn context_size_attempts(preferred: u32) -> Vec<u32> {
     attempts
 }
 
+/// Coarse VRAM guess per offloaded layer (Gemma 4B Q4 is ~73 MiB/layer).
+#[cfg(any(test, feature = "llama"))]
+const BYTES_PER_LAYER_GUESS: u64 = 80 * 1024 * 1024;
+
 /// GPU offload attempts before CPU. Explicit `n_gpu_layers` is tried once.
 #[cfg(any(test, feature = "llama"))]
 pub fn gpu_layer_load_attempts(
@@ -170,6 +174,7 @@ pub fn gpu_layer_load_attempts(
     requested: u32,
     explicit: bool,
     block_count: Option<u32>,
+    free_vram_bytes: Option<u64>,
 ) -> Vec<u32> {
     if device == "cpu" || requested == 0 {
         return vec![0];
@@ -183,6 +188,10 @@ pub fn gpu_layer_load_attempts(
         Some(count) => requested.min(count),
         None => requested,
     };
+    let first = cap_first_gpu_layers(first, free_vram_bytes);
+    if first == 0 {
+        return vec![0];
+    }
     push_unique(&mut attempts, first);
     if let Some(count) = block_count {
         let mut current = first.min(count);
@@ -197,15 +206,78 @@ pub fn gpu_layer_load_attempts(
             }
             current = reduced;
         }
-    } else if first >= ALL_GPU_LAYERS {
+    } else if requested >= ALL_GPU_LAYERS {
         for &layers in UNKNOWN_LAYER_FALLBACKS {
             if attempts.len() >= MAX_GPU_LAYER_ATTEMPTS {
                 break;
+            }
+            if layers >= first {
+                continue;
             }
             push_unique(&mut attempts, layers);
         }
     }
     attempts
+}
+
+/// Caps the first offload attempt when a free-VRAM probe exists. Missing probe is a no-op.
+#[cfg(any(test, feature = "llama"))]
+pub fn cap_first_gpu_layers(first: u32, free_vram_bytes: Option<u64>) -> u32 {
+    let Some(free_bytes) = free_vram_bytes else {
+        return first;
+    };
+    let fit = u32::try_from(free_bytes / BYTES_PER_LAYER_GUESS).unwrap_or(u32::MAX);
+    first.min(fit)
+}
+
+/// Best-effort free VRAM in bytes. `None` when no probe is available.
+#[cfg(any(test, feature = "llama"))]
+pub fn probe_free_vram() -> Option<u64> {
+    first_free_vram_probe(nvidia_smi_free_mib_csv().as_deref(), None).or_else(linux_sysfs_vram_free)
+}
+
+/// Prefers a parsed nvidia-smi CSV; otherwise the sysfs byte count.
+#[cfg(any(test, feature = "llama"))]
+fn first_free_vram_probe(nvidia_csv: Option<&str>, sysfs_bytes: Option<u64>) -> Option<u64> {
+    nvidia_csv
+        .and_then(parse_nvidia_smi_free_mib)
+        .or(sysfs_bytes)
+}
+
+#[cfg(any(test, feature = "llama"))]
+fn nvidia_smi_free_mib_csv() -> Option<String> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Parses `nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits` (MiB).
+#[cfg(any(test, feature = "llama"))]
+pub fn parse_nvidia_smi_free_mib(text: &str) -> Option<u64> {
+    let first = text.lines().next()?.trim();
+    let mib: u64 = first.split(',').next()?.trim().parse().ok()?;
+    Some(mib.saturating_mul(1024 * 1024))
+}
+
+#[cfg(any(test, feature = "llama"))]
+fn linux_sysfs_vram_free() -> Option<u64> {
+    const PATHS: &[&str] = &[
+        "/sys/class/drm/card0/device/mem_info_vram_free",
+        "/sys/class/drm/card1/device/mem_info_vram_free",
+    ];
+    for path in PATHS {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(bytes) = text.trim().parse::<u64>()
+        {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 #[cfg(any(test, feature = "llama"))]
@@ -423,19 +495,72 @@ mod tests {
 
     #[test]
     fn gpu_layer_attempts_reduce_before_cpu() {
-        assert_eq!(gpu_layer_load_attempts("cpu", 99, false, Some(34)), vec![0]);
         assert_eq!(
-            gpu_layer_load_attempts("cuda", 32, true, Some(34)),
+            gpu_layer_load_attempts("cpu", 99, false, Some(34), None),
+            vec![0]
+        );
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", 32, true, Some(34), None),
             vec![32]
         );
         assert_eq!(
-            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, Some(34)),
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, Some(34), None),
             vec![34, 25, 18]
         );
         assert_eq!(
-            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, None),
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, None, None),
             vec![ALL_GPU_LAYERS, 32, 16]
         );
+    }
+
+    #[test]
+    fn gpu_layer_attempts_cap_first_guess_from_free_vram() {
+        let ten_layers = BYTES_PER_LAYER_GUESS.saturating_mul(10);
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, Some(34), Some(ten_layers)),
+            vec![10, 7, 5]
+        );
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, Some(34), Some(0)),
+            vec![0]
+        );
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", 32, true, Some(34), Some(0)),
+            vec![32]
+        );
+        let fifty_layers = BYTES_PER_LAYER_GUESS.saturating_mul(50);
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, None, Some(fifty_layers)),
+            vec![50, 32, 16]
+        );
+        assert_eq!(
+            gpu_layer_load_attempts("cuda", ALL_GPU_LAYERS, false, None, Some(ten_layers)),
+            vec![10]
+        );
+        assert_eq!(cap_first_gpu_layers(34, None), 34);
+        assert_eq!(cap_first_gpu_layers(34, Some(ten_layers)), 10);
+        assert_eq!(
+            parse_nvidia_smi_free_mib(" 2048 \n512\n"),
+            Some(2048 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_nvidia_smi_free_mib("2048, 512\n"),
+            Some(2048 * 1024 * 1024)
+        );
+        assert_eq!(parse_nvidia_smi_free_mib(""), None);
+        assert_eq!(parse_nvidia_smi_free_mib("N/A"), None);
+        assert_eq!(first_free_vram_probe(None, Some(100)), Some(100));
+        assert_eq!(first_free_vram_probe(Some("N/A"), Some(100)), Some(100));
+        assert_eq!(
+            first_free_vram_probe(Some("2048"), Some(100)),
+            Some(2048 * 1024 * 1024)
+        );
+        assert_eq!(first_free_vram_probe(None, None), None);
+    }
+
+    #[test]
+    fn free_vram_probe_is_allowed_to_be_missing() {
+        let _ = probe_free_vram();
     }
 
     #[test]

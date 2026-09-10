@@ -25,6 +25,11 @@
 - Local categorize shrinks evidence first, then drops oldest user tokens so
   the prompt still fits `n_ctx`. Image describe shortens the user text, not
   image tokens. The system JSON/schema turn is never truncated.
+- Local LLM load caps the first `n_gpu_layers` attempt from a best-effort
+  free-VRAM probe (`nvidia-smi` or Linux sysfs, ~80 MiB/layer) so modest GPUs
+  skip a doomed full offload. Missing probes keep the existing layer ladder.
+  Explicit `n_gpu_layers` is still tried once. `loaded.fallback` may name
+  `reduced-ngl from free VRAM probe`.
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.

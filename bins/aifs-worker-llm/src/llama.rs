@@ -2,8 +2,8 @@
 
 use crate::device::{
     ALL_GPU_LAYERS, context_size_attempts, cpu_retry_plan, gpu_layer_load_attempts, is_gpu_failure,
-    is_retryable_load_failure, requested_n_gpu_layers, resolve_device, resolve_n_ctx,
-    should_retry_cpu,
+    is_retryable_load_failure, probe_free_vram, requested_n_gpu_layers, resolve_device,
+    resolve_n_ctx, should_retry_cpu,
 };
 use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
 use crate::gguf_meta::read_block_count;
@@ -102,11 +102,17 @@ impl WorkerHandler for LlamaHandler {
             return self.reuse_loaded(&files, device, n_gpu_layers, fallback);
         }
         let block_count = read_block_count(&files.weights);
-        let layer_attempts = gpu_layer_load_attempts(
-            &device,
-            n_gpu_layers,
-            explicit_layers.is_some(),
-            block_count,
+        let explicit = explicit_layers.is_some();
+        let free_vram = probe_free_vram();
+        let uncapped_first =
+            gpu_layer_load_attempts(&device, n_gpu_layers, explicit, block_count, None)
+                .into_iter()
+                .next();
+        let layer_attempts =
+            gpu_layer_load_attempts(&device, n_gpu_layers, explicit, block_count, free_vram);
+        let reduced_ngl = matches!(
+            (layer_attempts.first(), uncapped_first),
+            (Some(capped), Some(full)) if *capped < full
         );
         let mut last_error = None;
         let mut last_fallback = fallback;
@@ -118,14 +124,17 @@ impl WorkerHandler for LlamaHandler {
             };
             match self.try_load_weights(&files, attempt_device, layers, last_fallback.clone()) {
                 Ok(mut info) => {
+                    if reduced_ngl && index == 0 {
+                        append_fallback(&mut info.fallback, "reduced-ngl from free VRAM probe");
+                    }
                     if index > 0 {
                         append_fallback(
                             &mut info.fallback,
                             &format!("loaded with n_gpu_layers={layers} after a GPU load failure"),
                         );
-                        if let Some(loaded) = self.loaded.as_mut() {
-                            loaded.info.fallback = info.fallback.clone();
-                        }
+                    }
+                    if let Some(loaded) = self.loaded.as_mut() {
+                        loaded.info.fallback = info.fallback.clone();
                     }
                     return Ok(info);
                 }
