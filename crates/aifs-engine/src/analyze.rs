@@ -12,6 +12,8 @@ use aifs_protocol::{
 };
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
+const ANALYSIS_STOPPED_LOG: &str = "analysis stopped";
+
 /// Log line or categorize/describe progress from supervised analysis.
 pub enum AnalyzeNotice<'a> {
     /// Informational line (load, skip, category).
@@ -106,7 +108,12 @@ pub fn analyze_into_supervised(
                     if entry.family == FileFamily::RawImage {
                         on_notice(AnalyzeNotice::Log(raw_describe_log(entry.path.as_str())));
                     }
-                    match llm.describe(&snapshot.root, &entry, prior.clone()) {
+                    match llm.describe_while(
+                        &snapshot.root,
+                        &entry,
+                        prior.clone(),
+                        &mut should_continue,
+                    ) {
                         Ok(Some(evidence)) => {
                             on_notice(AnalyzeNotice::Log(format!(
                                 "described {}",
@@ -126,6 +133,15 @@ pub fn analyze_into_supervised(
                         }
                         Ok(None) => {
                             maybe_log_screenshot(&mut on_notice, &entry, &prior);
+                        }
+                        Err(error) if error.is_cancelled() => {
+                            return stop_analysis(
+                                snapshot,
+                                bags,
+                                &mut llm,
+                                loaded.is_some(),
+                                &mut on_notice,
+                            );
                         }
                         Err(error) => {
                             maybe_log_screenshot(&mut on_notice, &entry, &prior);
@@ -276,12 +292,13 @@ where
                 if log_screenshots {
                     maybe_log_screenshot(on_notice, &entry, &prior);
                 }
-                match llm.categorize(
+                match llm.categorize_while(
                     &snapshot.root,
                     &entry,
                     prior,
                     allowed_categories.to_vec(),
                     style,
+                    &mut *should_continue,
                 ) {
                     Ok(Some(evidence)) => {
                         log_category(
@@ -299,6 +316,9 @@ where
                         }
                     }
                     Ok(None) => {}
+                    Err(error) if error.is_cancelled() => {
+                        return stop_analysis(snapshot, bags, llm, loaded.is_some(), on_notice);
+                    }
                     Err(error) => on_notice(AnalyzeNotice::Log(format!(
                         "categorize skipped {}: {}",
                         entry.path.as_str(),
@@ -320,6 +340,19 @@ fn shutdown_llm(llm: &mut WorkerClient, loaded: bool) {
         let _ = llm.unload();
     }
     let _ = llm.shutdown();
+}
+
+fn stop_analysis(
+    snapshot: &mut WorkspaceSnapshot,
+    bags: Vec<Evidence>,
+    llm: &mut WorkerClient,
+    loaded: bool,
+    on_notice: &mut impl FnMut(AnalyzeNotice<'_>),
+) -> WorkStatus {
+    on_notice(AnalyzeNotice::Log(ANALYSIS_STOPPED_LOG.to_owned()));
+    snapshot.evidence.extend(bags);
+    shutdown_llm(llm, loaded);
+    WorkStatus::Cancelled
 }
 
 fn should_include_in_categorize(entry: &ObservedEntry, run_document: bool) -> bool {

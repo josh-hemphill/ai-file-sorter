@@ -22,6 +22,8 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// Recv slice while waiting on a worker so the engine can emit idle-resetting logs.
 /// Must stay under the engine-client idle timeout (180s).
 const WAIT_SLICE: Duration = Duration::from_secs(15);
+/// How often infer waits re-check scan cancel. Stays far below [`INFER_TIMEOUT`].
+const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 /// Successful `load` reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,9 @@ pub enum WorkerClientError {
     /// Timed out waiting for a terminal event.
     #[error("timed out waiting for the worker")]
     Timeout,
+    /// The child was killed because the caller cancelled the wait.
+    #[error("worker killed because the scan was cancelled")]
+    Cancelled,
     /// A protocol line could not be parsed.
     #[error("invalid worker output: {0}")]
     Codec(String),
@@ -65,6 +70,13 @@ pub enum WorkerClientError {
     /// A terminal event was the wrong type.
     #[error("{0}")]
     Unexpected(String),
+}
+
+impl WorkerClientError {
+    /// True when the child was killed because the caller cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
 }
 
 /// Client that owns a worker child process.
@@ -84,11 +96,25 @@ impl WorkerClient {
         if !binary.exists() {
             return Err(WorkerClientError::NotFound(binary.display().to_string()));
         }
+        Self::connect_command(kind, binary, |_| {})
+    }
+
+    /// Like [`Self::connect`], with extra process configuration (test env, etc.).
+    pub fn connect_command(
+        kind: WorkerKind,
+        binary: impl AsRef<Path>,
+        configure: impl FnOnce(&mut Command),
+    ) -> Result<Self, WorkerClientError> {
+        let binary = binary.as_ref();
+        if !binary.exists() {
+            return Err(WorkerClientError::NotFound(binary.display().to_string()));
+        }
         let mut command = Command::new(binary);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure(&mut command);
         let mut child = command.spawn()?;
         let stdin = child
             .stdin
@@ -138,6 +164,13 @@ impl WorkerClient {
         };
         client.hello()?;
         Ok(client)
+    }
+
+    /// Kills the child immediately. Used when scan cancel arrives during infer.
+    pub fn kill(&mut self) {
+        self.stdin.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Discovers the binary for `kind` and connects.
@@ -263,6 +296,7 @@ impl WorkerClient {
             },
             LOAD_TIMEOUT,
             &mut on_wait,
+            &mut || true,
         )?;
         for envelope in envelopes {
             match envelope.event {
@@ -332,13 +366,38 @@ impl WorkerClient {
         allowed_categories: Vec<String>,
         style: FolderStyle,
     ) -> Result<Option<Evidence>, WorkerClientError> {
-        self.infer(WorkerCommand::Categorize {
-            root: root.as_ref().to_path_buf(),
-            entry: entry.clone(),
-            evidence,
-            allowed_categories,
-            style,
-        })
+        self.infer_while(
+            WorkerCommand::Categorize {
+                root: root.as_ref().to_path_buf(),
+                entry: entry.clone(),
+                evidence,
+                allowed_categories,
+                style,
+            },
+            || true,
+        )
+    }
+
+    /// Like [`Self::categorize`], killing the child when `should_continue` returns false.
+    pub fn categorize_while(
+        &mut self,
+        root: impl AsRef<Path>,
+        entry: &ObservedEntry,
+        evidence: Vec<Evidence>,
+        allowed_categories: Vec<String>,
+        style: FolderStyle,
+        should_continue: impl FnMut() -> bool,
+    ) -> Result<Option<Evidence>, WorkerClientError> {
+        self.infer_while(
+            WorkerCommand::Categorize {
+                root: root.as_ref().to_path_buf(),
+                entry: entry.clone(),
+                evidence,
+                allowed_categories,
+                style,
+            },
+            should_continue,
+        )
     }
 
     /// Describes an image with the loaded model.
@@ -348,15 +407,41 @@ impl WorkerClient {
         entry: &ObservedEntry,
         evidence: Vec<Evidence>,
     ) -> Result<Option<Evidence>, WorkerClientError> {
-        self.infer(WorkerCommand::Describe {
-            root: root.as_ref().to_path_buf(),
-            entry: entry.clone(),
-            evidence,
-        })
+        self.infer_while(
+            WorkerCommand::Describe {
+                root: root.as_ref().to_path_buf(),
+                entry: entry.clone(),
+                evidence,
+            },
+            || true,
+        )
     }
 
-    fn infer(&mut self, command: WorkerCommand) -> Result<Option<Evidence>, WorkerClientError> {
-        let envelopes = self.request_with_timeout(command, INFER_TIMEOUT)?;
+    /// Like [`Self::describe`], killing the child when `should_continue` returns false.
+    pub fn describe_while(
+        &mut self,
+        root: impl AsRef<Path>,
+        entry: &ObservedEntry,
+        evidence: Vec<Evidence>,
+        should_continue: impl FnMut() -> bool,
+    ) -> Result<Option<Evidence>, WorkerClientError> {
+        self.infer_while(
+            WorkerCommand::Describe {
+                root: root.as_ref().to_path_buf(),
+                entry: entry.clone(),
+                evidence,
+            },
+            should_continue,
+        )
+    }
+
+    fn infer_while(
+        &mut self,
+        command: WorkerCommand,
+        mut should_continue: impl FnMut() -> bool,
+    ) -> Result<Option<Evidence>, WorkerClientError> {
+        let envelopes =
+            self.request_while(command, INFER_TIMEOUT, &mut || {}, &mut should_continue)?;
         for envelope in envelopes {
             match envelope.event {
                 WorkerEvent::Inferred { evidence } => return Ok(evidence),
@@ -424,7 +509,7 @@ impl WorkerClient {
         &mut self,
         command: WorkerCommand,
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
-        self.request_while(command, REQUEST_TIMEOUT, &mut || {})
+        self.request_while(command, REQUEST_TIMEOUT, &mut || {}, &mut || true)
     }
 
     fn request_with_timeout(
@@ -432,7 +517,7 @@ impl WorkerClient {
         command: WorkerCommand,
         timeout: Duration,
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
-        self.request_while(command, timeout, &mut || {})
+        self.request_while(command, timeout, &mut || {}, &mut || true)
     }
 
     fn request_while(
@@ -440,6 +525,7 @@ impl WorkerClient {
         command: WorkerCommand,
         timeout: Duration,
         on_wait: &mut impl FnMut(),
+        should_continue: &mut impl FnMut() -> bool,
     ) -> Result<Vec<WorkerEnvelope>, WorkerClientError> {
         let id = RequestId(self.next_id.to_string());
         self.next_id += 1;
@@ -458,13 +544,19 @@ impl WorkerClient {
             stdin.flush()?;
         }
         let deadline = Instant::now() + timeout;
+        let mut last_wait = Instant::now();
         let mut collected = Vec::new();
         loop {
+            if !should_continue() {
+                self.kill();
+                return Err(WorkerClientError::Cancelled);
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(WorkerClientError::Timeout);
             }
-            match self.rx.recv_timeout(remaining.min(WAIT_SLICE)) {
+            let slice = remaining.min(WAIT_SLICE).min(CANCEL_POLL);
+            match self.rx.recv_timeout(slice) {
                 Ok(result) => {
                     let envelope = result?;
                     let matches = envelope.id.as_ref() == Some(&id) || envelope.id.is_none();
@@ -478,10 +570,17 @@ impl WorkerClient {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
+                    if !should_continue() {
+                        self.kill();
+                        return Err(WorkerClientError::Cancelled);
+                    }
                     if Instant::now() >= deadline {
                         return Err(WorkerClientError::Timeout);
                     }
-                    on_wait();
+                    if last_wait.elapsed() >= WAIT_SLICE {
+                        last_wait = Instant::now();
+                        on_wait();
+                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(WorkerClientError::Disconnected);
@@ -576,5 +675,13 @@ mod tests {
         assert!(WAIT_SLICE < engine_idle);
         assert!(LOAD_TIMEOUT > engine_idle);
         assert!(INFER_TIMEOUT < engine_idle);
+        assert!(CANCEL_POLL < WAIT_SLICE);
+        assert!(CANCEL_POLL < INFER_TIMEOUT);
+    }
+
+    #[test]
+    fn cancelled_error_is_distinct_from_timeout() {
+        assert!(WorkerClientError::Cancelled.is_cancelled());
+        assert!(!WorkerClientError::Timeout.is_cancelled());
     }
 }

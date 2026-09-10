@@ -7,6 +7,8 @@ use aifs_protocol::FolderStyle;
 use aifs_protocol::ModelBackend;
 use aifs_protocol::worker::WorkerKind;
 use aifs_worker_client::WorkerClient;
+#[cfg(not(feature = "llama"))]
+use std::time::{Duration, Instant};
 
 fn file_entry(path: &str, family: FileFamily) -> ObservedEntry {
     ObservedEntry {
@@ -393,4 +395,50 @@ fn llm_worker_refuses_extract() {
         .unwrap_or_else(|| panic!("extract must fail"));
     assert!(error.to_string().contains("extract"), "{error}");
     client.shutdown().unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[cfg(not(feature = "llama"))]
+#[test]
+fn infer_cancel_kills_the_worker_before_infer_timeout() {
+    let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(dir.path().join("notes.txt"), b"hello")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut client = WorkerClient::connect_command(WorkerKind::Llm, worker, |command| {
+        command.env("AIFS_TEST_INFER_SLEEP_MS", "60000");
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    client
+        .load(
+            ModelBackend::Catalog {
+                catalog_id: "gemma-3-4b-it".into(),
+            },
+            "cpu",
+            None,
+            None,
+            dir.path().display().to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    let entry = file_entry("notes.txt", FileFamily::Document);
+    let started = Instant::now();
+    let error = client
+        .categorize_while(
+            dir.path(),
+            &entry,
+            vec![],
+            vec![],
+            FolderStyle::Consistent,
+            || started.elapsed() < Duration::from_millis(250),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("cancel must kill the in-flight infer"));
+    let elapsed = started.elapsed();
+    assert!(
+        error.is_cancelled(),
+        "expected cancelled, got {error} after {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "cancel waited {elapsed:?}, which is too close to the 120s infer timeout"
+    );
 }
