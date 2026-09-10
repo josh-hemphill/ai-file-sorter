@@ -30,6 +30,9 @@
   skip a doomed full offload. Missing probes keep the existing layer ladder.
   Explicit `n_gpu_layers` is still tried once. `loaded.fallback` may name
   `reduced-ngl from free VRAM probe`.
+- Scan cancel during local `categorize` / `describe` kills `aifs-worker-llm`
+  instead of waiting the infer timeout. The in-flight file is skipped; finished
+  bags still checkpoint. The next scan that needs a model starts a new worker.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

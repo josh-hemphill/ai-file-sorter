@@ -49,7 +49,10 @@ Every request has an `id` chosen by the client. Events echo that `id`; unsolicit
 `Envelope::is_terminal()` encodes this so clients can await completion generically.
 
 `cancel` is decoded on a stdin reader thread so a long `scan` or `download_model`
-can notice the flag between files or download chunks. A cancelled scan emits `cancelled` for the scan id and does **not**
+can notice the flag between files or download chunks. If cancel arrives while
+`categorize` / `describe` is in flight, the engine kills `aifs-worker-llm`
+instead of waiting out the infer timeout; the in-flight file is not written as
+evidence. A cancelled scan emits `cancelled` for the scan id and does **not**
 emit `scan_completed`. If walk/relationships finished, the engine still writes a
 **checkpoint** snapshot for that `session` (extract/analyze evidence flushed every
 8 new bags; skips do not count). The next `scan` with the same `session` and root carries matching

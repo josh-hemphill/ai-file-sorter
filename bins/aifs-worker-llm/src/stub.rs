@@ -6,9 +6,11 @@ use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, O
 use aifs_protocol::{FolderStyle, ModelBackend};
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use std::path::Path;
+use std::time::Duration;
 
 const STUB_CONFIDENCE: f32 = 0.4;
 const CHAT_UTTERANCE_CHARS: usize = 200;
+const TEST_INFER_SLEEP_ENV: &str = "AIFS_TEST_INFER_SLEEP_MS";
 
 /// Session-lived stub backend. Does not read GGUF bytes.
 #[derive(Default)]
@@ -67,6 +69,7 @@ impl WorkerHandler for StubHandler {
         allowed_categories: &[String],
         _style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
+        maybe_test_infer_sleep();
         let loaded = self.require_loaded()?;
         if entry.kind != EntryKind::File {
             return Ok(None);
@@ -91,6 +94,7 @@ impl WorkerHandler for StubHandler {
         entry: &ObservedEntry,
         _evidence: &[Evidence],
     ) -> Result<Option<Evidence>, String> {
+        maybe_test_infer_sleep();
         let loaded = self.require_loaded()?;
         if entry.kind != EntryKind::File {
             return Ok(None);
@@ -131,6 +135,19 @@ impl StubHandler {
             .as_ref()
             .ok_or_else(|| "load a model before infer".to_owned())
     }
+}
+
+fn maybe_test_infer_sleep() {
+    let Ok(raw) = std::env::var(TEST_INFER_SLEEP_ENV) else {
+        return;
+    };
+    let Ok(ms) = raw.parse::<u64>() else {
+        return;
+    };
+    if ms == 0 {
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(ms));
 }
 
 fn model_label(backend: &ModelBackend) -> String {

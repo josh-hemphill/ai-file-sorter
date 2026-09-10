@@ -77,7 +77,7 @@ still tried once, then CPU. `loaded.fallback` may include
 `reduced-ngl from free VRAM probe` when the first attempt is below the uncapped
 first. See `bins/aifs-worker-llm/src/device.rs`.
 
-### Wave 4 — Cancel scan during infer
+### Wave 4 — Cancel scan during infer (landed)
 
 **Why it matters.** Engine `cancel` is a stdin flag checked **between files**.
 `aifs-worker-client` waits up to 120s for `categorize` / `describe`. The llama
@@ -85,32 +85,12 @@ decode loop is not cooperative. A user who hits Cancel during a local infer
 waits out that timeout (or the remaining tokens). Golden-path Phase 6/7 wants
 cancel that feels immediate.
 
-**Do**
-
-- If scan cancel arrives while an LLM infer is in flight, kill the
-  `aifs-worker-llm` child and treat the current file as cancelled/skipped,
-  then restart the worker on the next scan that needs it.
-- Keep the 15s wait slices so engine idle 180s does not fire during a healthy
-  infer.
-- Log a single `log` line that analysis stopped; do not leave a half-written
-  evidence row.
-
-**Do not**
-
-- Teach llama.cpp cooperative cancel inside the decode loop unless a later
-  `llama-cpp-2` API makes that cheap. Process isolation is the intended
-  abort.
-- Cancel hosted HTTP mid-body unless that is already easy; local llama is the
-  painful path.
-
-**Touch**
-
-- `crates/aifs-worker-client`, `crates/aifs-engine` analysis loop.
-- Tests: stub worker that sleeps past a short timeout; cancel must not wait
-  the full `INFER_TIMEOUT`.
-
-**Depends on.** Golden-path Phase 6 analysis pipeline. Independent of waves
-1–3.
+**Done.** `categorize_while` / `describe_while` poll scan cancel every 100ms
+and kill the LLM child when it flips. The in-flight file is not persisted;
+scan logs `analysis stopped` and returns `WorkStatus::Cancelled`. Wait slices
+still fire every 15s so engine idle 180s does not trip on a healthy infer.
+Hosted HTTP mid-body cancel is unchanged. See
+`crates/aifs-worker-client` and `crates/aifs-engine/src/analyze.rs`.
 
 ### Wave 5 — Packaged ggml (when we ship a llama sidecar)
 
