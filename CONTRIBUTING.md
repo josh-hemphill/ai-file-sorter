@@ -35,7 +35,11 @@ Local llama.cpp (also used by `pnpm desktop`):
 pnpm llama
 # Unix: cargo engine-llm
 # Windows: prefer pnpm llama, or set CMAKE_GENERATOR (see README)
+pnpm llama:cuda   # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while nvcc runs.
 ```
+
+Do not run bare `cargo build -p aifs-worker-llm --features llama,cuda` without
+`CMAKE_CUDA_ARCHITECTURES` — see the README CUDA note.
 
 ## Layout
 
