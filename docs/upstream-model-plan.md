@@ -62,37 +62,20 @@ tokens are dropped and the system JSON/schema turn is kept. Image describe
 shortens the user text (not image tokens). See `prompt.rs` /
 `oldest_user_drop_start`.
 
-### Wave 3 — Cheaper first `n_gpu_layers` guess
+### Wave 3 — Cheaper first `n_gpu_layers` guess (landed)
 
 **Why it matters.** Wave 0 only steps down **after** a failed load. Each GPU
 attempt reloads ~2.5 GiB. Upstream estimates free VRAM (CUDA / Metal / Vulkan)
 and caps integrated GPUs so the first `ngl` is already plausible.
 
-**Do**
-
-- Keep the existing retry ladder as the backstop (full → ~75% → ~50% → CPU,
-  or 999 → 32 → 16 when `block_count` is unknown).
-- Add a **best-effort** first guess: `block_count` (already read) plus an
-  optional free-memory probe that is allowed to be missing
-  (`nvidia-smi`, Linux sysfs; skip silently). Cap the first attempt below 999
-  when free VRAM is clearly too small for a full offload.
-- Explicit `n_gpu_layers` / `AIFS_N_GPU_LAYERS` still means “try this once,
-  then CPU” — do not second-guess an operator override.
-
-**Do not**
-
-- Port the CUDA / Metal / Vulkan arithmetic from `LocalLLMClient.cpp`
-  (~2472 lines). A coarse heuristic plus the ladder is enough.
-- Fail `load` because the probe is absent. Missing probe = today’s behaviour.
-
-**Touch**
-
-- `bins/aifs-worker-llm/src/device.rs` (`gpu_layer_load_attempts`) and tests
-  with injected “free bytes” / unknown probe.
-- Protocol `loaded.fallback` may name `reduced-ngl` when the first guess is
-  already below full offload; keep that additive.
-
-**Depends on.** Wave 0 `block_count`. Independent of waves 1–2.
+**Done.** `gpu_layer_load_attempts` still walks full → ~75% → ~50% (or
+999 → 32 → 16 when `block_count` is unknown). A best-effort free-VRAM probe
+(`nvidia-smi` MiB CSV, then Linux `mem_info_vram_free`) caps the first attempt
+at ~80 MiB/layer. Zero free VRAM skips GPU and loads CPU. Missing probe leaves
+the wave 0 ladder unchanged. Explicit `n_gpu_layers` / `AIFS_N_GPU_LAYERS` is
+still tried once, then CPU. `loaded.fallback` may include
+`reduced-ngl from free VRAM probe` when the first attempt is below the uncapped
+first. See `bins/aifs-worker-llm/src/device.rs`.
 
 ### Wave 4 — Cancel scan during infer
 

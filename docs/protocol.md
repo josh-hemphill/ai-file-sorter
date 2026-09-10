@@ -100,7 +100,7 @@ line). Workers never open SQLite and never mutate user files.
 |--------|---------|----------------|
 | `hello` | `worker`, `protocol_version` | `ready` |
 | `extract` | `root`, `entry` | `extracted { evidence? }` |
-| `load` | `backend`, `gpu_preference`, optional `n_gpu_layers`, optional `api_key`, `storage_dir` | `loaded { device, model, n_gpu_layers, fallback? }` (llama.cpp retries fewer GPU layers, then **once** on CPU, after GPU init/OOM; `fallback` names the reason. Context-window errors are not retried. `AIFS_N_GPU_LAYERS` applies when `n_gpu_layers` is omitted. `AIFS_CTX_TOKENS` sets the starting context window, default 4096, with 2048/1024/512 allocation fallbacks. `gpu_preference` accepts `metal` or `mtl`.) |
+| `load` | `backend`, `gpu_preference`, optional `n_gpu_layers`, optional `api_key`, `storage_dir` | `loaded { device, model, n_gpu_layers, fallback? }` (llama.cpp retries fewer GPU layers, then **once** on CPU, after GPU init/OOM; `fallback` names the reason. A best-effort free-VRAM probe may cap the **first** offload attempt (~80 MiB/layer); `fallback` may include `reduced-ngl from free VRAM probe`. Missing probe leaves the ladder unchanged. Explicit `n_gpu_layers` is still tried once. Context-window errors are not retried. `AIFS_N_GPU_LAYERS` applies when `n_gpu_layers` is omitted. `AIFS_CTX_TOKENS` sets the starting context window, default 4096, with 2048/1024/512 allocation fallbacks. `gpu_preference` accepts `metal` or `mtl`.) |
 | `unload` | — | `unloaded` |
 | `categorize` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
 | `describe` | `root`, `entry`, `evidence[]` | `inferred { evidence? }` |
@@ -122,7 +122,8 @@ currently returns stub `local_model` evidence unless the worker is built with
 llama.cpp (`pnpm desktop` / `pnpm llama` / `cargo engine-llm`, optional `cuda` / `vulkan` / `metal`)
 or a hosted HTTP backend is loaded (`RemoteModel` evidence). GPU init or OOM on
 `load` first retries fewer offload layers (from GGUF `block_count` when readable),
-then **once** with `n_gpu_layers=0`; infer OOM reloads CPU once. Scan logs
+capping the first attempt when a free-VRAM probe exists, then **once** with
+`n_gpu_layers=0`; infer OOM reloads CPU once. Scan logs
 `fallback` (no modal). Local GGUF paths must start with the `GGUF` magic header
 (catalog files still use SHA-256). CUDA/Vulkan device probes look at Windows
 `nvcuda.dll` / `vulkan-1.dll` as well as Linux `/dev/nvidia0` and `/dev/dri`.
