@@ -544,6 +544,11 @@ mod tests {
     }
 
     #[test]
+    fn free_vram_probe_is_allowed_to_be_missing() {
+        let _ = probe_free_vram();
+    }
+
+    #[test]
     fn context_attempts_step_down_from_preferred() {
         assert_eq!(context_size_attempts(4096), vec![4096, 2048, 1024, 512]);
         assert_eq!(context_size_attempts(1024), vec![1024, 512]);
