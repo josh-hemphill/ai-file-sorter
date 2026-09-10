@@ -22,6 +22,9 @@
   `Range` when the server answers 206. A `200` (ignored Range) or `416`
   restarts from byte 0. Transport, 5xx, and 429 errors keep `.part`. SHA-256
   still gates the finished file.
+- Local categorize shrinks evidence first, then drops oldest user tokens so
+  the prompt still fits `n_ctx`. Image describe shortens the user text, not
+  image tokens. The system JSON/schema turn is never truncated.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

@@ -145,6 +145,51 @@ pub fn shrink_prompt_evidence(evidence: &mut [Evidence], max_chars: usize) -> bo
     changed
 }
 
+/// Drops the oldest (leading) characters, keeping the newest `keep_chars`.
+#[cfg(any(test, feature = "llama"))]
+pub fn drop_oldest_chars(text: &str, keep_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= keep_chars {
+        return text.to_owned();
+    }
+    text.chars().skip(count - keep_chars).collect()
+}
+
+/// How many prompt tokens may be kept so `n_prompt + max_tokens` still fits `n_ctx`.
+#[cfg(any(test, feature = "llama"))]
+pub fn prompt_token_keep(n_ctx: u32, max_tokens: i32) -> usize {
+    let max_tokens = u32::try_from(max_tokens).unwrap_or(0);
+    usize::try_from(n_ctx.saturating_sub(max_tokens)).unwrap_or(0)
+}
+
+/// Start index to drop oldest user tokens, or `None` if the prompt already fits.
+///
+/// `n_protected` is the system-turn length that must not be dropped. `Err` when even
+/// the protected prefix cannot fit in `n_keep`.
+#[cfg(any(test, feature = "llama"))]
+pub fn oldest_user_drop_start(
+    n_prompt: usize,
+    n_keep: usize,
+    n_protected: usize,
+) -> Result<Option<usize>, ()> {
+    if n_keep == 0 {
+        return Err(());
+    }
+    let n_protected = n_protected.min(n_prompt);
+    if n_protected > n_keep {
+        return Err(());
+    }
+    if n_prompt <= n_keep {
+        return Ok(None);
+    }
+    let overflow = n_prompt - n_keep;
+    let n_user = n_prompt - n_protected;
+    if overflow > n_user {
+        return Err(());
+    }
+    Ok(Some(n_protected + overflow))
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     let count = value.chars().count();
     if count <= max_chars {
@@ -284,5 +329,16 @@ mod tests {
                 .map(|text| text.chars().count()),
             Some(80)
         );
+    }
+
+    #[test]
+    fn oldest_user_tokens_are_dropped_after_the_system_prefix() {
+        assert_eq!(drop_oldest_chars("abcdef", 4), "cdef");
+        assert_eq!(drop_oldest_chars("short", 10), "short");
+        assert_eq!(prompt_token_keep(4096, 128), 3968);
+        assert_eq!(oldest_user_drop_start(10, 10, 3), Ok(None));
+        assert_eq!(oldest_user_drop_start(10, 7, 3), Ok(Some(6)));
+        assert_eq!(oldest_user_drop_start(10, 2, 3), Err(()));
+        assert_eq!(oldest_user_drop_start(5, 0, 0), Err(()));
     }
 }

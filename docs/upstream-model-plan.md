@@ -54,38 +54,13 @@ answers 206; a `200` (ignored Range) or `416` restarts from byte 0;
 transport / 5xx / 429 keep `.part`. SHA-256 still gates the finished file.
 See `crates/aifs-engine/src/download.rs`.
 
-### Wave 2 — Fit prompts to the real context window
+### Wave 2 — Fit prompts to the real context window (landed)
 
-**Why it matters.** Upstream tokenizes, then drops oldest tokens so
-`n_prompt + max_tokens` fits `n_ctx`. We only shrink evidence **strings**
-(`DOCUMENT_TEXT_CHARS` 400, floor 50). If the chat template + path + whitelist
-still overflow, `complete` skips smaller `n_ctx` attempts and fails with
-`prompt exceeds the llama.cpp context window` instead of dropping old evidence.
-
-**Do**
-
-- After the existing char shrink, if tokenize length still exceeds
-  `n_ctx - max_tokens`, drop oldest user tokens (keep the system turn and the
-  JSON schema instruction).
-- Optionally shrink JSON fields in order before that: `document.text`, then
-  `description`, then other long evidence — the analogue of Qt’s
-  “Document summary” / “Image description” section trim, mapped onto our
-  evidence keys. Do not invent Qt section headers.
-
-**Do not**
-
-- Port `LocalLLMPromptBuilder` string surgery or the “Main : Sub” reply
-  sanitizer.
-- Truncate the system prompt that forbids paths/SQL.
-
-**Touch**
-
-- `bins/aifs-worker-llm/src/prompt.rs` and `llama.rs` (`complete` /
-  `complete_with_image`).
-- Unit tests for shrink order without llama; llama-feature tests that a
-  deliberately huge user turn still produces JSON rather than a context error.
-
-**Depends on.** Wave 0 shrink helpers. Independent of wave 1.
+**Done.** Char shrink of `document.text` / `description` still runs first.
+If the tokenized prompt is still over `n_ctx - max_tokens`, oldest **user**
+tokens are dropped and the system JSON/schema turn is kept. Image describe
+shortens the user text (not image tokens). See `prompt.rs` /
+`oldest_user_drop_start`.
 
 ### Wave 3 — Cheaper first `n_gpu_layers` guess
 

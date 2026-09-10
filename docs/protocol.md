@@ -127,6 +127,8 @@ then **once** with `n_gpu_layers=0`; infer OOM reloads CPU once. Scan logs
 (catalog files still use SHA-256). CUDA/Vulkan device probes look at Windows
 `nvcuda.dll` / `vulkan-1.dll` as well as Linux `/dev/nvidia0` and `/dev/dri`.
 The string `prompt exceeds the llama.cpp context window` is not a GPU failure.
+After shrinking evidence text, local infer drops oldest user tokens so the
+prompt still fits `n_ctx`; the system JSON/schema turn is kept.
 `AIFS_N_GPU_LAYERS` sets offload when `n_gpu_layers` is omitted. Local describe
 loads mmproj via libmtmd: JPEG/PNG/WebP at most 8 MiB attach pixels; RAW, oversize,
 and other image types use filename + EXIF only (scan logs RAW). Hosted describe
