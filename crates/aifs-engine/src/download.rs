@@ -433,6 +433,8 @@ mod tests {
         Ignore,
         Unsatisfiable,
         Drop,
+        /// When a Range header is present, respond with this status and no body.
+        RangeStatus(u16),
     }
 
     struct CatalogHttp {
@@ -503,6 +505,20 @@ mod tests {
                 }
                 if matches!(range, RangeMode::Unsatisfiable) && range_header.is_some() {
                     let header = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(header.as_bytes());
+                    continue;
+                }
+                if let RangeMode::RangeStatus(code) = range
+                    && range_header.is_some()
+                {
+                    let reason = match code {
+                        429 => "Too Many Requests",
+                        503 => "Service Unavailable",
+                        _ => "Error",
+                    };
+                    let header = format!(
+                        "HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
                     let _ = stream.write_all(header.as_bytes());
                     continue;
                 }
@@ -714,6 +730,39 @@ mod tests {
         let kept = fs::read(&part).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(kept, &body[..6]);
         assert!(!dest.exists(), "failed resume must not write dest");
+    }
+
+    fn range_status_keeps_partial_file(status: u16) {
+        let body = b"keep-this-prefix-and-the-rest";
+        let files = [
+            (GEMMA_TEXT_FILENAME, body.as_slice()),
+            (GEMMA_MMPROJ_FILENAME, b"mmproj".as_slice()),
+        ];
+        let fixture = pin_catalog(&files, RangeMode::RangeStatus(status), None);
+        let dest = artifact_path(fixture.storage.path(), GEMMA_TEXT_FILENAME);
+        let part = part_path(&dest);
+        fs::write(&part, &body[..6]).unwrap_or_else(|error| panic!("{error}"));
+        let error = download(fixture.storage.path(), None)
+            .err()
+            .unwrap_or_else(|| panic!("expected HTTP {status}"));
+        assert!(
+            matches!(error, DownloadError::Http { .. }),
+            "HTTP {status} must stay Http (keep .part), got {error}"
+        );
+        let kept = fs::read(&part).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(kept, &body[..6]);
+        assert!(!dest.exists(), "failed resume must not write dest");
+        assert_eq!(hit_count(&fixture.hits, GEMMA_TEXT_FILENAME), 1);
+    }
+
+    #[test]
+    fn range_503_keeps_partial_file() {
+        range_status_keeps_partial_file(503);
+    }
+
+    #[test]
+    fn range_429_keeps_partial_file() {
+        range_status_keeps_partial_file(429);
     }
 
     #[test]

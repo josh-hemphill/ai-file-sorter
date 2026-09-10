@@ -30,7 +30,7 @@ diagnostic only.
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
 | `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` scanned from disk; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, or `missing_files`) |
 | `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime` is not stored) |
-| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed; `cancel` stops between chunks and **keeps** the `.part` file so a later fetch can HTTP `Range` resume; a `200` or `416` Range rejection restarts from byte 0; transport / 5xx / 429 errors keep `.part`; checksum mismatch still deletes `.part`) |
+| `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed; `cancel` stops between chunks and **keeps** the `.part` file so a later fetch can HTTP `Range` resume; ignored-Range `200` and `416` restart from byte 0; transport / 5xx / 429 errors keep `.part`; checksum mismatch still deletes `.part`) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
 Every request has an `id` chosen by the client. Events echo that `id`; unsolicited events
