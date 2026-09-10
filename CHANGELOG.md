@@ -10,6 +10,11 @@
   WebView thread so model downloads and other I/O no longer freeze the UI. Catalog
   SHA-256 results are cached by file metadata so Setup does not re-hash multi-GB
   GGUFs on every `get_models`. Downloads honor `cancel` between chunks.
+- Local LLM load now matches upstream's recovery shape more closely: GGUF magic
+  checks for custom paths, Metal reported as `MTL`, Windows CUDA/Vulkan device
+  probes, fewer GPU layers before CPU fallback, context-window allocation
+  fallbacks (`AIFS_CTX_TOKENS`, then 2048/1024/512), and one CPU reload if infer
+  OOMs. Prompt shrink now covers image descriptions as well as document text.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

@@ -125,20 +125,22 @@ pub fn next_document_text_budget(current: usize) -> Option<usize> {
     }
 }
 
-/// Truncates `document.text` facts in place. Returns true when any fact shortened.
+/// Truncates `document.text` and `description` facts in place. Returns true when any fact shortened.
 #[cfg(any(test, feature = "llama"))]
-pub fn shrink_document_text(evidence: &mut [Evidence], max_chars: usize) -> bool {
+pub fn shrink_prompt_evidence(evidence: &mut [Evidence], max_chars: usize) -> bool {
     let mut changed = false;
-    for bag in evidence.iter_mut() {
-        let Some(text) = bag.facts.get(keys::DOCUMENT_TEXT) else {
-            continue;
-        };
-        if text.chars().count() <= max_chars {
-            continue;
+    for key in [keys::DOCUMENT_TEXT, keys::DESCRIPTION] {
+        for bag in evidence.iter_mut() {
+            let Some(text) = bag.facts.get(key) else {
+                continue;
+            };
+            if text.chars().count() <= max_chars {
+                continue;
+            }
+            let truncated = truncate(text, max_chars);
+            bag.facts.insert(key.to_owned(), truncated);
+            changed = true;
         }
-        let truncated = truncate(text, max_chars);
-        bag.facts.insert(keys::DOCUMENT_TEXT.to_owned(), truncated);
-        changed = true;
     }
     changed
 }
@@ -250,19 +252,37 @@ mod tests {
             Confidence::new(1.0),
         )
         .with_fact(keys::DOCUMENT_TEXT, long);
-        assert!(shrink_document_text(std::slice::from_mut(&mut bag), 200));
+        assert!(shrink_prompt_evidence(std::slice::from_mut(&mut bag), 200));
         assert_eq!(
             bag.fact(keys::DOCUMENT_TEXT)
                 .map(|text| text.chars().count()),
             Some(200)
         );
-        assert!(shrink_document_text(std::slice::from_mut(&mut bag), 100));
+        assert!(shrink_prompt_evidence(std::slice::from_mut(&mut bag), 100));
         assert_eq!(
             bag.fact(keys::DOCUMENT_TEXT)
                 .map(|text| text.chars().count()),
             Some(100)
         );
-        assert!(!shrink_document_text(std::slice::from_mut(&mut bag), 100));
-        assert!(!shrink_document_text(std::slice::from_mut(&mut bag), 400));
+        assert!(!shrink_prompt_evidence(std::slice::from_mut(&mut bag), 100));
+        assert!(!shrink_prompt_evidence(std::slice::from_mut(&mut bag), 400));
+        let mut described = Evidence::new(
+            AssetId::new(),
+            EvidenceSource::LocalModel {
+                model: "gemma".into(),
+            },
+            Confidence::new(0.55),
+        )
+        .with_fact(keys::DESCRIPTION, "y".repeat(400));
+        assert!(shrink_prompt_evidence(
+            std::slice::from_mut(&mut described),
+            80
+        ));
+        assert_eq!(
+            described
+                .fact(keys::DESCRIPTION)
+                .map(|text| text.chars().count()),
+            Some(80)
+        );
     }
 }

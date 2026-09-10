@@ -24,8 +24,8 @@ pub use catalog::{
     GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME, GEMMA_TEXT_SHA256, all_artifacts,
     artifact_bytes_on_disk, artifact_is_present, artifact_is_verified, artifact_path,
     catalog_download_url, catalog_entry, catalog_id_is_downloaded, catalog_ids_for_artifact,
-    expected_sha256, remember_file_digest, set_artifact_sha256_override, set_catalog_base_override,
-    sha256_hex,
+    expected_sha256, has_gguf_header, is_gguf_file_path, remember_file_digest,
+    set_artifact_sha256_override, set_catalog_base_override, sha256_hex,
 };
 pub use codec::{CodecError, decode_line, encode_line};
 pub use hosted::{

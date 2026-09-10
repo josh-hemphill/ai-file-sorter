@@ -3,6 +3,8 @@
 mod device;
 #[cfg(any(test, feature = "llama"))]
 mod gguf;
+#[cfg(any(test, feature = "llama"))]
+mod gguf_meta;
 mod handler;
 mod hosted;
 #[cfg(feature = "llama")]

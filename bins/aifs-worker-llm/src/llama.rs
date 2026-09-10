@@ -1,11 +1,16 @@
 //! llama.cpp backend. Compiled only with `--features llama`.
 
-use crate::device::{cpu_retry_plan, requested_n_gpu_layers, resolve_device};
+use crate::device::{
+    ALL_GPU_LAYERS, context_size_attempts, cpu_retry_plan, gpu_layer_load_attempts, is_gpu_failure,
+    is_retryable_load_failure, requested_n_gpu_layers, resolve_device, resolve_n_ctx,
+    should_retry_cpu,
+};
 use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
+use crate::gguf_meta::read_block_count;
 use crate::parse::{apply_parsed, parse_infer_json};
 use crate::prompt::{
     CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system, categorize_user,
-    describe_user, next_document_text_budget, shrink_document_text,
+    describe_user, next_document_text_budget, shrink_prompt_evidence,
 };
 use crate::vision::{PixelPlan, pixel_plan};
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
@@ -23,11 +28,9 @@ use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-const N_CTX: u32 = 4096;
 const MAX_GEN_TOKENS: i32 = 128;
 const CHAT_GEN_TOKENS: i32 = 512;
 const BATCH_FLOOR: usize = 512;
-const ALL_GPU_LAYERS: u32 = 999;
 const LLAMA_CONFIDENCE: f32 = 0.55;
 const CONTEXT_WINDOW_ERROR: &str = "prompt exceeds the llama.cpp context window";
 
@@ -80,7 +83,8 @@ impl WorkerHandler for LlamaHandler {
         }
         let files = resolve_gguf(&backend, storage_dir)?;
         let (device, fallback) = resolve_device(gpu_preference);
-        let n_gpu_layers = gpu_layers(&device, requested_n_gpu_layers(n_gpu_layers));
+        let explicit_layers = requested_n_gpu_layers(n_gpu_layers);
+        let n_gpu_layers = gpu_layers(&device, explicit_layers);
         if self.loaded.as_ref().is_some_and(|loaded| {
             files.can_reuse(
                 &LoadedSession {
@@ -96,14 +100,52 @@ impl WorkerHandler for LlamaHandler {
         }) {
             return self.reuse_loaded(&files, device, n_gpu_layers, fallback);
         }
-        match self.try_load_weights(&files, device.clone(), n_gpu_layers, fallback.clone()) {
-            Ok(info) => Ok(info),
-            Err(error) => match cpu_retry_plan(&device, fallback, &error) {
-                Some((cpu, cpu_layers, cpu_fallback)) => {
-                    self.try_load_weights(&files, cpu, cpu_layers, cpu_fallback)
+        let block_count = read_block_count(&files.weights);
+        let layer_attempts = gpu_layer_load_attempts(
+            &device,
+            n_gpu_layers,
+            explicit_layers.is_some(),
+            block_count,
+        );
+        let mut last_error = None;
+        let mut last_fallback = fallback;
+        for (index, layers) in layer_attempts.into_iter().enumerate() {
+            let attempt_device = if layers == 0 {
+                "cpu".to_owned()
+            } else {
+                device.clone()
+            };
+            match self.try_load_weights(&files, attempt_device, layers, last_fallback.clone()) {
+                Ok(mut info) => {
+                    if index > 0 {
+                        append_fallback(
+                            &mut info.fallback,
+                            &format!("loaded with n_gpu_layers={layers} after a GPU load failure"),
+                        );
+                        if let Some(loaded) = self.loaded.as_mut() {
+                            loaded.info.fallback = info.fallback.clone();
+                        }
+                    }
+                    return Ok(info);
                 }
-                None => Err(error),
-            },
+                Err(error) => {
+                    if !is_retryable_load_failure(&error) {
+                        return Err(error);
+                    }
+                    last_error = Some(error.clone());
+                    append_fallback(
+                        &mut last_fallback,
+                        &format!("n_gpu_layers={layers} failed ({error})"),
+                    );
+                }
+            }
+        }
+        let error = last_error.unwrap_or_else(|| "failed to load GGUF".to_owned());
+        match cpu_retry_plan(&device, last_fallback, &error) {
+            Some((cpu, cpu_layers, cpu_fallback)) => {
+                self.try_load_weights(&files, cpu, cpu_layers, cpu_fallback)
+            }
+            None => Err(error),
         }
     }
 
@@ -137,7 +179,7 @@ impl WorkerHandler for LlamaHandler {
                     let Some(next) = next_document_text_budget(budget) else {
                         return Err(error);
                     };
-                    if !shrink_document_text(&mut evidence, next) {
+                    if !shrink_prompt_evidence(&mut evidence, next) {
                         return Err(error);
                     }
                     budget = next;
@@ -269,6 +311,18 @@ impl LlamaHandler {
     }
 
     fn complete(&mut self, system: &str, user: &str, max_tokens: i32) -> Result<String, String> {
+        match self.complete_once(system, user, max_tokens) {
+            Ok(text) => Ok(text),
+            Err(error) => self.retry_complete_on_cpu(system, user, max_tokens, error),
+        }
+    }
+
+    fn complete_once(
+        &mut self,
+        system: &str,
+        user: &str,
+        max_tokens: i32,
+    ) -> Result<String, String> {
         let llama = self
             .backend
             .as_ref()
@@ -278,6 +332,35 @@ impl LlamaHandler {
             .as_ref()
             .ok_or_else(|| "load a model before infer".to_owned())?;
         generate(llama, &loaded.model, system, user, max_tokens)
+    }
+
+    fn retry_complete_on_cpu(
+        &mut self,
+        system: &str,
+        user: &str,
+        max_tokens: i32,
+        error: String,
+    ) -> Result<String, String> {
+        let device = self
+            .loaded
+            .as_ref()
+            .map(|loaded| loaded.info.device.as_str())
+            .unwrap_or("cpu");
+        if !should_retry_cpu(device, &error) {
+            return Err(error);
+        }
+        let files = {
+            let loaded = self.require_loaded()?;
+            GgufFiles {
+                weights: loaded.weights.clone(),
+                mmproj: loaded.mmproj.clone(),
+                label: loaded.info.model.clone(),
+            }
+        };
+        let mut fallback = Some(format!("GPU infer failed ({error}); using cpu"));
+        append_fallback(&mut fallback, "reloaded on cpu");
+        self.try_load_weights(&files, "cpu".to_owned(), 0, fallback)?;
+        self.complete_once(system, user, max_tokens)
     }
 
     fn describe_prompt(
@@ -299,6 +382,42 @@ impl LlamaHandler {
     }
 
     fn complete_with_image(
+        &mut self,
+        system: &str,
+        user: &str,
+        image: &Path,
+        max_tokens: i32,
+    ) -> Result<String, ImageCompleteError> {
+        match self.complete_with_image_once(system, user, image, max_tokens) {
+            Ok(text) => Ok(text),
+            Err(ImageCompleteError::Input(reason)) => Err(ImageCompleteError::Input(reason)),
+            Err(ImageCompleteError::Infer(error)) => {
+                let device = self
+                    .loaded
+                    .as_ref()
+                    .map(|loaded| loaded.info.device.as_str())
+                    .unwrap_or("cpu");
+                if !should_retry_cpu(device, &error) {
+                    return Err(ImageCompleteError::Infer(error));
+                }
+                let files = {
+                    let loaded = self.require_loaded().map_err(ImageCompleteError::Infer)?;
+                    GgufFiles {
+                        weights: loaded.weights.clone(),
+                        mmproj: loaded.mmproj.clone(),
+                        label: loaded.info.model.clone(),
+                    }
+                };
+                let mut fallback = Some(format!("GPU infer failed ({error}); using cpu"));
+                append_fallback(&mut fallback, "reloaded on cpu");
+                self.try_load_weights(&files, "cpu".to_owned(), 0, fallback)
+                    .map_err(ImageCompleteError::Infer)?;
+                self.complete_with_image_once(system, user, image, max_tokens)
+            }
+        }
+    }
+
+    fn complete_with_image_once(
         &mut self,
         system: &str,
         user: &str,
@@ -389,28 +508,52 @@ fn generate(
     max_tokens: i32,
 ) -> Result<String, String> {
     let prompt = chat_prompt(model, system, user);
-    let n_ctx = NonZeroU32::new(N_CTX).unwrap_or(NonZeroU32::MIN);
-    let ctx_params = LlamaContextParams::default().with_n_ctx(Some(n_ctx));
-    let mut ctx = model
-        .new_context(backend, ctx_params)
-        .map_err(|error| error.to_string())?;
     let tokens = model
         .str_to_token(&prompt, AddBos::Always)
         .map_err(|error| error.to_string())?;
     if tokens.is_empty() {
         return Err("prompt produced no tokens".to_owned());
     }
-    let n_ctx_i32 = i32::try_from(N_CTX).unwrap_or(i32::MAX);
     let n_prompt = i32::try_from(tokens.len()).unwrap_or(i32::MAX);
-    if n_prompt.saturating_add(max_tokens) > n_ctx_i32 {
-        return Err(CONTEXT_WINDOW_ERROR.to_owned());
+    let mut last_error = None;
+    for n_ctx in context_size_attempts(resolve_n_ctx()) {
+        let n_ctx_i32 = i32::try_from(n_ctx).unwrap_or(i32::MAX);
+        if n_prompt.saturating_add(max_tokens) > n_ctx_i32 {
+            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
+            continue;
+        }
+        let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(Some(n_ctx_nz))
+            .with_n_batch(n_ctx);
+        let mut ctx = match model.new_context(backend, ctx_params) {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                let error = error.to_string();
+                if is_gpu_failure(&error) {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                continue;
+            }
+        };
+        return decode_tokens(model, &mut ctx, &tokens, max_tokens);
     }
+    Err(last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()))
+}
+
+fn decode_tokens(
+    model: &LlamaModel,
+    ctx: &mut llama_cpp_2::context::LlamaContext,
+    tokens: &[llama_cpp_2::token::LlamaToken],
+    max_tokens: i32,
+) -> Result<String, String> {
     let batch_size = tokens.len().max(BATCH_FLOOR);
     let mut batch = LlamaBatch::new(batch_size, 1);
     let last_index = i32::try_from(tokens.len().saturating_sub(1)).unwrap_or(0);
     for (i, token) in (0_i32..).zip(tokens) {
         batch
-            .add(token, i, &[0], i == last_index)
+            .add(*token, i, &[0], i == last_index)
             .map_err(|error| error.to_string())?;
     }
     ctx.decode(&mut batch).map_err(|error| error.to_string())?;
@@ -420,7 +563,7 @@ fn generate(
     let mut output = String::new();
     let max = usize::try_from(max_tokens).unwrap_or(0);
     for n_cur in (batch.n_tokens()..).take(max) {
-        let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+        let token = sampler.sample(ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if model.is_eog_token(token) {
             break;
@@ -475,21 +618,39 @@ fn generate_with_image(
         )
         .map_err(|error| ImageCompleteError::Input(error.to_string()))?;
     let n_prompt = chunks.total_tokens();
-    let n_ctx = usize::try_from(N_CTX).unwrap_or(0);
     let n_gen = usize::try_from(max_tokens).unwrap_or(0);
-    if n_prompt.saturating_add(n_gen) > n_ctx {
-        return Err(ImageCompleteError::Infer(CONTEXT_WINDOW_ERROR.to_owned()));
+    let mut last_error = None;
+    for n_ctx in context_size_attempts(resolve_n_ctx()) {
+        let n_ctx_usize = usize::try_from(n_ctx).unwrap_or(0);
+        if n_prompt.saturating_add(n_gen) > n_ctx_usize {
+            last_error = Some(CONTEXT_WINDOW_ERROR.to_owned());
+            continue;
+        }
+        let n_ctx_nz = NonZeroU32::new(n_ctx).unwrap_or(NonZeroU32::MIN);
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(Some(n_ctx_nz))
+            .with_n_batch(n_ctx);
+        let mut ctx = match model.new_context(backend, ctx_params) {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                let error = error.to_string();
+                if is_gpu_failure(&error) {
+                    return Err(ImageCompleteError::Infer(error));
+                }
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let n_batch = i32::try_from(n_prompt.max(BATCH_FLOOR)).unwrap_or(i32::MAX);
+        let n_past = chunks
+            .eval_chunks(mtmd, &ctx, 0, 0, n_batch, true)
+            .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
+        return sample_continuation(&mut ctx, model, n_past, max_tokens)
+            .map_err(ImageCompleteError::Infer);
     }
-    let n_ctx_nz = NonZeroU32::new(N_CTX).unwrap_or(NonZeroU32::MIN);
-    let ctx_params = LlamaContextParams::default().with_n_ctx(Some(n_ctx_nz));
-    let mut ctx = model
-        .new_context(backend, ctx_params)
-        .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
-    let n_batch = i32::try_from(n_prompt.max(BATCH_FLOOR)).unwrap_or(i32::MAX);
-    let n_past = chunks
-        .eval_chunks(mtmd, &ctx, 0, 0, n_batch, true)
-        .map_err(|error| ImageCompleteError::Infer(error.to_string()))?;
-    sample_continuation(&mut ctx, model, n_past, max_tokens).map_err(ImageCompleteError::Infer)
+    Err(ImageCompleteError::Infer(
+        last_error.unwrap_or_else(|| CONTEXT_WINDOW_ERROR.to_owned()),
+    ))
 }
 
 /// Prefixes the libmtmd media marker so Gemma image tokens lead the user turn.
