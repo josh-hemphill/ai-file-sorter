@@ -7,6 +7,7 @@ use aifs_protocol::FolderStyle;
 use aifs_protocol::ModelBackend;
 use aifs_protocol::worker::WorkerKind;
 use aifs_worker_client::WorkerClient;
+#[cfg(not(feature = "llama"))]
 use std::time::{Duration, Instant};
 
 fn file_entry(path: &str, family: FileFamily) -> ObservedEntry {
