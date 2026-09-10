@@ -37,6 +37,13 @@
   `GGML_AVX2=OFF` (and related ISA flags) so ggml does not host-tune AVX2, and
   set macOS `CMAKE_INSTALL_RPATH=@loader_path` (no Homebrew prefix). Local
   `pnpm llama` is unchanged.
+- `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
+  cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
+  instead of looking hung while nvcc builds every default architecture.
+- Activity scan paths stay on one ellipsis line (Current column and footer Working
+  line) so long titles no longer resize the layout. Song-title punctuation (`?`,
+  `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when
+  proposing destinations, instead of dropping those characters.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

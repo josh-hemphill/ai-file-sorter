@@ -338,16 +338,26 @@ tr.selected {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: flex-end;
+  align-items: center;
   padding: 10px 12px;
   border-top: 1px solid var(--line);
   background: var(--bg-2);
+  min-width: 0;
 }
 
 .status-copy {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.status-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   min-width: 0;
 }
 
@@ -375,6 +385,7 @@ tr.selected {
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  flex: none;
 }
 
 .error {
@@ -525,6 +536,28 @@ progress {
 
 .stages {
   font-size: 13px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.stages th:nth-child(1),
+.stages td:nth-child(1) {
+  width: 8.5rem;
+}
+
+.stages th:nth-child(2),
+.stages td.stage-count {
+  width: 6.5rem;
+  white-space: nowrap;
+}
+
+.stages td.stage-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 0;
 }
 
 .stream {

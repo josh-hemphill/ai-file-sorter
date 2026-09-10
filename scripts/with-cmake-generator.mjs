@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { applyLlamaCudaBuildEnv } from './llama-cuda-env.mjs';
 import { applyPackagedGgmlEnv } from './packaged-ggml.mjs';
 import { applyWindowsCmakeGenerator } from './windows-cmake-generator.mjs';
 
 applyWindowsCmakeGenerator();
+applyLlamaCudaBuildEnv();
 
 const argv = process.argv.slice(2);
 const packaged = argv[0] === '--packaged';

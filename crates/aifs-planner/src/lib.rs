@@ -8,7 +8,7 @@ use aifs_domain::{
     AssetId, BundleConstraint, EntryKind, FileFamily, ObservedEntry, Operation, OperationPlan,
     Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation, ProposalRevision,
     RelativePath, RelativePathError, ReviewState, RevisionAuthor, SuggestionOrigin, Timestamp,
-    WorkspaceSnapshot, category_date_suffix, evidence::keys,
+    WorkspaceSnapshot, category_date_suffix, escape_path_segment, evidence::keys,
 };
 use aifs_protocol::{CategoryWhitelist, FolderStyle, ProposalPolicy};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -387,19 +387,11 @@ fn folder_label(family: FileFamily) -> &'static str {
 }
 
 fn sanitize_segment(value: &str, fallback: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_control() || "<>:\"/\\|?*".contains(ch) {
-            out.push('_');
-        } else {
-            out.push(ch);
-        }
-    }
-    let trimmed = out.trim().trim_matches('.').trim();
-    if trimmed.is_empty() {
+    let escaped = escape_path_segment(value);
+    if escaped.is_empty() {
         fallback.to_owned()
     } else {
-        trimmed.chars().take(80).collect()
+        escaped.chars().take(80).collect()
     }
 }
 
@@ -853,6 +845,25 @@ mod tests {
         assert_eq!(
             placement.destination.as_str(),
             "Music/Ada/Ada - Night Drive.mp3"
+        );
+    }
+
+    #[test]
+    fn audio_title_punctuation_is_escaped_not_dropped() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("show.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(id, EvidenceSource::MediaTags, Confidence::CERTAIN)
+                .with_fact(keys::MEDIA_TITLE, "What Is Love?")
+                .with_fact(keys::MEDIA_ARTIST, "Haddaway"),
+        );
+        snapshot.entries.push(entry);
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(
+            placement.destination.as_str(),
+            "Music/Haddaway/Haddaway - What Is Love\u{FF1F}.mp3"
         );
     }
 

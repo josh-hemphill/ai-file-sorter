@@ -11,11 +11,12 @@
   "scripts": {
     "build": "cargo engine-bins",
     "llama": "node scripts/with-cmake-generator.mjs cargo engine-llm",
+    "llama:cuda": "node scripts/with-cmake-generator.mjs cargo engine-llm --features llama,cuda",
     "fmt": "cargo fmt --all",
     "fmt:check": "cargo fmt --all --check",
     "clippy": "cargo clippy --workspace --all-targets",
     "test": "pnpm build && cargo test --workspace",
-    "test:desktop": "node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/packaged-ggml.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit",
+    "test:desktop": "node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit",
     "check": "pnpm fmt:check && pnpm clippy && pnpm test",
     "desktop": "pnpm build && pnpm llama && pnpm --filter desktop tauri dev",
     "cli": "cargo aifs"
