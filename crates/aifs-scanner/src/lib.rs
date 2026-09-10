@@ -552,6 +552,48 @@ mod tests {
         assert_eq!(keep.lock, LockState::Readable);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn song_titles_with_question_marks_are_scanned_not_skipped() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.path().join("What Is Love?.mp3"), b"ok").unwrap_or_else(|e| panic!("{e}"));
+        let snapshot = scan_tree(dir.path(), ScanOptions::default());
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == "What Is Love?.mp3"),
+            "entries={:?} skipped={:?}",
+            snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            snapshot.skipped
+        );
+        assert!(snapshot.skipped.is_empty());
+    }
+
+    #[test]
+    fn escaped_song_title_filenames_are_scanned() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let name = "What Is Love\u{FF1F}.mp3";
+        fs::write(dir.path().join(name), b"ok").unwrap_or_else(|e| panic!("{e}"));
+        let snapshot = scan_tree(dir.path(), ScanOptions::default());
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.as_str() == name),
+            "entries={:?}",
+            snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn unity_project_is_recorded_and_not_traversed() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

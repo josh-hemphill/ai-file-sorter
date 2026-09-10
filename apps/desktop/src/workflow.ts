@@ -69,6 +69,17 @@ export function persistRecentRoots(paths: string[]): void {
   }
 }
 
+const PLACEHOLDER_PROGRESS_MESSAGE = "working";
+
+/** Keeps the last file path when the engine heartbeats with a generic `working` line. */
+export function retainProgressMessage(previous: string | undefined, incoming: string): string {
+  const next = incoming.trim();
+  if (next === "" || next.toLowerCase() === PLACEHOLDER_PROGRESS_MESSAGE) {
+    return previous?.trim() ? previous : incoming;
+  }
+  return incoming;
+}
+
 export interface WorkflowState {
   snapshot: WorkspaceSnapshot | null;
   revision: ProposalRevision | null;
