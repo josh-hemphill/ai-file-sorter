@@ -21,14 +21,14 @@ defineProps<{
       <tbody>
         <tr v-for="stage in stages" :key="stage.id">
           <td>{{ stage.label }}</td>
-          <td>
+          <td class="stage-count">
             {{ stage.current }}<template v-if="stage.total">/{{ stage.total }}</template>
           </td>
-          <td class="muted">{{ stage.message }}</td>
+          <td class="stage-current" :title="stage.message">{{ stage.message }}</td>
         </tr>
       </tbody>
     </table>
-    <p v-else-if="progress" class="muted">
+    <p v-else-if="progress" class="muted status-line" :title="progress.message">
       {{ progress.stage }} {{ progress.current
       }}<template v-if="progress.total">/{{ progress.total }}</template>
       — {{ progress.message }}
