@@ -39,7 +39,9 @@ pnpm llama:cuda   # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while
 ```
 
 Do not run bare `cargo build -p aifs-worker-llm --features llama,cuda` without
-`CMAKE_CUDA_ARCHITECTURES` — see the README CUDA note.
+`CMAKE_CUDA_ARCHITECTURES` (and on Windows `CMAKE_BUILD_PARALLEL_LEVEL=2`).
+All-core cmake (`--parallel 24`) plus a network-share `target/` directory
+produces `LNK1136` corrupt `ggml-cuda` objects. See the README CUDA note.
 
 ## Layout
 

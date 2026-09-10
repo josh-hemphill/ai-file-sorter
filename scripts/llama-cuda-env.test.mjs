@@ -5,11 +5,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_CUDA_CMAKE_JOBS,
+  WINDOWS_CUDA_CMAKE_JOBS,
   applyLlamaCudaBuildEnv,
   argvRequestsCuda,
   cmakeBuildParallelLevelForCuda,
   cmakeCudaArchitecturesFromSmi,
   computeCapToCmakeArch,
+  cudaCmakeJobCap,
 } from './llama-cuda-env.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,14 +57,27 @@ test('cmakeCudaArchitecturesFromSmi unique-joins compute caps', () => {
   assert.equal(cmakeCudaArchitecturesFromSmi(''), undefined);
 });
 
+test('cudaCmakeJobCap is lower on Windows to avoid LNK1136', () => {
+  assert.equal(cudaCmakeJobCap('linux'), DEFAULT_CUDA_CMAKE_JOBS);
+  assert.equal(cudaCmakeJobCap('darwin'), DEFAULT_CUDA_CMAKE_JOBS);
+  assert.equal(cudaCmakeJobCap('win32'), WINDOWS_CUDA_CMAKE_JOBS);
+});
+
 test('cmakeBuildParallelLevelForCuda keeps an explicit value and caps otherwise', () => {
   assert.equal(
-    cmakeBuildParallelLevelForCuda({ existing: '2', cpuCount: 32 }),
+    cmakeBuildParallelLevelForCuda({ existing: '2', cpuCount: 32, platform: 'linux' }),
     '2',
   );
-  assert.equal(cmakeBuildParallelLevelForCuda({ cpuCount: 32 }), String(DEFAULT_CUDA_CMAKE_JOBS));
-  assert.equal(cmakeBuildParallelLevelForCuda({ cpuCount: 2 }), '2');
-  assert.equal(cmakeBuildParallelLevelForCuda({ cpuCount: 0 }), '1');
+  assert.equal(
+    cmakeBuildParallelLevelForCuda({ cpuCount: 32, platform: 'linux' }),
+    String(DEFAULT_CUDA_CMAKE_JOBS),
+  );
+  assert.equal(
+    cmakeBuildParallelLevelForCuda({ cpuCount: 32, platform: 'win32' }),
+    String(WINDOWS_CUDA_CMAKE_JOBS),
+  );
+  assert.equal(cmakeBuildParallelLevelForCuda({ cpuCount: 1, platform: 'linux' }), '1');
+  assert.equal(cmakeBuildParallelLevelForCuda({ cpuCount: 0, platform: 'win32' }), '1');
 });
 
 test('applyLlamaCudaBuildEnv is a no-op without the cuda feature', () => {
@@ -138,8 +153,25 @@ test('applyLlamaCudaBuildEnv warns when no GPU SM is known', () => {
     log: (message) => messages.push(message),
   });
   assert.equal(env.CMAKE_CUDA_ARCHITECTURES, undefined);
-  assert.equal(env.CMAKE_BUILD_PARALLEL_LEVEL, '4');
+  assert.equal(env.CMAKE_BUILD_PARALLEL_LEVEL, '2');
   assert.match(messages[0], /Maxwell through Blackwell/);
+  assert.match(messages[0], /LNK1136/);
+});
+
+test('applyLlamaCudaBuildEnv warns when Windows CUDA jobs are already too high', () => {
+  const env = { CMAKE_BUILD_PARALLEL_LEVEL: '24' };
+  const messages = [];
+  applyLlamaCudaBuildEnv({
+    argv: ['cargo', 'engine-llm', '--features', 'cuda'],
+    env,
+    platform: 'win32',
+    detectArchitectures: () => '89',
+    cpuCount: 24,
+    log: (message) => messages.push(message),
+  });
+  assert.equal(env.CMAKE_BUILD_PARALLEL_LEVEL, '24');
+  assert.match(messages[0], /LNK1136/);
+  assert.match(messages[0], /CMAKE_BUILD_PARALLEL_LEVEL=24/);
 });
 
 test('with-cmake-generator.mjs caps CMAKE_BUILD_PARALLEL_LEVEL for cuda features', () => {

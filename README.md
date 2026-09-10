@@ -94,8 +94,9 @@ compiles Maxwell through Blackwell (often 15–60 minutes, or longer if all-core
 nvcc starts swapping). That is not a Cargo deadlock.
 
 `pnpm llama:cuda` (and `make llama-cuda`) detect the GPU SM via `nvidia-smi`,
-pin `CMAKE_CUDA_ARCHITECTURES`, cap `CMAKE_BUILD_PARALLEL_LEVEL` at 4, and set
-`CXX=g++` on Linux when those are unset. Equivalent by hand:
+pin `CMAKE_CUDA_ARCHITECTURES`, cap `CMAKE_BUILD_PARALLEL_LEVEL` (4 on Unix, 2
+on Windows), and set `CXX=g++` on Linux when those are unset. Equivalent by
+hand:
 
 ```bash
 CMAKE_CUDA_ARCHITECTURES=86 CMAKE_BUILD_PARALLEL_LEVEL=4 CXX=g++ \
@@ -107,6 +108,23 @@ SM examples: `75` Turing, `86` RTX 30, `89` RTX 40, `90` Hopper, `120a` Blackwel
 or `cargo build -vv` prints the CMake log. If a multi-arch compile already
 started, stop it and `cargo clean -p llama-cpp-sys-2` before rebuilding with a
 pin (`llama-cpp-sys-2` does not rebuild when only `CMAKE_*` env vars change).
+
+Bare `cargo build -p aifs-worker-llm --features llama,cuda` does **not** apply
+those caps. `llama-cpp-sys-2` then passes cmake `--parallel` equal to every
+CPU (for example 24). On Windows that often fails at link with
+`fatal error LNK1136: invalid or corrupt file` on a `ggml-cuda` `.obj` (nvcc
+writes a truncated object; MSBuild still tries to pack it into
+`ggml-cuda.lib`). Network/mapped drives (`E:\Share\…`, UNC paths) make this
+much more likely. Recover in PowerShell:
+
+```powershell
+cargo clean -p llama-cpp-sys-2
+$env:CMAKE_CUDA_ARCHITECTURES = "86"   # your GPU SM; nvidia-smi --query-gpu=compute_cap
+$env:CMAKE_BUILD_PARALLEL_LEVEL = "2"
+# If the repo is on a share, keep object files on local NTFS:
+$env:CARGO_TARGET_DIR = "C:\aifs-target"
+pnpm llama:cuda
+```
 
 Linux desktop packages (Debian/Ubuntu), matching CI:
 

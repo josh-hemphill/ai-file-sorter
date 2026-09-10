@@ -13,6 +13,9 @@
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.
+- Windows CUDA llama.cpp builds cap cmake at 2 jobs (`pnpm llama:cuda`) and
+  document `LNK1136` corrupt `ggml-cuda` objects from all-core `--parallel`
+  and network-share target directories.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

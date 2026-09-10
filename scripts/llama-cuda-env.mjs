@@ -3,6 +3,13 @@ import { availableParallelism } from 'node:os';
 
 /** nvcc RAM use makes all-core cmake jobs swap; cap when unset. */
 export const DEFAULT_CUDA_CMAKE_JOBS = 4;
+/** MSVC + nvcc at high `-j` writes truncated .obj files (LNK1136). */
+export const WINDOWS_CUDA_CMAKE_JOBS = 2;
+
+/** Default cmake job cap for a CUDA llama.cpp build on this OS. */
+export function cudaCmakeJobCap(platform = process.platform) {
+  return platform === 'win32' ? WINDOWS_CUDA_CMAKE_JOBS : DEFAULT_CUDA_CMAKE_JOBS;
+}
 
 /** True when cargo `--features` or `AIFS_LLM_FEATURES` includes `cuda`. */
 export function argvRequestsCuda(argv, env = process.env) {
@@ -52,7 +59,8 @@ export function cmakeCudaArchitecturesFromSmi(smiOutput) {
 export function cmakeBuildParallelLevelForCuda({
   existing,
   cpuCount = availableParallelism(),
-  maxJobs = DEFAULT_CUDA_CMAKE_JOBS,
+  platform = process.platform,
+  maxJobs = cudaCmakeJobCap(platform),
 } = {}) {
   if (existing) return existing;
   const cpus = Number(cpuCount);
@@ -82,11 +90,20 @@ export function applyLlamaCudaBuildEnv({
       applied.CMAKE_CUDA_ARCHITECTURES = detected;
     }
   }
+  const maxJobs = cudaCmakeJobCap(platform);
   if (!env.CMAKE_BUILD_PARALLEL_LEVEL) {
     env.CMAKE_BUILD_PARALLEL_LEVEL = cmakeBuildParallelLevelForCuda({
       cpuCount,
+      maxJobs,
     });
     applied.CMAKE_BUILD_PARALLEL_LEVEL = env.CMAKE_BUILD_PARALLEL_LEVEL;
+  } else if (platform === 'win32') {
+    const requested = Number(env.CMAKE_BUILD_PARALLEL_LEVEL);
+    if (Number.isFinite(requested) && requested > maxJobs) {
+      log(
+        `aifs: CMAKE_BUILD_PARALLEL_LEVEL=${env.CMAKE_BUILD_PARALLEL_LEVEL} with CUDA on Windows often yields LNK1136 (corrupt ggml-cuda .obj). Use ${maxJobs} jobs, cargo clean -p llama-cpp-sys-2, and a local NTFS CARGO_TARGET_DIR if the repo is on a network share.`,
+      );
+    }
   }
   if (platform === 'linux' && !env.CXX) {
     env.CXX = 'g++';
@@ -94,13 +111,14 @@ export function applyLlamaCudaBuildEnv({
   }
 
   const arch = env.CMAKE_CUDA_ARCHITECTURES;
+  const jobs = env.CMAKE_BUILD_PARALLEL_LEVEL;
   if (arch) {
     log(
-      `aifs: llama-cpp-sys-2 CUDA compile has no Cargo progress (cmake-rs hides nvcc). CMAKE_CUDA_ARCHITECTURES=${arch} CMAKE_BUILD_PARALLEL_LEVEL=${env.CMAKE_BUILD_PARALLEL_LEVEL}. Expect several minutes; CMAKE_VERBOSE=1 prints cmake. If a multi-arch compile already started, cargo clean -p llama-cpp-sys-2 first.`,
+      `aifs: llama-cpp-sys-2 CUDA compile has no Cargo progress (cmake-rs hides nvcc). CMAKE_CUDA_ARCHITECTURES=${arch} CMAKE_BUILD_PARALLEL_LEVEL=${jobs}. Expect several minutes; CMAKE_VERBOSE=1 prints cmake. If a multi-arch compile already started, cargo clean -p llama-cpp-sys-2 first.`,
     );
   } else {
     log(
-      `aifs: llama-cpp-sys-2 CUDA compile has no Cargo progress. Unset CMAKE_CUDA_ARCHITECTURES builds Maxwell through Blackwell and can look hung for an hour. Set CMAKE_CUDA_ARCHITECTURES to your GPU SM (86 RTX 30, 89 RTX 40, 75 Turing, 120a Blackwell) and CMAKE_BUILD_PARALLEL_LEVEL=4. CMAKE_VERBOSE=1 prints cmake. cargo clean -p llama-cpp-sys-2 if a fat compile already started.`,
+      `aifs: llama-cpp-sys-2 CUDA compile has no Cargo progress. Unset CMAKE_CUDA_ARCHITECTURES builds Maxwell through Blackwell and can look hung for an hour. Set CMAKE_CUDA_ARCHITECTURES to your GPU SM (86 RTX 30, 89 RTX 40, 75 Turing, 120a Blackwell) and CMAKE_BUILD_PARALLEL_LEVEL=${maxJobs}. CMAKE_VERBOSE=1 prints cmake. cargo clean -p llama-cpp-sys-2 if a fat compile already started. Windows LNK1136 (corrupt .obj) means too many cmake jobs or a network-share target dir.`,
     );
   }
   return applied;
