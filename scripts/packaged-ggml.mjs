@@ -1,42 +1,47 @@
-/** CMake flag so packaged Windows/Linux CPU ggml runs on SSE4.2-only hosts. */
-export const GGML_NATIVE_OFF = '-DGGML_NATIVE=OFF';
+/**
+ * llama-cpp-sys-2 0.1.156 forwards env vars whose names start with CMAKE_
+ * (config.define(key, value)) and GGML_, then overwrites GGML_NATIVE from
+ * RUSTFLAGS `target-cpu`. CMAKE_ARGS is unused.
+ */
+
+/** SSE4.2 without AVX2; keeps GGML_NATIVE off (not target-cpu=native). */
+export const PORTABLE_SSE42_RUSTFLAG = '-C target-feature=+sse4.2';
 
 /** Keep bundled ggml next to the sidecar; do not search Homebrew prefixes. */
-export const MACOS_GGML_CMAKE_ARGS = [
-  '-DCMAKE_MACOSX_RPATH=ON',
-  '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON',
-  '-DCMAKE_INSTALL_RPATH=@loader_path',
-  '-DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew;/usr/local',
-];
+export const MACOS_GGML_CMAKE_ENV = {
+  CMAKE_MACOSX_RPATH: 'ON',
+  CMAKE_BUILD_WITH_INSTALL_RPATH: 'ON',
+  CMAKE_INSTALL_RPATH: '@loader_path',
+  CMAKE_IGNORE_PREFIX_PATH: '/opt/homebrew;/usr/local',
+};
 
 /** Rust linker rpath so `aifs-worker-llm` loads ggml beside itself. */
 export const MACOS_LOADER_RPATH_RUSTFLAG = '-C link-arg=-Wl,-rpath,@loader_path';
 
-function tokenize(value) {
-  if (!value) return [];
-  return value.split(/\s+/).filter(Boolean);
+/** Drops `-C target-cpu=native` so llama-cpp-sys-2 leaves GGML_NATIVE=OFF. */
+export function withoutTargetCpuNative(rustflags) {
+  if (!rustflags) return '';
+  return rustflags.replace(/(?:^|\s)-C\s+target-cpu=native\b/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Appends `extras` that are not already present. */
-export function mergeFlagList(existing, extras) {
-  const tokens = tokenize(existing);
-  for (const extra of extras) {
-    if (!tokens.includes(extra)) tokens.push(extra);
-  }
-  return tokens;
+/** Appends a whole rustc flag chunk if it is not already present. */
+export function appendRustflagChunk(existing, chunk) {
+  const current = existing ?? '';
+  if (!chunk) return current;
+  if (current.includes(chunk)) return current;
+  return [current, chunk].filter(Boolean).join(' ');
 }
 
-/** CMake `-D` flags for a packaged llama sidecar. Dev/`pnpm llama` stays empty. */
-export function packagedGgmlCmakeFlags({ platform, packaged }) {
-  if (!packaged) return [];
-  if (platform === 'win32' || platform === 'linux') return [GGML_NATIVE_OFF];
-  if (platform === 'darwin') return [...MACOS_GGML_CMAKE_ARGS];
-  return [];
+/** Named CMAKE_* env vars llama-cpp-sys-2 will define(). Empty when not packaging. */
+export function packagedGgmlCmakeEnv({ platform, packaged }) {
+  if (!packaged) return {};
+  if (platform === 'darwin') return { ...MACOS_GGML_CMAKE_ENV };
+  return {};
 }
 
 /**
- * Sets CMAKE_ARGS / RUSTFLAGS for Tauri package builds. Local `pnpm llama`
- * leaves llama-cpp-2 defaults (call with `packaged: false`).
+ * Sets CMAKE_* and RUSTFLAGS for Tauri package builds. Local `pnpm llama`
+ * leaves llama-cpp-2 defaults (`packaged: false`).
  */
 export function applyPackagedGgmlEnv({
   env = process.env,
@@ -44,17 +49,19 @@ export function applyPackagedGgmlEnv({
   packaged = false,
 } = {}) {
   if (!packaged) return undefined;
-  const cmakeFlags = packagedGgmlCmakeFlags({ platform, packaged });
-  if (cmakeFlags.length > 0) {
-    env.CMAKE_ARGS = mergeFlagList(env.CMAKE_ARGS, cmakeFlags).join(' ');
-  }
-  if (platform === 'darwin') {
-    env.RUSTFLAGS = mergeFlagList(env.RUSTFLAGS, [MACOS_LOADER_RPATH_RUSTFLAG]).join(
-      ' ',
+  if (platform === 'win32' || platform === 'linux') {
+    env.RUSTFLAGS = appendRustflagChunk(
+      withoutTargetCpuNative(env.RUSTFLAGS),
+      PORTABLE_SSE42_RUSTFLAG,
     );
   }
+  if (platform === 'darwin') {
+    Object.assign(env, MACOS_GGML_CMAKE_ENV);
+    env.RUSTFLAGS = appendRustflagChunk(env.RUSTFLAGS, MACOS_LOADER_RPATH_RUSTFLAG);
+  }
   return {
-    CMAKE_ARGS: env.CMAKE_ARGS,
+    CMAKE_INSTALL_RPATH: env.CMAKE_INSTALL_RPATH,
+    CMAKE_IGNORE_PREFIX_PATH: env.CMAKE_IGNORE_PREFIX_PATH,
     RUSTFLAGS: env.RUSTFLAGS,
   };
 }

@@ -99,12 +99,13 @@ Hosted HTTP mid-body cancel is unchanged. See
 1.7.3 sets rpath and refuses Homebrew `libggml`. This fork’s isolation helps,
 but a shipped `aifs-worker-llm` still dlopens ggml next to itself.
 
-**Done.** Tauri `beforeBuildCommand` runs `with-cmake-generator.mjs --packaged`
-so Windows/Linux `CMAKE_ARGS` include `-DGGML_NATIVE=OFF` and macOS sets
-`@loader_path` rpath plus `CMAKE_IGNORE_PREFIX_PATH` for Homebrew.
-`pnpm llama` / `beforeDevCommand` stay on llama-cpp-2 defaults. Default
-`cargo test --workspace` still does not compile llama.cpp. See
-`scripts/packaged-ggml.mjs`.
+**Done.** Tauri `beforeBuildCommand` runs `with-cmake-generator.mjs --packaged`.
+Windows/Linux strip `target-cpu=native` and add `-C target-feature=+sse4.2` so
+llama-cpp-sys-2 keeps `GGML_NATIVE=OFF` (it ignores `CMAKE_ARGS` and overwrites
+`GGML_NATIVE` from RUSTFLAGS). macOS sets `CMAKE_INSTALL_RPATH=@loader_path`
+and `CMAKE_IGNORE_PREFIX_PATH` for Homebrew. `pnpm llama` / `beforeDevCommand`
+stay on llama-cpp-2 defaults. Default `cargo test --workspace` still does not
+compile llama.cpp. See `scripts/packaged-ggml.mjs`.
 
 ## Out of scope (will not take from upstream)
 

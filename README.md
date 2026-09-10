@@ -77,11 +77,11 @@ Studio 2026 is installed but CMake is older than 4.2 (cmake-rs passes
 `-G "Visual Studio 18 2026"`, which those CMake builds do not know). Upgrade
 CMake to 4.2+ or set `CMAKE_GENERATOR` yourself (`Ninja`, or
 `Visual Studio 17 2022` when VS 2022 is present) if you invoke `cargo engine-llm`
-directly. Packaged Tauri builds (`beforeBuildCommand --packaged`) pass
-`GGML_NATIVE=OFF` on Windows/Linux so CPU ggml runs on SSE4.2-only hosts, and
-on macOS set `@loader_path` rpath / ignore Homebrew prefixes so bundled ggml
-is not replaced by `/opt/homebrew`. Local `pnpm llama` keeps llama-cpp-2
-defaults. `pnpm build` and `cargo test --workspace` keep the stub worker so
+directly. Packaged Tauri builds (`beforeBuildCommand --packaged`) pin Windows/Linux
+`RUSTFLAGS` to SSE4.2 (so llama-cpp-sys-2 leaves `GGML_NATIVE` off and does not
+enable AVX2) and on macOS set `CMAKE_INSTALL_RPATH=@loader_path` plus
+`CMAKE_IGNORE_PREFIX_PATH` so bundled ggml is not replaced by `/opt/homebrew`.
+Local `pnpm llama` keeps llama-cpp-2 defaults. `pnpm build` and `cargo test --workspace` keep the stub worker so
 default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
 
 ```bash

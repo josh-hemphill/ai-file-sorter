@@ -5,71 +5,81 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  GGML_NATIVE_OFF,
-  MACOS_GGML_CMAKE_ARGS,
+  MACOS_GGML_CMAKE_ENV,
   MACOS_LOADER_RPATH_RUSTFLAG,
+  PORTABLE_SSE42_RUSTFLAG,
+  appendRustflagChunk,
   applyPackagedGgmlEnv,
-  mergeFlagList,
-  packagedGgmlCmakeFlags,
+  packagedGgmlCmakeEnv,
+  withoutTargetCpuNative,
 } from './packaged-ggml.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
-test('packagedGgmlCmakeFlags is a no-op for local llama builds', () => {
-  assert.deepEqual(packagedGgmlCmakeFlags({ platform: 'linux', packaged: false }), []);
-  assert.deepEqual(packagedGgmlCmakeFlags({ platform: 'win32', packaged: false }), []);
-  assert.deepEqual(packagedGgmlCmakeFlags({ platform: 'darwin', packaged: false }), []);
+function cleanChildEnv() {
+  const env = { ...process.env };
+  delete env.CMAKE_ARGS;
+  delete env.CMAKE_INSTALL_RPATH;
+  delete env.CMAKE_IGNORE_PREFIX_PATH;
+  delete env.CMAKE_MACOSX_RPATH;
+  delete env.CMAKE_BUILD_WITH_INSTALL_RPATH;
+  delete env.RUSTFLAGS;
+  return env;
+}
+
+test('packagedGgmlCmakeEnv is a no-op for local llama builds', () => {
+  assert.deepEqual(packagedGgmlCmakeEnv({ platform: 'linux', packaged: false }), {});
+  assert.deepEqual(packagedGgmlCmakeEnv({ platform: 'win32', packaged: false }), {});
+  assert.deepEqual(packagedGgmlCmakeEnv({ platform: 'darwin', packaged: false }), {});
 });
 
-test('packaged Windows and Linux CPU wheels disable GGML_NATIVE', () => {
-  assert.deepEqual(packagedGgmlCmakeFlags({ platform: 'linux', packaged: true }), [
-    GGML_NATIVE_OFF,
-  ]);
-  assert.deepEqual(packagedGgmlCmakeFlags({ platform: 'win32', packaged: true }), [
-    GGML_NATIVE_OFF,
-  ]);
+test('packaged Windows and Linux pin SSE4.2 and strip target-cpu=native', () => {
+  const env = { RUSTFLAGS: '-C target-cpu=native -D warnings' };
+  const applied = applyPackagedGgmlEnv({ env, platform: 'linux', packaged: true });
+  assert.equal(applied.RUSTFLAGS.includes('target-cpu=native'), false);
+  assert.equal(applied.RUSTFLAGS.includes(PORTABLE_SSE42_RUSTFLAG), true);
+  assert.equal(env.CMAKE_INSTALL_RPATH, undefined);
+  const win = applyPackagedGgmlEnv({
+    env: { RUSTFLAGS: '-C target-cpu=native' },
+    platform: 'win32',
+    packaged: true,
+  });
+  assert.equal(win.RUSTFLAGS.includes(PORTABLE_SSE42_RUSTFLAG), true);
+  assert.equal(win.RUSTFLAGS.includes('target-cpu=native'), false);
 });
 
-test('packaged macOS rpaths ggml and ignores Homebrew prefixes', () => {
-  const flags = packagedGgmlCmakeFlags({ platform: 'darwin', packaged: true });
-  assert.deepEqual(flags, MACOS_GGML_CMAKE_ARGS);
-  assert.equal(flags.includes(GGML_NATIVE_OFF), false);
-  assert.match(flags.join(' '), /@loader_path/);
-  assert.match(flags.join(' '), /\/opt\/homebrew/);
+test('packaged macOS sets CMAKE_* env names and rpath RUSTFLAGS', () => {
+  const env = {};
+  const applied = applyPackagedGgmlEnv({ env, platform: 'darwin', packaged: true });
+  assert.equal(env.CMAKE_MACOSX_RPATH, MACOS_GGML_CMAKE_ENV.CMAKE_MACOSX_RPATH);
+  assert.equal(env.CMAKE_BUILD_WITH_INSTALL_RPATH, 'ON');
+  assert.equal(applied.CMAKE_INSTALL_RPATH, '@loader_path');
+  assert.match(applied.CMAKE_IGNORE_PREFIX_PATH, /\/opt\/homebrew/);
+  assert.equal(applied.RUSTFLAGS.includes(MACOS_LOADER_RPATH_RUSTFLAG), true);
+  assert.equal(applied.RUSTFLAGS.includes(PORTABLE_SSE42_RUSTFLAG), false);
 });
 
-test('mergeFlagList does not duplicate existing CMAKE_ARGS', () => {
-  assert.deepEqual(mergeFlagList('-DGGML_NATIVE=OFF', [GGML_NATIVE_OFF]), [
-    GGML_NATIVE_OFF,
-  ]);
-  assert.deepEqual(mergeFlagList('', [GGML_NATIVE_OFF]), [GGML_NATIVE_OFF]);
+test('withoutTargetCpuNative and appendRustflagChunk keep chunks intact', () => {
+  assert.equal(withoutTargetCpuNative('-C target-cpu=native'), '');
+  assert.equal(
+    withoutTargetCpuNative('-C target-cpu=native -D warnings'),
+    '-D warnings',
+  );
+  assert.equal(
+    appendRustflagChunk(MACOS_LOADER_RPATH_RUSTFLAG, MACOS_LOADER_RPATH_RUSTFLAG),
+    MACOS_LOADER_RPATH_RUSTFLAG,
+  );
 });
 
 test('applyPackagedGgmlEnv leaves process env alone when not packaging', () => {
-  const env = { CMAKE_ARGS: '-DGGML_CUDA=ON' };
+  const env = { CMAKE_INSTALL_RPATH: 'keep-me', RUSTFLAGS: '-D warnings' };
   assert.equal(
     applyPackagedGgmlEnv({ env, platform: 'linux', packaged: false }),
     undefined,
   );
-  assert.equal(env.CMAKE_ARGS, '-DGGML_CUDA=ON');
-});
-
-test('applyPackagedGgmlEnv sets portable CMAKE_ARGS on Linux package builds', () => {
-  const env = { CMAKE_ARGS: '-DGGML_CUDA=ON' };
-  const applied = applyPackagedGgmlEnv({ env, platform: 'linux', packaged: true });
-  assert.match(applied.CMAKE_ARGS, /GGML_CUDA=ON/);
-  assert.match(applied.CMAKE_ARGS, /GGML_NATIVE=OFF/);
-  assert.equal(env.RUSTFLAGS, undefined);
-});
-
-test('applyPackagedGgmlEnv sets macOS rpath on CMAKE_ARGS and RUSTFLAGS', () => {
-  const env = {};
-  const applied = applyPackagedGgmlEnv({ env, platform: 'darwin', packaged: true });
-  for (const flag of MACOS_GGML_CMAKE_ARGS) {
-    assert.equal(applied.CMAKE_ARGS.includes(flag), true, flag);
-  }
-  assert.equal(applied.RUSTFLAGS.includes(MACOS_LOADER_RPATH_RUSTFLAG), true);
+  assert.equal(env.CMAKE_INSTALL_RPATH, 'keep-me');
+  assert.equal(env.RUSTFLAGS, '-D warnings');
 });
 
 test('tauri beforeBuild uses --packaged; beforeDev and pnpm llama do not', async () => {
@@ -82,7 +92,7 @@ test('tauri beforeBuild uses --packaged; beforeDev and pnpm llama do not', async
   assert.equal(pkg.scripts.llama.includes('--packaged'), false);
 });
 
-test('with-cmake-generator.mjs --packaged sets GGML_NATIVE=OFF on Linux', () => {
+test('with-cmake-generator.mjs --packaged sets portable RUSTFLAGS on Linux', () => {
   if (process.platform === 'darwin' || process.platform === 'win32') return;
   const result = spawnSync(
     process.execPath,
@@ -91,25 +101,23 @@ test('with-cmake-generator.mjs --packaged sets GGML_NATIVE=OFF on Linux', () => 
       '--packaged',
       process.execPath,
       '-e',
-      'process.exit(process.env.CMAKE_ARGS?.includes("-DGGML_NATIVE=OFF") ? 0 : 1)',
+      'process.exit(process.env.RUSTFLAGS?.includes("-C target-feature=+sse4.2") && !process.env.CMAKE_ARGS ? 0 : 1)',
     ],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', env: cleanChildEnv() },
   );
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('with-cmake-generator.mjs without --packaged leaves CMAKE_ARGS unset', () => {
-  const env = { ...process.env };
-  delete env.CMAKE_ARGS;
+test('with-cmake-generator.mjs without --packaged leaves CMAKE_INSTALL_RPATH unset', () => {
   const result = spawnSync(
     process.execPath,
     [
       join(here, 'with-cmake-generator.mjs'),
       process.execPath,
       '-e',
-      'process.exit(process.env.CMAKE_ARGS ? 1 : 0)',
+      'process.exit(process.env.CMAKE_INSTALL_RPATH ? 1 : 0)',
     ],
-    { encoding: 'utf8', env },
+    { encoding: 'utf8', env: cleanChildEnv() },
   );
   assert.equal(result.status, 0, result.stderr);
 });
