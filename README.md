@@ -48,6 +48,8 @@ Desktop (builds the engine first, then starts Tauri + Vite):
 ```bash
 pnpm install
 pnpm desktop
+pnpm desktop:cuda      # NVIDIA; keeps CUDA through Tauri's llama rebuild
+pnpm desktop:vulkan
 ```
 
 Equivalent without the root scripts:
@@ -82,12 +84,19 @@ directly. Packaged Tauri builds (`beforeBuildCommand --packaged`) pin Windows/Li
 when only `GGML_NATIVE` is off) and on macOS set `CMAKE_INSTALL_RPATH=@loader_path` plus
 `CMAKE_IGNORE_PREFIX_PATH` so bundled ggml is not replaced by `/opt/homebrew`.
 Local `pnpm llama` keeps llama-cpp-2 defaults. `pnpm build` and `cargo test --workspace` keep the stub worker so
-default CI stays fast. CUDA/Vulkan/Metal stay opt-in:
+default CI stays fast. CUDA/Vulkan/Metal stay opt-in. `pnpm desktop` is CPU llama;
+use `pnpm desktop:cuda` / `pnpm desktop:vulkan` (or `AIFS_LLM_FEATURES`) so Tauri's
+`beforeDevCommand` does not overwrite a GPU worker with CPU `cargo engine-llm`:
 
 ```bash
 pnpm llama
-CXX=g++ cargo engine-llm
 pnpm llama:cuda
+pnpm llama:vulkan
+pnpm desktop:cuda
+pnpm desktop:vulkan
+pnpm desktop:metal    # macOS
+AIFS_LLM_FEATURES=cuda,vulkan pnpm desktop
+CXX=g++ cargo engine-llm
 cargo build -p aifs-worker-llm --features llama,vulkan
 cargo build -p aifs-worker-llm --features llama,metal   # macOS
 ```
@@ -98,7 +107,7 @@ unless `CMAKE_VERBOSE` is set. If `CMAKE_CUDA_ARCHITECTURES` is unset, llama.cpp
 compiles Maxwell through Blackwell (often 15–60 minutes, or longer if all-core
 nvcc starts swapping). That is not a Cargo deadlock.
 
-`pnpm llama:cuda` (and `make llama-cuda`) detect the GPU SM via `nvidia-smi`,
+`pnpm llama:cuda` / `pnpm desktop:cuda` (and `make llama-cuda` / `make desktop-cuda`) detect the GPU SM via `nvidia-smi`,
 pin `CMAKE_CUDA_ARCHITECTURES`, cap `CMAKE_BUILD_PARALLEL_LEVEL` at 4, and set
 `CXX=g++` on Linux when those are unset. Equivalent by hand:
 

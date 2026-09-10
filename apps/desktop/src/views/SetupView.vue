@@ -157,8 +157,8 @@ onUnmounted(() => {
         <p class="muted">
           This page records which local or remote model each analysis slot should use. Saving
           does not start a model. Scan loads the LLM worker for assigned slots. From-source
-          `make desktop` / `cargo engine-llm` compile llama.cpp into that worker; `cargo test`
-          still uses the stub. CUDA/Vulkan/Metal stay opt-in features. Propose stays heuristic
+          `pnpm desktop` / `cargo engine-llm` compile llama.cpp into that worker; `cargo test`
+          still uses the stub. CUDA/Vulkan/Metal stay opt-in (`pnpm desktop:cuda`). Propose stays heuristic
           if load fails. Several slots can share one downloaded GGUF — it is fetched once.
         </p>
       </div>
@@ -197,9 +197,9 @@ onUnmounted(() => {
       </label>
       <p class="callout">
         <Icon :path="mdiInformationOutline" :size="18" />
-        CUDA lives only in `aifs-worker-llm`. Build that worker with `--features llama,cuda`,
-        install NVIDIA drivers, and set this accelerator to CUDA (or Auto, which prefers CUDA).
-        The UI and engine never load CUDA.
+        CUDA lives only in `aifs-worker-llm`. From-source, run `pnpm desktop:cuda` (or
+        `pnpm desktop:vulkan` / `pnpm desktop:metal`), install the matching drivers, and set
+        this accelerator to CUDA (or Auto, which prefers CUDA). The UI and engine never load CUDA.
       </p>
     </article>
 

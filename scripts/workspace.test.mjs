@@ -18,7 +18,15 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   );
   assert.equal(
     pkg.scripts['llama:cuda'],
-    'node scripts/with-cmake-generator.mjs cargo engine-llm --features llama,cuda',
+    'node scripts/with-llm-features.mjs cuda pnpm llama',
+  );
+  assert.equal(
+    pkg.scripts['llama:vulkan'],
+    'node scripts/with-llm-features.mjs vulkan pnpm llama',
+  );
+  assert.equal(
+    pkg.scripts['llama:metal'],
+    'node scripts/with-llm-features.mjs metal pnpm llama',
   );
   assert.equal(pkg.scripts.cli, 'cargo aifs');
   assert.equal(pkg.scripts.test, 'pnpm build && cargo test --workspace');
@@ -28,7 +36,19 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
     'pnpm build && pnpm llama && pnpm --filter desktop tauri dev',
   );
   assert.equal(
+    pkg.scripts['desktop:cuda'],
+    'node scripts/with-llm-features.mjs cuda pnpm desktop',
+  );
+  assert.equal(
+    pkg.scripts['desktop:vulkan'],
+    'node scripts/with-llm-features.mjs vulkan pnpm desktop',
+  );
+  assert.equal(
+    pkg.scripts['desktop:metal'],
+    'node scripts/with-llm-features.mjs metal pnpm desktop',
+  );
+  assert.equal(
     pkg.scripts['test:desktop'],
-    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
+    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs scripts/llm-features.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
   );
 });

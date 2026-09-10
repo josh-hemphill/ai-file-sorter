@@ -142,6 +142,26 @@ test('applyLlamaCudaBuildEnv warns when no GPU SM is known', () => {
   assert.match(messages[0], /Maxwell through Blackwell/);
 });
 
+test('with-cmake-generator.mjs caps cmake jobs from AIFS_LLM_FEATURES', () => {
+  const env = { ...process.env, AIFS_LLM_FEATURES: 'cuda' };
+  delete env.CMAKE_BUILD_PARALLEL_LEVEL;
+  delete env.CMAKE_CUDA_ARCHITECTURES;
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(here, 'with-cmake-generator.mjs'),
+      process.execPath,
+      '-e',
+      'process.exit(process.env.CMAKE_BUILD_PARALLEL_LEVEL ? 0 : 1)',
+      'cargo',
+      'engine-llm',
+    ],
+    { encoding: 'utf8', env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /llama-cpp-sys-2 CUDA compile/);
+});
+
 test('with-cmake-generator.mjs caps CMAKE_BUILD_PARALLEL_LEVEL for cuda features', () => {
   const env = { ...process.env };
   delete env.CMAKE_BUILD_PARALLEL_LEVEL;
