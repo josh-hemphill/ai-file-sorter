@@ -10,6 +10,8 @@ From the **repository root**:
 ```bash
 pnpm install
 pnpm desktop
+pnpm desktop:cuda
+pnpm desktop:vulkan
 ```
 
 Or:
@@ -22,7 +24,9 @@ pnpm --filter desktop tauri dev
 ```
 
 `tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
-`beforeDevCommand`. Packaged
+`beforeDevCommand`. CUDA/Vulkan/Metal are opt-in: `pnpm desktop:cuda` sets
+`AIFS_LLM_FEATURES` so that rebuild stays on GPU llama (plain `pnpm desktop` is CPU).
+Packaged
 builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
 embed them as `externalBin` sidecars. Release packaging passes `--packaged` to
 the llama build (Windows/Linux SSE4.2 + `GGML_AVX2=OFF`; macOS `CMAKE_*` rpath, no

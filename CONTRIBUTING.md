@@ -24,21 +24,28 @@ pnpm install
 pnpm build
 pnpm test
 pnpm desktop
+pnpm desktop:cuda
+pnpm desktop:vulkan
 pnpm cli -- scan fixtures/inbox-mixed
 pnpm cli -- organize fixtures/inbox-mixed
 pnpm cli -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
 `pnpm cli --` is `cargo aifs` / `cargo run -p aifs-cli --` (do not add a second `--` after `cargo aifs`). `pnpm build` compiles `aifs-engine`, `aifs`, and the four workers (LLM **stub**)
-into `target/debug/`. `pnpm desktop` then rebuilds `aifs-worker-llm` with llama.cpp.
+into `target/debug/`. `pnpm desktop` then rebuilds `aifs-worker-llm` with llama.cpp
+(CPU). `pnpm desktop:cuda` / `pnpm desktop:vulkan` / `pnpm desktop:metal` set
+`AIFS_LLM_FEATURES` so both `pnpm llama` and Tauri's `beforeDevCommand` keep that
+accelerator (`vulcan` is accepted as `vulkan`).
 
 Local llama.cpp (also used by `pnpm desktop`):
 
 ```bash
 pnpm llama
-# Unix: cargo engine-llm
+# Unix: cargo engine-llm (pnpm llama sets CXX=g++ on Linux when unset)
 # Windows: prefer pnpm llama, or set CMAKE_GENERATOR (see README)
-pnpm llama:cuda   # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while nvcc runs.
+pnpm llama:cuda     # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while nvcc runs.
+pnpm llama:vulkan
+pnpm desktop:cuda   # full desktop start; do not follow a CUDA llama with plain pnpm desktop
 ```
 
 Do not run bare `cargo build -p aifs-worker-llm --features llama,cuda` without

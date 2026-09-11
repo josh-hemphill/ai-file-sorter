@@ -38,17 +38,17 @@ export const GPU_PREFERENCES = [
   {
     id: "cuda",
     label: "CUDA",
-    hint: "Needs NVIDIA drivers and `aifs-worker-llm` built with `--features llama,cuda`.",
+    hint: "Needs NVIDIA drivers and a llama worker from `pnpm desktop:cuda`.",
   },
   {
     id: "vulkan",
     label: "Vulkan",
-    hint: "Needs `aifs-worker-llm` built with `--features llama,vulkan`.",
+    hint: "Needs a llama worker from `pnpm desktop:vulkan`.",
   },
   {
     id: "metal",
     label: "Metal",
-    hint: "Needs `aifs-worker-llm` built with `--features llama,metal` on macOS.",
+    hint: "Needs a llama worker from `pnpm desktop:metal` on macOS.",
   },
 ] as const;
 

@@ -37,6 +37,10 @@
   `GGML_AVX2=OFF` (and related ISA flags) so ggml does not host-tune AVX2, and
   set macOS `CMAKE_INSTALL_RPATH=@loader_path` (no Homebrew prefix). Local
   `pnpm llama` is unchanged.
+- `pnpm desktop:cuda` / `pnpm desktop:vulkan` / `pnpm desktop:metal` set
+  `AIFS_LLM_FEATURES` so `pnpm llama` and Tauri `beforeDevCommand` keep a GPU
+  llama.cpp worker instead of overwriting it with CPU `cargo engine-llm`.
+  `pnpm llama:cuda` uses the same env. `vulcan` is accepted as `vulkan`.
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.

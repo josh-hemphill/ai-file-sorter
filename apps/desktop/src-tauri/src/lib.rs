@@ -651,7 +651,13 @@ mod tests {
         );
         assert!(
             makefile.contains("node scripts/with-cmake-generator.mjs cargo engine-llm"),
-            "make llama on Windows must wrap cargo engine-llm: {makefile}"
+            "make llama must wrap cargo engine-llm: {makefile}"
+        );
+        assert!(
+            makefile.contains("with-llm-features.mjs cuda")
+                && makefile.contains("desktop-cuda:")
+                && makefile.contains("llama-vulkan:"),
+            "make desktop-cuda / llama-vulkan must set AIFS_LLM_FEATURES: {makefile}"
         );
         let pkg = include_str!("../../../../package.json");
         assert!(
@@ -659,6 +665,17 @@ mod tests {
                 && pkg.contains("pnpm llama")
                 && pkg.contains("tauri dev"),
             "pnpm desktop must overwrite the stub LLM worker with llama.cpp: {pkg}"
+        );
+        assert!(
+            pkg.contains("desktop:cuda")
+                && pkg.contains("desktop:vulkan")
+                && pkg.contains("with-llm-features.mjs"),
+            "pnpm desktop:cuda / desktop:vulkan must set AIFS_LLM_FEATURES: {pkg}"
+        );
+        let cmake_wrap = include_str!("../../../../scripts/with-cmake-generator.mjs");
+        assert!(
+            cmake_wrap.contains("appendEngineLlmFeatures"),
+            "Tauri cargo engine-llm must inherit AIFS_LLM_FEATURES: {cmake_wrap}"
         );
         let tauri = include_str!("../tauri.conf.json");
         for hook in ["beforeDevCommand", "beforeBuildCommand"] {
