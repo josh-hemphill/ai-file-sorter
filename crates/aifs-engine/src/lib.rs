@@ -1245,7 +1245,7 @@ fn save_models(
 }
 
 fn present_models(inventory: ModelInventory) -> ModelInventory {
-    present_models_with(inventory, probe_llm_worker())
+    present_models_with(inventory, LlmWorkerStatus::Unprobed)
 }
 
 fn present_models_with(inventory: ModelInventory, worker: LlmWorkerStatus) -> ModelInventory {
@@ -1368,6 +1368,7 @@ fn slot_runtime_notice(
             LogLevel::Warn,
             format!("{label} slot is assigned but the GGUF is missing or failed SHA-256 verify."),
         )),
+        SlotRuntime::Pending { .. } => None,
     }
 }
 
@@ -3833,6 +3834,21 @@ mod tests {
                 .map(SlotRuntime::kind_id),
             Some("missing_worker")
         );
+        let skipped = present_models(ModelInventory::default());
+        assert_eq!(
+            skipped.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
+            Some("off")
+        );
+        let mut catalog = ModelInventory::default();
+        catalog.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        let deferred = present_models(catalog);
+        assert_eq!(
+            deferred.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
+            Some("missing_files"),
+            "get_models must not spawn the LLM worker (would report stub)"
+        );
     }
 
     #[test]
@@ -3902,7 +3918,7 @@ mod tests {
             .map(SlotRuntime::kind_id)
             .unwrap_or("missing");
         assert!(
-            matches!(kind, "stub" | "missing_files" | "missing_worker"),
+            matches!(kind, "stub" | "missing_files" | "missing_worker" | "pending"),
             "catalog runtime was {kind}"
         );
         drop(engine);

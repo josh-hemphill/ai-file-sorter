@@ -104,6 +104,7 @@ const RUNTIME_SUMMARY_ORDER = [
   "llama",
   "hosted",
   "stub",
+  "pending",
   "missing_worker",
   "missing_files",
   "assigned",
@@ -118,6 +119,8 @@ function runtimeKindLabel(kind: string): string {
       return "hosted";
     case "stub":
       return "stub";
+    case "pending":
+      return "assigned";
     case "missing_worker":
       return "no worker";
     case "missing_files":

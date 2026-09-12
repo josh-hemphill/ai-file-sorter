@@ -473,7 +473,7 @@ onMounted(async () => {
   try {
     await connectEngine();
     engineReady.value = true;
-    await refreshModels();
+    void refreshModels();
   } catch (error) {
     engineError.value = String(error);
   }

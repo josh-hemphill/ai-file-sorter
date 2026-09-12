@@ -1,8 +1,9 @@
 //! Model slot configuration. Keys are stored by the engine and redacted on `get_models`.
 
 use crate::catalog::{
-    all_artifacts, artifact_bytes_on_disk, artifact_is_verified, artifact_path, catalog_entry,
-    catalog_id_is_downloaded, catalog_ids_for_artifact, expected_sha256, has_gguf_header,
+    all_artifacts, artifact_bytes_on_disk, artifact_is_listed_present, artifact_path, catalog_entry,
+    catalog_id_is_downloaded, catalog_id_looks_present, catalog_ids_for_artifact, expected_sha256,
+    has_gguf_header,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -95,6 +96,11 @@ pub enum SlotRuntime {
         /// Human explanation.
         detail: String,
     },
+    /// Assignment is recorded; worker hello was not run for this `get_models`.
+    Pending {
+        /// Human explanation.
+        detail: String,
+    },
 }
 
 impl SlotRuntime {
@@ -107,6 +113,7 @@ impl SlotRuntime {
             Self::Llama { .. } => "llama",
             Self::MissingWorker { .. } => "missing_worker",
             Self::MissingFiles { .. } => "missing_files",
+            Self::Pending { .. } => "pending",
         }
     }
 
@@ -118,7 +125,8 @@ impl SlotRuntime {
             | Self::Hosted { detail }
             | Self::Llama { detail }
             | Self::MissingWorker { detail }
-            | Self::MissingFiles { detail } => detail,
+            | Self::MissingFiles { detail }
+            | Self::Pending { detail } => detail,
         }
     }
 
@@ -138,6 +146,8 @@ pub enum LlmWorkerStatus {
         /// Spawn/hello error text.
         detail: String,
     },
+    /// `get_models` skipped worker hello so the UI can stay interactive.
+    Unprobed,
     /// Worker answered `hello` with these capability strings.
     Ready {
         /// Values such as `stub`, `llama`, and `hosted`.
@@ -149,7 +159,7 @@ impl LlmWorkerStatus {
     /// True when the worker advertises llama.cpp infer.
     pub fn has_llama(&self) -> bool {
         match self {
-            Self::Missing | Self::Failed { .. } => false,
+            Self::Missing | Self::Failed { .. } | Self::Unprobed => false,
             Self::Ready { capabilities } => capabilities.iter().any(|cap| cap == "llama"),
         }
     }
@@ -313,7 +323,11 @@ impl ModelInventory {
                     path: path.display().to_string(),
                     expected_bytes: artifact.expected_bytes,
                     bytes_on_disk,
-                    present: artifact_is_verified(&path, &expected_sha256(artifact)),
+                    present: artifact_is_listed_present(
+                        &path,
+                        &expected_sha256(artifact),
+                        artifact.expected_bytes,
+                    ),
                     used_by: catalog_ids_for_artifact(artifact.id)
                         .into_iter()
                         .map(str::to_owned)
@@ -466,6 +480,28 @@ pub fn slot_runtime(
             detail: format!("Slot is assigned but the LLM worker failed to start: {detail}"),
         };
     }
+    if matches!(worker, LlmWorkerStatus::Unprobed) {
+        if matches!(
+            backend,
+            ModelBackend::OpenAi { .. }
+                | ModelBackend::Gemini { .. }
+                | ModelBackend::CustomEndpoint { .. }
+        ) {
+            return SlotRuntime::Hosted {
+                detail: "Hosted infer via the LLM worker (OpenAI, Gemini, or custom HTTP)."
+                    .to_owned(),
+            };
+        }
+        if local_weights_listed(backend, storage_dir) {
+            return SlotRuntime::Pending {
+                detail: "Slot is assigned. LLM worker hello runs when you scan.".to_owned(),
+            };
+        }
+        return SlotRuntime::MissingFiles {
+            detail: "Local slot assigned but the GGUF is missing or failed a cheap listing check."
+                .to_owned(),
+        };
+    }
     if matches!(
         backend,
         ModelBackend::OpenAi { .. }
@@ -489,6 +525,27 @@ pub fn slot_runtime(
     }
     SlotRuntime::Stub {
             detail: "Default LLM worker stubs infer. `make desktop` / `cargo engine-llm` rebuild aifs-worker-llm with llama.cpp.".to_owned(),
+    }
+}
+
+fn local_weights_listed(backend: &ModelBackend, storage_dir: Option<&Path>) -> bool {
+    match backend {
+        ModelBackend::Catalog { catalog_id } => {
+            storage_dir.is_some_and(|dir| catalog_id_looks_present(dir, catalog_id))
+        }
+        ModelBackend::LocalGguf { path, mmproj } => {
+            if !has_gguf_header(Path::new(path)) {
+                return false;
+            }
+            match mmproj.as_deref().filter(|proj| !proj.is_empty()) {
+                None => true,
+                Some(proj) => has_gguf_header(Path::new(proj)),
+            }
+        }
+        ModelBackend::Off
+        | ModelBackend::OpenAi { .. }
+        | ModelBackend::Gemini { .. }
+        | ModelBackend::CustomEndpoint { .. } => false,
     }
 }
 
@@ -656,6 +713,20 @@ mod tests {
         let hosted = slot_runtime(&backend, &stub_worker(), None);
         assert_eq!(hosted.kind_id(), "hosted");
         assert!(hosted.is_live_infer());
+        let pending = slot_runtime(&backend, &LlmWorkerStatus::Unprobed, None);
+        assert_eq!(pending.kind_id(), "hosted");
+        assert!(pending.is_live_infer());
+    }
+
+    #[test]
+    fn slot_runtime_unprobed_catalog_does_not_claim_stub() {
+        let backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        assert_eq!(
+            slot_runtime(&backend, &LlmWorkerStatus::Unprobed, None).kind_id(),
+            "missing_files"
+        );
     }
 
     #[test]

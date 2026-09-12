@@ -28,7 +28,7 @@ diagnostic only.
 | `shutdown` | — | `shutdown` |
 | `get_settings` | — | `settings { settings }` |
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
-| `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` scanned from disk; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, or `missing_files`) |
+| `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` listed from disk without hashing multi-GB GGUFs; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`, or `pending`. Worker hello is deferred to scan.) |
 | `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime` is not stored) |
 | `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed; `cancel` stops between chunks and **keeps** the `.part` file so a later fetch can HTTP `Range` resume; ignored-Range `200` and `416` restart from byte 0; transport / 5xx / 429 errors keep `.part`; checksum mismatch still deletes `.part`) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
@@ -148,8 +148,9 @@ unconstrained / consistent. Screenshot/UI captures log
 `cargo test --workspace` does not compile llama.cpp. Ubuntu CI has a separate
 `llama-cpu` job that compiles the worker with `--features llama` and does not
 download Gemma. `get_models` fills each slot's
-`runtime` (`off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`)
-from worker hello and files on disk; scan logs the same kinds instead of claiming
+`runtime` (`off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`,
+`pending`) from files on disk without spawning the LLM worker; scan probes
+hello and logs the live kinds instead of claiming
 images will be described when infer is stubbed. Hosted probes contact the
 endpoint. Chat asks the model for `RevisionPatch` JSON and applies those
 patches; keyword `interpret()` is the fallback when the chat slot is off, the

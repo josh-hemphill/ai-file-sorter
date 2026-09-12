@@ -58,6 +58,10 @@
 - LLM worker spawn/hello failures include the child exit code and the last
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
+- `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
+  Slot runtime is `pending` until scan probes the worker. Catalog listing uses
+  size and GGUF magic (or a cached digest) so Settings is not blocked behind
+  CUDA hello.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

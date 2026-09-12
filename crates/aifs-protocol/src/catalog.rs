@@ -302,6 +302,41 @@ pub fn artifact_is_verified(path: &Path, expected_sha256: &str) -> bool {
     file_sha256_hex(path).is_ok_and(|hex| hex.eq_ignore_ascii_case(expected_sha256))
 }
 
+/// Listing check that avoids hashing multi-GB GGUFs on a cold `get_models`.
+///
+/// Small files still SHA-256 (tests and truncated junk). Large files use the
+/// process digest cache when present, otherwise size plus GGUF magic.
+pub fn artifact_is_listed_present(
+    path: &Path,
+    expected_sha256: &str,
+    expected_bytes: u64,
+) -> bool {
+    if !artifact_is_present(path) {
+        return false;
+    }
+    let bytes = artifact_bytes_on_disk(path);
+    if bytes <= LISTING_HASH_LIMIT {
+        return artifact_is_verified(path, expected_sha256);
+    }
+    if let Some(ok) = cached_sha256_matches(path, expected_sha256) {
+        return ok;
+    }
+    if expected_bytes > 0 && bytes != expected_bytes {
+        return false;
+    }
+    has_gguf_header(path)
+}
+
+const LISTING_HASH_LIMIT: u64 = 32 * 1024 * 1024;
+
+fn cached_sha256_matches(path: &Path, expected_sha256: &str) -> Option<bool> {
+    let key = digest_cache_key(path).ok()?;
+    let cache = SHA256_CACHE.lock().ok()?;
+    cache
+        .get(&key)
+        .map(|digest| digest.eq_ignore_ascii_case(expected_sha256))
+}
+
 /// Records `digest` for `path`'s current metadata so later verifies skip a re-read.
 pub fn remember_file_digest(path: &Path, digest: &str) {
     let Ok(key) = digest_cache_key(path) else {
@@ -366,6 +401,20 @@ pub fn catalog_id_is_downloaded(storage_dir: &Path, catalog_id: &str) -> bool {
         artifact_is_verified(
             &artifact_path(storage_dir, artifact.filename),
             &expected_sha256(artifact),
+        )
+    })
+}
+
+/// True when catalog files look present without hashing multi-GB GGUFs.
+pub fn catalog_id_looks_present(storage_dir: &Path, catalog_id: &str) -> bool {
+    let Some(entry) = catalog_entry(catalog_id) else {
+        return false;
+    };
+    entry.artifacts.iter().all(|artifact| {
+        artifact_is_listed_present(
+            &artifact_path(storage_dir, artifact.filename),
+            &expected_sha256(artifact),
+            artifact.expected_bytes,
         )
     })
 }
