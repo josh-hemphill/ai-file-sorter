@@ -306,11 +306,7 @@ pub fn artifact_is_verified(path: &Path, expected_sha256: &str) -> bool {
 ///
 /// Small files still SHA-256 (tests and truncated junk). Large files use the
 /// process digest cache when present, otherwise size plus GGUF magic.
-pub fn artifact_is_listed_present(
-    path: &Path,
-    expected_sha256: &str,
-    expected_bytes: u64,
-) -> bool {
+pub fn artifact_is_listed_present(path: &Path, expected_sha256: &str, expected_bytes: u64) -> bool {
     if !artifact_is_present(path) {
         return false;
     }
