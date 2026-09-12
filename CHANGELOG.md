@@ -55,6 +55,9 @@
   Tauri left an empty sidecar placeholder. Discovery skips empty files, walks
   up to Cargo `target/`, and scan logs the real spawn/hello error if the worker
   still cannot start.
+- LLM worker spawn/hello failures include the child exit code and the last
+  stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
+  libraries instead of only "worker closed stdout unexpectedly".
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
