@@ -59,9 +59,10 @@
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
-  Slot runtime is `pending` until scan probes the worker. Catalog listing uses
-  size and GGUF magic (or a cached digest) so Settings is not blocked behind
-  CUDA hello.
+  Unprobed catalog/local files that look present are `pending` until scan
+  hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing
+  uses size and GGUF magic (or a cached digest) so Settings is not blocked
+  behind CUDA hello.
 - Both workspace Cancel buttons show Cancelling…, disable, and replace the
   Working… status line as soon as cancel is requested, while the engine stops
   at the next cooperative check.
