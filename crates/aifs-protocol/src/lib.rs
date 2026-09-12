@@ -15,7 +15,10 @@ pub mod models;
 pub mod options;
 pub mod worker;
 
-pub use worker::{ENGINE_PROCESS_STEM, first_process_binary, process_binary_names, target_triple};
+pub use worker::{
+    ENGINE_PROCESS_STEM, discover_process_binary, first_process_binary, is_usable_process_binary,
+    process_binary_names, target_triple,
+};
 
 pub use catalog::{
     ARTIFACT_GEMMA_MMPROJ, ARTIFACT_GEMMA_TEXT, ArtifactSha256Guard, CATALOG_BASE_ENV,

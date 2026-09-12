@@ -133,6 +133,11 @@ impl SlotRuntime {
 pub enum LlmWorkerStatus {
     /// No `aifs-worker-llm` binary was found.
     Missing,
+    /// A binary was found but spawn or `hello` failed (empty sidecar, missing CUDA libs).
+    Failed {
+        /// Spawn/hello error text.
+        detail: String,
+    },
     /// Worker answered `hello` with these capability strings.
     Ready {
         /// Values such as `stub`, `llama`, and `hosted`.
@@ -144,7 +149,7 @@ impl LlmWorkerStatus {
     /// True when the worker advertises llama.cpp infer.
     pub fn has_llama(&self) -> bool {
         match self {
-            Self::Missing => false,
+            Self::Missing | Self::Failed { .. } => false,
             Self::Ready { capabilities } => capabilities.iter().any(|cap| cap == "llama"),
         }
     }
@@ -456,6 +461,11 @@ pub fn slot_runtime(
             detail: "Slot is assigned but the LLM worker is not installed.".to_owned(),
         };
     }
+    if let LlmWorkerStatus::Failed { detail } = worker {
+        return SlotRuntime::MissingWorker {
+            detail: format!("Slot is assigned but the LLM worker failed to start: {detail}"),
+        };
+    }
     if matches!(
         backend,
         ModelBackend::OpenAi { .. }
@@ -629,6 +639,19 @@ mod tests {
         assert_eq!(
             slot_runtime(&backend, &LlmWorkerStatus::Missing, None).kind_id(),
             "missing_worker"
+        );
+        let failed = slot_runtime(
+            &backend,
+            &LlmWorkerStatus::Failed {
+                detail: "failed to spawn worker: error while loading shared libraries".into(),
+            },
+            None,
+        );
+        assert_eq!(failed.kind_id(), "missing_worker");
+        assert!(
+            failed.detail().contains("failed to start"),
+            "{}",
+            failed.detail()
         );
         let hosted = slot_runtime(&backend, &stub_worker(), None);
         assert_eq!(hosted.kind_id(), "hosted");

@@ -50,6 +50,11 @@
   proposing destinations, instead of dropping those characters.
 - Settings shows a loading state immediately, keeps fields locked until the engine
   values arrive, and only then enables Save.
+- After `pnpm desktop:cuda`, scan no longer reports assigned slots as "LLM worker
+  is not installed" when the CUDA llama binary exists under `target/debug` but
+  Tauri left an empty sidecar placeholder. Discovery skips empty files, walks
+  up to Cargo `target/`, and scan logs the real spawn/hello error if the worker
+  still cannot start.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

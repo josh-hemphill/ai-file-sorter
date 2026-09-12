@@ -50,13 +50,19 @@ pub fn analyze_into_supervised(
         return WorkStatus::Completed;
     }
 
-    let mut llm = match WorkerClient::try_connect(WorkerKind::Llm) {
-        Some(client) => client,
-        None => {
+    let mut llm = match WorkerClient::connect_default(WorkerKind::Llm) {
+        Ok(client) => client,
+        Err(WorkerClientError::NotFound(_)) => {
             on_notice(AnalyzeNotice::Log(
                 "LLM worker is not installed; scan continues with extract and heuristics."
                     .to_owned(),
             ));
+            return WorkStatus::Completed;
+        }
+        Err(error) => {
+            on_notice(AnalyzeNotice::Log(format!(
+                "LLM worker failed to start ({error}); scan continues with extract and heuristics."
+            )));
             return WorkStatus::Completed;
         }
     };

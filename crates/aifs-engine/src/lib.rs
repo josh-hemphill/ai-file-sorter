@@ -456,6 +456,10 @@ impl Engine {
                 format!("Could not read settings or models ({error}); scan continues."),
             );
         }
+        if self.should_stop(id) {
+            emit(Envelope::reply(id, Event::Cancelled));
+            return;
+        }
         emit(Envelope::reply(
             id,
             Event::Progress {
@@ -1113,8 +1117,12 @@ fn chat_via_worker(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<String, String> {
-    let mut llm = WorkerClient::try_connect(WorkerKind::Llm)
-        .ok_or_else(|| "LLM worker is not installed".to_owned())?;
+    let mut llm = WorkerClient::connect_default(WorkerKind::Llm).map_err(|error| match error {
+        aifs_worker_client::WorkerClientError::NotFound(_) => {
+            "LLM worker is not installed".to_owned()
+        }
+        other => format!("LLM worker failed to start: {other}"),
+    })?;
     let context = chat::chat_context(snapshot, revision);
     let storage_dir = resolved_models_dir(&inventory.storage_dir)
         .display()
@@ -1250,13 +1258,16 @@ fn present_models_with(inventory: ModelInventory, worker: LlmWorkerStatus) -> Mo
 }
 
 fn probe_llm_worker() -> LlmWorkerStatus {
-    match WorkerClient::try_connect(WorkerKind::Llm) {
-        None => LlmWorkerStatus::Missing,
-        Some(mut client) => {
+    match WorkerClient::connect_default(WorkerKind::Llm) {
+        Ok(mut client) => {
             let capabilities = client.capabilities().to_vec();
             let _ = client.shutdown();
             LlmWorkerStatus::Ready { capabilities }
         }
+        Err(aifs_worker_client::WorkerClientError::NotFound(_)) => LlmWorkerStatus::Missing,
+        Err(error) => LlmWorkerStatus::Failed {
+            detail: error.to_string(),
+        },
     }
 }
 
@@ -1350,10 +1361,9 @@ fn slot_runtime_notice(
         SlotRuntime::Llama { .. } => {
             Some((LogLevel::Info, format!("{label} slot uses llama.cpp.")))
         }
-        SlotRuntime::MissingWorker { .. } => Some((
-            LogLevel::Warn,
-            format!("{label} slot is assigned but the LLM worker is not installed."),
-        )),
+        SlotRuntime::MissingWorker { detail } => {
+            Some((LogLevel::Warn, format!("{label}: {detail}")))
+        }
         SlotRuntime::MissingFiles { .. } => Some((
             LogLevel::Warn,
             format!("{label} slot is assigned but the GGUF is missing or failed SHA-256 verify."),
@@ -3852,6 +3862,14 @@ mod tests {
         assert_eq!(level, LogLevel::Warn);
         assert!(message.contains("slot is off"), "{message}");
         assert!(slot_runtime_notice("Categorize", &off, false).is_none());
+
+        let missing = SlotRuntime::MissingWorker {
+            detail: "Slot is assigned but the LLM worker failed to start: missing libcuda".into(),
+        };
+        let (_, message) =
+            slot_runtime_notice("Categorize", &missing, false).unwrap_or_else(|| panic!("notice"));
+        assert!(message.contains("failed to start"), "{message}");
+        assert!(message.contains("libcuda"), "{message}");
     }
 
     #[test]
