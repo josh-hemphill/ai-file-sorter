@@ -37,7 +37,7 @@ const loaded = ref(false);
 const busy = ref(true);
 const status = computed(() => settingsPageStatus(loaded.value, busy.value, error.value));
 const saveLabel = computed(() => {
-  if (!loaded.value) {
+  if (busy.value && !loaded.value) {
     return "Loading…";
   }
   if (busy.value) {
