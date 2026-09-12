@@ -180,7 +180,8 @@ export type SlotRuntime =
   | { kind: "hosted"; detail: string }
   | { kind: "llama"; detail: string }
   | { kind: "missing_worker"; detail: string }
-  | { kind: "missing_files"; detail: string };
+  | { kind: "missing_files"; detail: string }
+  | { kind: "pending"; detail: string };
 
 export interface ModelSlot {
   id: string;
