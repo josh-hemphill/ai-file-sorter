@@ -80,6 +80,16 @@ export function retainProgressMessage(previous: string | undefined, incoming: st
   return incoming;
 }
 
+/** Label for both workspace Cancel buttons. */
+export function cancelActionLabel(cancelling: boolean): string {
+  return cancelling ? "Cancelling…" : "Cancel";
+}
+
+/** Footer status while an engine command is in flight. */
+export function inFlightStatusText(cancelling: boolean, workingText: string): string {
+  return cancelling ? "Cancelling…" : workingText;
+}
+
 export interface WorkflowState {
   snapshot: WorkspaceSnapshot | null;
   revision: ProposalRevision | null;

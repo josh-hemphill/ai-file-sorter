@@ -62,6 +62,9 @@
   Slot runtime is `pending` until scan probes the worker. Catalog listing uses
   size and GGUF magic (or a cached digest) so Settings is not blocked behind
   CUDA hello.
+- Both workspace Cancel buttons show Cancelling…, disable, and replace the
+  Working… status line as soon as cancel is requested, while the engine stops
+  at the next cooperative check.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

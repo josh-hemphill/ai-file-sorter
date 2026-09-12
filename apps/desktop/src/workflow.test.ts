@@ -12,6 +12,8 @@ import {
   previewRows,
   rememberRoot,
   retainProgressMessage,
+  cancelActionLabel,
+  inFlightStatusText,
   skippedReasonLabel,
 } from "./workflow.ts";
 import type { ProposalRevision } from "./types";
@@ -38,6 +40,13 @@ test("retainProgressMessage keeps the last path across working heartbeats", () =
   assert.equal(retainProgressMessage(path, "  "), path);
   assert.equal(retainProgressMessage(path, "Music/next.mp3"), "Music/next.mp3");
   assert.equal(retainProgressMessage(undefined, "working"), "working");
+});
+
+test("cancelActionLabel and inFlightStatusText show cancelling state", () => {
+  assert.equal(cancelActionLabel(false), "Cancel");
+  assert.equal(cancelActionLabel(true), "Cancelling…");
+  assert.equal(inFlightStatusText(false, "Working… scan 3"), "Working… scan 3");
+  assert.equal(inFlightStatusText(true, "Working… scan 3"), "Cancelling…");
 });
 
 test("constraintLabel hides tagged JSON", () => {

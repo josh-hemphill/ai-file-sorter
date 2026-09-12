@@ -49,6 +49,8 @@ import {
   previewRows,
   rememberRoot,
   retainProgressMessage,
+  cancelActionLabel,
+  inFlightStatusText,
   roleKindLabel,
   skippedReasonLabel,
   journalBelongsToPlan,
@@ -76,6 +78,7 @@ const props = defineProps<{
 const engineReady = ref(false);
 const engineError = ref<string | null>(null);
 const busy = ref(false);
+const cancelling = ref(false);
 const progress = ref<ProgressEvent | null>(null);
 const rootPath = ref("");
 const recentRoots = ref<string[]>(loadRecentRoots());
@@ -163,15 +166,22 @@ const analysisStages = computed(() =>
   })),
 );
 const busyStatusText = computed(() => {
-  if (!progress.value) {
-    return "Working…";
+  let working = "Working…";
+  if (progress.value) {
+    const retained =
+      stageProgress.value[progress.value.stage]?.message ?? progress.value.message;
+    const total = progress.value.total ? `/${progress.value.total}` : "";
+    const pathBit =
+      retained && retained.toLowerCase() !== "working" ? ` — ${retained}` : "";
+    working = `Working… ${progress.value.stage} ${progress.value.current}${total}${pathBit}`;
   }
-  const retained =
-    stageProgress.value[progress.value.stage]?.message ?? progress.value.message;
-  const total = progress.value.total ? `/${progress.value.total}` : "";
-  const pathBit =
-    retained && retained.toLowerCase() !== "working" ? ` — ${retained}` : "";
-  return `Working… ${progress.value.stage} ${progress.value.current}${total}${pathBit}`;
+  return inFlightStatusText(cancelling.value, working);
+});
+
+watch(busy, (isBusy) => {
+  if (!isBusy) {
+    cancelling.value = false;
+  }
 });
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
@@ -264,9 +274,11 @@ async function runScan() {
 }
 
 async function requestCancel() {
+  cancelling.value = true;
   try {
     await cancelInFlight();
   } catch (error) {
+    cancelling.value = false;
     engineError.value = String(error);
   }
 }
@@ -533,9 +545,11 @@ function familyOf(entry: ObservedEntry): string {
       <button
         v-if="busy"
         type="button"
+        :disabled="cancelling"
+        :aria-busy="cancelling || undefined"
         @click="requestCancel"
       >
-        Cancel
+        {{ cancelActionLabel(cancelling) }}
       </button>
       <button
         v-else
@@ -733,7 +747,15 @@ function familyOf(entry: ObservedEntry): string {
           <span v-else class="muted">Add a source, pick an intent, then scan.</span>
         </div>
         <div class="actions">
-          <button v-if="busy" type="button" @click="requestCancel">Cancel</button>
+          <button
+            v-if="busy"
+            type="button"
+            :disabled="cancelling"
+            :aria-busy="cancelling || undefined"
+            @click="requestCancel"
+          >
+            {{ cancelActionLabel(cancelling) }}
+          </button>
           <button type="button" :disabled="busy || !revision" @click="acceptAll">
             Approve all proposed changes
           </button>
