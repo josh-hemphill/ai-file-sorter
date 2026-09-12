@@ -25,10 +25,11 @@ pub use catalog::{
     CATALOG_TEXT, CATALOG_VISION, CatalogArtifact, CatalogEntry, CatalogTestGuard,
     DEFAULT_CATALOG_BASE, GEMMA_MMPROJ_BYTES, GEMMA_MMPROJ_FILENAME, GEMMA_MMPROJ_SHA256,
     GEMMA_TEXT_BYTES, GEMMA_TEXT_FILENAME, GEMMA_TEXT_SHA256, all_artifacts,
-    artifact_bytes_on_disk, artifact_is_listed_present, artifact_is_present, artifact_is_verified, artifact_path,
-    catalog_download_url, catalog_entry, catalog_id_is_downloaded, catalog_id_looks_present, catalog_ids_for_artifact,
-    expected_sha256, has_gguf_header, is_gguf_file_path, remember_file_digest,
-    set_artifact_sha256_override, set_catalog_base_override, sha256_hex,
+    artifact_bytes_on_disk, artifact_is_listed_present, artifact_is_present, artifact_is_verified,
+    artifact_path, catalog_download_url, catalog_entry, catalog_id_is_downloaded,
+    catalog_id_looks_present, catalog_ids_for_artifact, expected_sha256, has_gguf_header,
+    is_gguf_file_path, remember_file_digest, set_artifact_sha256_override,
+    set_catalog_base_override, sha256_hex,
 };
 pub use codec::{CodecError, decode_line, encode_line};
 pub use hosted::{

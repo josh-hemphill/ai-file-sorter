@@ -1,9 +1,9 @@
 //! Model slot configuration. Keys are stored by the engine and redacted on `get_models`.
 
 use crate::catalog::{
-    all_artifacts, artifact_bytes_on_disk, artifact_is_listed_present, artifact_path, catalog_entry,
-    catalog_id_is_downloaded, catalog_id_looks_present, catalog_ids_for_artifact, expected_sha256,
-    has_gguf_header,
+    all_artifacts, artifact_bytes_on_disk, artifact_is_listed_present, artifact_path,
+    catalog_entry, catalog_id_is_downloaded, catalog_id_looks_present, catalog_ids_for_artifact,
+    expected_sha256, has_gguf_header,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;

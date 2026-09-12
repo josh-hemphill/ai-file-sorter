@@ -3918,7 +3918,10 @@ mod tests {
             .map(SlotRuntime::kind_id)
             .unwrap_or("missing");
         assert!(
-            matches!(kind, "stub" | "missing_files" | "missing_worker" | "pending"),
+            matches!(
+                kind,
+                "stub" | "missing_files" | "missing_worker" | "pending"
+            ),
             "catalog runtime was {kind}"
         );
         drop(engine);
