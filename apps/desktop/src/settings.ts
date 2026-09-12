@@ -2,6 +2,26 @@ import type { AppSettings, CategoryWhitelist } from "./types";
 
 export type WhitelistMode = "none" | "global" | "branching";
 
+export type SettingsPageStatus = "loading" | "saving" | "error" | "ready";
+
+/** Visible settings-page phase while engine I/O is in flight. */
+export function settingsPageStatus(
+  loaded: boolean,
+  busy: boolean,
+  error: string | null,
+): SettingsPageStatus {
+  if (error) {
+    return "error";
+  }
+  if (!loaded) {
+    return "loading";
+  }
+  if (busy) {
+    return "saving";
+  }
+  return "ready";
+}
+
 /** Default engine settings for an empty form. */
 export function defaultSettings(): AppSettings {
   return {
