@@ -112,7 +112,8 @@ line). Workers never open SQLite and never mutate user files.
 
 Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 `aifs-worker-llm`. Discovery uses `$AIFS_WORKER_MEDIA` (and siblings), then a
-binary next to the engine, then `target/{debug,release}/`. Scan prefers a live
+non-empty binary next to the engine or in ancestor `target/{debug,release}/`
+(empty Tauri debug sidecar placeholders are skipped). Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
 missing. The document worker extracts PDF/Office/text (with an in-process
 fallback). The vision worker reads EXIF (`image.captured_on`, `image.camera`,

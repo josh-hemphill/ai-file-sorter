@@ -1,10 +1,11 @@
 //! Spawn `aifs-engine` and speak the JSONL protocol on its stdio.
 
 use aifs_domain::WorkspaceSnapshot;
+use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
     AppSettings, Command, ENGINE_PROCESS_STEM, Envelope, ErrorCode, Event, ModelBackend,
-    ModelInventory, PROTOCOL_VERSION, Request, RequestId, ScanOptions, decode_line, encode_line,
-    first_process_binary,
+    ModelInventory, PROTOCOL_VERSION, Request, RequestId, ScanOptions, decode_line,
+    discover_process_binary, encode_line, is_usable_process_binary,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -97,6 +98,7 @@ impl EngineClient {
         if let Some(store) = store {
             command.env("AIFS_STORE", store);
         }
+        attach_worker_env(&mut command, binary);
         let mut child = command.spawn()?;
         let stdin = child
             .stdin
@@ -678,6 +680,24 @@ fn command_mutates_disk(command: &Command) -> bool {
     )
 }
 
+/// Points the engine at worker binaries next to itself (or Cargo `target/`) so
+/// `tauri dev` empty sidecar placeholders do not hide `pnpm desktop:cuda` builds.
+fn attach_worker_env(command: &mut ProcessCommand, engine: &Path) {
+    for kind in [
+        WorkerKind::Media,
+        WorkerKind::Document,
+        WorkerKind::Vision,
+        WorkerKind::Llm,
+    ] {
+        if std::env::var_os(kind.env_var()).is_some() {
+            continue;
+        }
+        if let Some(path) = discover_process_binary(kind.binary_stem(), Some(engine), None) {
+            command.env(kind.env_var(), path);
+        }
+    }
+}
+
 /// Resolves the engine binary from `AIFS_ENGINE`, then a sibling of the current
 /// executable (plain name or Tauri `{stem}-{target-triple}` sidecar), then
 /// well-known Cargo target directories.
@@ -696,41 +716,21 @@ fn discover_engine_binary_from(
 ) -> Result<PathBuf, ClientError> {
     if let Some(explicit) = explicit {
         let path = PathBuf::from(explicit);
-        if path.exists() {
+        if is_usable_process_binary(&path) {
             return Ok(path);
         }
         return Err(ClientError::EngineNotFound(path.display().to_string()));
     }
-
-    if let Some(exe) = current_exe
-        && let Some(dir) = exe.parent()
-        && let Some(sibling) = first_process_binary(dir, ENGINE_PROCESS_STEM)
-    {
-        return Ok(sibling);
-    }
-
-    if let Some(manifest) = manifest_dir {
-        let mut dir = PathBuf::from(manifest);
-        for _ in 0..6 {
-            for profile in ["debug", "release"] {
-                let candidate_dir = dir.join("target").join(profile);
-                if let Some(candidate) = first_process_binary(&candidate_dir, ENGINE_PROCESS_STEM) {
-                    return Ok(candidate);
-                }
-                let nested = dir.join("rust").join("target").join(profile);
-                if let Some(candidate) = first_process_binary(&nested, ENGINE_PROCESS_STEM) {
-                    return Ok(candidate);
-                }
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-
-    Err(ClientError::EngineNotFound(
-        "set AIFS_ENGINE or install aifs-engine next to this binary".to_owned(),
-    ))
+    discover_process_binary(
+        ENGINE_PROCESS_STEM,
+        current_exe.as_deref(),
+        manifest_dir.as_deref().map(Path::new),
+    )
+    .ok_or_else(|| {
+        ClientError::EngineNotFound(
+            "set AIFS_ENGINE or install aifs-engine next to this binary".to_owned(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -750,7 +750,7 @@ mod tests {
     fn discover_uses_explicit_path_when_the_file_exists() {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let engine = dir.path().join("custom-engine");
-        fs::write(&engine, b"").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&engine, b"engine").unwrap_or_else(|error| panic!("{error}"));
         let found = discover_engine_binary_from(Some(engine.display().to_string()), None, None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(found, engine);
@@ -778,10 +778,10 @@ mod tests {
         let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
         let sidecar = dir.path().join(format!("{ENGINE_PROCESS_STEM}-{triple}"));
         let plain = dir.path().join(ENGINE_PROCESS_STEM);
-        fs::write(&sidecar, b"").unwrap_or_else(|error| panic!("{error}"));
-        fs::write(&plain, b"").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&sidecar, b"sidecar").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&plain, b"plain").unwrap_or_else(|error| panic!("{error}"));
         let exe = dir.path().join("aifs");
-        fs::write(&exe, b"").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&exe, b"ui").unwrap_or_else(|error| panic!("{error}"));
         let found = discover_engine_binary_from(None, Some(exe), None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(found, plain);

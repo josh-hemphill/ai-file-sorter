@@ -5,7 +5,8 @@ use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
 use aifs_protocol::{
-    ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, encode_line, first_process_binary,
+    ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, discover_process_binary,
+    encode_line, is_usable_process_binary,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -139,6 +140,11 @@ impl WorkerClient {
                 match line {
                     Ok(line) => {
                         if line.trim().is_empty() {
+                            continue;
+                        }
+                        // llama.cpp / CUDA may print banners on stdout before hello JSONL.
+                        if !line.trim_start().starts_with('{') {
+                            eprintln!("[{}] {line}", kind.binary_stem());
                             continue;
                         }
                         let parsed = decode_line::<WorkerEnvelope>(&line)
@@ -622,39 +628,24 @@ pub fn discover_worker_binary(kind: WorkerKind) -> Result<PathBuf, WorkerClientE
     let name = worker_file_name(kind);
     if let Ok(explicit) = std::env::var(kind.env_var()) {
         let path = PathBuf::from(explicit);
-        if path.exists() {
+        if is_usable_process_binary(&path) {
             return Ok(path);
         }
         return Err(WorkerClientError::NotFound(path.display().to_string()));
     }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-        && let Some(sibling) = first_process_binary(dir, kind.binary_stem())
-    {
-        return Ok(sibling);
-    }
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let mut dir = PathBuf::from(manifest);
-        for _ in 0..6 {
-            for profile in ["debug", "release"] {
-                let candidate_dir = dir.join("target").join(profile);
-                if let Some(candidate) = first_process_binary(&candidate_dir, kind.binary_stem()) {
-                    return Ok(candidate);
-                }
-                let nested = dir.join("rust").join("target").join(profile);
-                if let Some(candidate) = first_process_binary(&nested, kind.binary_stem()) {
-                    return Ok(candidate);
-                }
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-    Err(WorkerClientError::NotFound(format!(
-        "set {} or install {name} next to aifs-engine",
-        kind.env_var()
-    )))
+    discover_process_binary(
+        kind.binary_stem(),
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .as_deref(),
+    )
+    .ok_or_else(|| {
+        WorkerClientError::NotFound(format!(
+            "set {} or install {name} next to aifs-engine",
+            kind.env_var()
+        ))
+    })
 }
 
 fn worker_file_name(kind: WorkerKind) -> String {

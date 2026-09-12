@@ -101,12 +101,70 @@ pub fn process_binary_names(stem: &str, target_triple: Option<&str>) -> Vec<Stri
     names
 }
 
-/// First existing process binary for `stem` in `dir` (plain name, then sidecar suffix).
+/// True when `path` is a non-empty regular file (skips Tauri debug placeholders).
+pub fn is_usable_process_binary(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+}
+
+/// First usable process binary for `stem` in `dir` (plain name, then sidecar suffix).
 pub fn first_process_binary(dir: &Path, stem: &str) -> Option<PathBuf> {
     process_binary_names(stem, target_triple())
         .into_iter()
         .map(|name| dir.join(name))
-        .find(|path| path.is_file())
+        .find(|path| is_usable_process_binary(path))
+}
+
+/// Resolves `stem` next to `current_exe`, then Cargo `target/{debug,release}` ancestors.
+///
+/// Tauri `tauri dev` can launch sidecars from `src-tauri/binaries/` where debug
+/// placeholders are empty. Walking up finds `target/debug/aifs-worker-llm` from
+/// `pnpm llama` / `pnpm desktop:cuda`.
+pub fn discover_process_binary(
+    stem: &str,
+    current_exe: Option<&Path>,
+    manifest_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(exe) = current_exe
+        && let Some(dir) = exe.parent()
+    {
+        roots.push(dir.to_path_buf());
+    }
+    if let Some(manifest) = manifest_dir {
+        roots.push(manifest.to_path_buf());
+    }
+    for root in roots {
+        if let Some(found) = search_process_binary_ancestors(&root, stem) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn search_process_binary_ancestors(start: &Path, stem: &str) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    for _ in 0..8 {
+        if let Some(found) = first_process_binary(&dir, stem) {
+            return Some(found);
+        }
+        if let Some(found) = first_process_binary(&dir.join("binaries"), stem) {
+            return Some(found);
+        }
+        for profile in ["debug", "release"] {
+            if let Some(found) = first_process_binary(&dir.join("target").join(profile), stem) {
+                return Some(found);
+            }
+            if let Some(found) =
+                first_process_binary(&dir.join("rust").join("target").join(profile), stem)
+            {
+                return Some(found);
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
 }
 
 /// Something the engine asks a worker to do.
@@ -387,17 +445,59 @@ mod tests {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
         let sidecar = dir.path().join(format!("aifs-worker-llm-{triple}"));
-        std::fs::write(&sidecar, b"").unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(&sidecar, b"sidecar").unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(
             first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
             Some(sidecar.as_path())
         );
         let plain = dir.path().join("aifs-worker-llm");
-        std::fs::write(&plain, b"").unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(&plain, b"plain").unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(
             first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
             Some(plain.as_path())
         );
+    }
+
+    #[test]
+    fn first_process_binary_skips_empty_tauri_placeholders() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
+        let placeholder = dir.path().join(format!("aifs-worker-llm-{triple}"));
+        std::fs::write(&placeholder, b"").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            None
+        );
+        let real = dir.path().join("aifs-worker-llm");
+        std::fs::write(&real, b"llama").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
+            Some(real.as_path())
+        );
+    }
+
+    #[test]
+    fn discover_process_binary_walks_up_to_target_debug() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let debug = root.path().join("target").join("debug");
+        std::fs::create_dir_all(&debug).unwrap_or_else(|error| panic!("{error}"));
+        let worker = debug.join("aifs-worker-llm");
+        std::fs::write(&worker, b"cuda-llama").unwrap_or_else(|error| panic!("{error}"));
+        let binaries = root
+            .path()
+            .join("apps")
+            .join("desktop")
+            .join("src-tauri")
+            .join("binaries");
+        std::fs::create_dir_all(&binaries).unwrap_or_else(|error| panic!("{error}"));
+        let triple = target_triple().unwrap_or_else(|| panic!("AIFS_TARGET_TRIPLE"));
+        std::fs::write(binaries.join(format!("aifs-worker-llm-{triple}")), b"")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let sidecar_engine = binaries.join(format!("aifs-engine-{triple}"));
+        std::fs::write(&sidecar_engine, b"engine").unwrap_or_else(|error| panic!("{error}"));
+        let found = discover_process_binary("aifs-worker-llm", Some(&sidecar_engine), None)
+            .unwrap_or_else(|| panic!("should find workspace target/debug worker"));
+        assert_eq!(found, worker);
     }
 
     #[test]

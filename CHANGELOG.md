@@ -48,6 +48,11 @@
   line) so long titles no longer resize the layout. Song-title punctuation (`?`,
   `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when
   proposing destinations, instead of dropping those characters.
+- After `pnpm desktop:cuda`, scan no longer reports assigned slots as "LLM worker
+  is not installed" when the CUDA llama binary exists under `target/debug` but
+  Tauri left an empty sidecar placeholder. Discovery skips empty files, walks
+  up to Cargo `target/`, and scan logs the real spawn/hello error if the worker
+  still cannot start.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
