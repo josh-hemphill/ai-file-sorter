@@ -247,7 +247,8 @@ pub struct ModelArtifactStatus {
     pub expected_bytes: u64,
     /// Current file size, or `0` when missing.
     pub bytes_on_disk: u64,
-    /// True when the finished file is present **and** matches the catalog SHA-256.
+    /// True when the listing check treats the file as on disk (SHA-256 for
+    /// small files and cached digests; size plus GGUF magic for large cold files).
     pub present: bool,
     /// Catalog ids that need this file.
     pub used_by: Vec<String>,
@@ -726,6 +727,35 @@ mod tests {
         assert_eq!(
             slot_runtime(&backend, &LlmWorkerStatus::Unprobed, None).kind_id(),
             "missing_files"
+        );
+    }
+
+    #[test]
+    fn slot_runtime_unprobed_listed_weights_are_pending() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let body = b"unprobed-listed-catalog";
+        let _pin =
+            crate::ArtifactSha256Guard::pin(&[(crate::GEMMA_TEXT_FILENAME, body.as_slice())]);
+        std::fs::write(
+            crate::artifact_path(dir.path(), crate::GEMMA_TEXT_FILENAME),
+            body,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let catalog = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        let pending = slot_runtime(&catalog, &LlmWorkerStatus::Unprobed, Some(dir.path()));
+        assert_eq!(pending.kind_id(), "pending");
+        assert!(!pending.is_live_infer());
+        let weights = dir.path().join("model.gguf");
+        write_gguf_stub(&weights);
+        let local = ModelBackend::LocalGguf {
+            path: weights.display().to_string(),
+            mmproj: None,
+        };
+        assert_eq!(
+            slot_runtime(&local, &LlmWorkerStatus::Unprobed, None).kind_id(),
+            "pending"
         );
     }
 

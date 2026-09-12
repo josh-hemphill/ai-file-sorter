@@ -3847,7 +3847,31 @@ mod tests {
         assert_eq!(
             deferred.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
             Some("missing_files"),
-            "get_models must not spawn the LLM worker (would report stub)"
+            "unprobed catalog without files is missing_files (stub probe would be stub)"
+        );
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let body = b"present-models-skips-hello";
+        let _pin = aifs_protocol::ArtifactSha256Guard::pin(&[(
+            aifs_protocol::GEMMA_TEXT_FILENAME,
+            body.as_slice(),
+        )]);
+        std::fs::write(
+            aifs_protocol::artifact_path(models.path(), aifs_protocol::GEMMA_TEXT_FILENAME),
+            body,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let mut listed = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        listed.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        let pending = present_models(listed);
+        assert_eq!(
+            pending.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
+            Some("pending"),
+            "listed files without worker hello must be pending, not stub or llama"
         );
     }
 
@@ -3917,12 +3941,9 @@ mod tests {
             .as_ref()
             .map(SlotRuntime::kind_id)
             .unwrap_or("missing");
-        assert!(
-            matches!(
-                kind,
-                "stub" | "missing_files" | "missing_worker" | "pending"
-            ),
-            "catalog runtime was {kind}"
+        assert_eq!(
+            kind, "missing_files",
+            "put/get_models must not spawn the worker (stub hello would be stub): {kind}"
         );
         drop(engine);
         let stored = aifs_store::WorkspaceStore::open(db.path())

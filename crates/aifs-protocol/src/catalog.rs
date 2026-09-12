@@ -56,7 +56,8 @@ pub struct CatalogArtifact {
     pub id: &'static str,
     /// Filename under the model storage directory.
     pub filename: &'static str,
-    /// Approximate size shown in Setup (not used as a skip threshold).
+    /// Catalog size hint. Listing treats a large cold file as present only when
+    /// `bytes_on_disk` matches this and the GGUF magic is valid.
     pub expected_bytes: u64,
     /// Lowercase hex SHA-256 of the published file.
     pub sha256: &'static str,
