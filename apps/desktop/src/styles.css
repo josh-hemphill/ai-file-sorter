@@ -444,6 +444,50 @@ h2 {
   align-items: flex-start;
 }
 
+.settings-loading {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.settings-form:disabled {
+  opacity: 0.65;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .settings h1 {
   margin: 0 0 6px;
   font-size: 22px;

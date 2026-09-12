@@ -48,6 +48,8 @@
   line) so long titles no longer resize the layout. Song-title punctuation (`?`,
   `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when
   proposing destinations, instead of dropping those characters.
+- Settings shows a loading state immediately, keeps fields locked until the engine
+  values arrive, and only then enables Save.
 - After `pnpm desktop:cuda`, scan no longer reports assigned slots as "LLM worker
   is not installed" when the CUDA llama binary exists under `target/debug` but
   Tauri left an empty sidecar placeholder. Discovery skips empty files, walks

@@ -4,6 +4,7 @@ import {
   applyWhitelistMode,
   branchingToText,
   linesToList,
+  settingsPageStatus,
   textToBranching,
   whitelistMode,
 } from "./settings.ts";
@@ -20,6 +21,15 @@ test("branching text round-trips", () => {
   const map = textToBranching(text);
   assert.deepEqual(map.Documents, ["Reports", "Notes"]);
   assert.equal(branchingToText(map), text);
+});
+
+test("settingsPageStatus shows loading until the form is bound", () => {
+  assert.equal(settingsPageStatus(false, true, null), "loading");
+  assert.equal(settingsPageStatus(false, false, null), "loading");
+  assert.equal(settingsPageStatus(false, false, "engine is not running"), "error");
+  assert.equal(settingsPageStatus(true, true, null), "saving");
+  assert.equal(settingsPageStatus(true, false, null), "ready");
+  assert.equal(settingsPageStatus(true, false, "put failed"), "error");
 });
 
 test("applyWhitelistMode keeps subcategory styles exclusive", () => {
