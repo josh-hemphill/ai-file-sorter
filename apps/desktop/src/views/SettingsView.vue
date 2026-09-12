@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { mdiArrowLeft, mdiContentSaveOutline, mdiDownloadOutline } from "@mdi/js";
-import { onMounted, ref } from "vue";
+import {
+  mdiArrowLeft,
+  mdiContentSaveOutline,
+  mdiDownloadOutline,
+  mdiLoading,
+} from "@mdi/js";
+import { computed, onMounted, ref } from "vue";
 import Icon from "../components/Icon.vue";
 import WhitelistEditor from "../components/WhitelistEditor.vue";
 import { connectEngine, getSettings, putSettings } from "../engine";
@@ -10,6 +15,7 @@ import {
   defaultSettings,
   linesToList,
   listToLines,
+  settingsPageStatus,
   whitelistMode,
   type WhitelistMode,
 } from "../settings";
@@ -27,7 +33,18 @@ const branchingText = ref("");
 const mode = ref<WhitelistMode>("none");
 const error = ref<string | null>(null);
 const saved = ref(false);
-const busy = ref(false);
+const loaded = ref(false);
+const busy = ref(true);
+const status = computed(() => settingsPageStatus(loaded.value, busy.value, error.value));
+const saveLabel = computed(() => {
+  if (busy.value && !loaded.value) {
+    return "Loading…";
+  }
+  if (busy.value) {
+    return "Saving…";
+  }
+  return "Save";
+});
 
 function bindForm(next: AppSettings) {
   settings.value = next;
@@ -43,6 +60,7 @@ async function load() {
   try {
     await connectEngine();
     bindForm(await getSettings());
+    loaded.value = true;
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -85,7 +103,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="settings page" aria-labelledby="settings-title">
+  <section
+    class="settings page"
+    aria-labelledby="settings-title"
+    :aria-busy="status === 'loading' || status === 'saving'"
+  >
     <nav class="crumb" aria-label="Breadcrumb">
       <button type="button" class="crumb-link" @click="emit('back')">Workspace</button>
       <span aria-hidden="true">/</span>
@@ -104,9 +126,16 @@ onMounted(() => {
           <Icon :path="mdiDownloadOutline" :size="18" />
           Open Setup
         </button>
-        <button type="button" :disabled="busy" @click="save">
-          <Icon :path="mdiContentSaveOutline" :size="18" />
-          Save
+        <button v-if="!loaded && error" type="button" @click="load">
+          Retry
+        </button>
+        <button type="button" :disabled="busy || !loaded" @click="save">
+          <Icon
+            :path="busy ? mdiLoading : mdiContentSaveOutline"
+            :size="18"
+            :class="{ spin: busy }"
+          />
+          {{ saveLabel }}
         </button>
         <button type="button" class="primary" @click="emit('back')">
           <Icon :path="mdiArrowLeft" :size="18" />
@@ -115,81 +144,93 @@ onMounted(() => {
       </div>
     </header>
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-else-if="status === 'saving'" class="muted" role="status">Saving…</p>
     <p v-else-if="saved" class="muted">Saved. Scan with Custom to use them.</p>
 
-    <article class="card">
-      <h2>Scan</h2>
-      <label class="choice">
-        <input v-model="settings.scan.include_hidden" type="checkbox" />
-        Include hidden files
-      </label>
-      <label class="choice">
-        <input v-model="settings.scan.protect_projects" type="checkbox" />
-        Protect detected projects
-      </label>
-      <label class="choice">
-        <input v-model="settings.scan.extract_metadata" type="checkbox" />
-        Extract media and document metadata
-      </label>
-      <label class="field">
-        Max depth (`0` = unlimited)
-        <input v-model.number="settings.scan.max_depth" type="number" min="0" />
-      </label>
+    <article v-if="status === 'loading'" class="card settings-loading" role="status" aria-live="polite">
+      <Icon :path="mdiLoading" :size="20" class="spin" />
+      <div>
+        <strong>Loading settings…</strong>
+        <p class="muted">Connecting to the engine and reading the Custom intent.</p>
+      </div>
     </article>
 
-    <article class="card">
-      <h2>Classification</h2>
-      <label class="field">
-        Folder style
-        <select v-model="settings.policy.style">
-          <option value="consistent">Consistent (Documents, Pictures, Music)</option>
-          <option value="refined">Refined (Podcasts, Screenshots when evidence exists)</option>
-        </select>
-      </label>
-      <label class="choice">
-        <input v-model="settings.policy.use_subfolders" type="checkbox" />
-        Use artist/topic subfolders
-      </label>
-      <label class="field">
-        Category language
-        <input v-model="settings.policy.category_language" placeholder="en" />
-        <span class="muted">Canonical English internally until translations exist.</span>
-      </label>
-    </article>
+    <fieldset v-else-if="loaded" class="settings-form" :disabled="busy">
+      <legend class="visually-hidden">Custom intent settings</legend>
+      <article class="card">
+        <h2>Scan</h2>
+        <label class="choice">
+          <input v-model="settings.scan.include_hidden" type="checkbox" />
+          Include hidden files
+        </label>
+        <label class="choice">
+          <input v-model="settings.scan.protect_projects" type="checkbox" />
+          Protect detected projects
+        </label>
+        <label class="choice">
+          <input v-model="settings.scan.extract_metadata" type="checkbox" />
+          Extract media and document metadata
+        </label>
+        <label class="field">
+          Max depth (`0` = unlimited)
+          <input v-model.number="settings.scan.max_depth" type="number" min="0" />
+        </label>
+      </article>
 
-    <article class="card">
-      <h2>Analysis</h2>
-      <p class="muted">
-        Models themselves are chosen on the Setup page. Enabling a slot here records the intent.
-        Scan runs that analysis when the slot is assigned and the LLM worker is installed.
-      </p>
-      <label class="choice">
-        <input v-model="settings.analyze_images" type="checkbox" />
-        Analyze images
-      </label>
-      <label class="choice">
-        <input v-model="settings.analyze_documents" type="checkbox" />
-        Analyze documents
-      </label>
-      <label class="choice">
-        <input v-model="settings.policy.rename_media" type="checkbox" />
-        Rename media from tags
-      </label>
-      <label class="choice">
-        <input v-model="settings.policy.rename_images_with_date" type="checkbox" />
-        Prefix images with capture date
-      </label>
-    </article>
+      <article class="card">
+        <h2>Classification</h2>
+        <label class="field">
+          Folder style
+          <select v-model="settings.policy.style">
+            <option value="consistent">Consistent (Documents, Pictures, Music)</option>
+            <option value="refined">Refined (Podcasts, Screenshots when evidence exists)</option>
+          </select>
+        </label>
+        <label class="choice">
+          <input v-model="settings.policy.use_subfolders" type="checkbox" />
+          Use artist/topic subfolders
+        </label>
+        <label class="field">
+          Category language
+          <input v-model="settings.policy.category_language" placeholder="en" />
+          <span class="muted">Canonical English internally until translations exist.</span>
+        </label>
+      </article>
 
-    <WhitelistEditor
-      :mode="mode"
-      :main-text="mainText"
-      :global-text="globalText"
-      :branching-text="branchingText"
-      @update:mode="mode = $event"
-      @update:main-text="mainText = $event"
-      @update:global-text="globalText = $event"
-      @update:branching-text="branchingText = $event"
-    />
+      <article class="card">
+        <h2>Analysis</h2>
+        <p class="muted">
+          Models themselves are chosen on the Setup page. Enabling a slot here records the intent.
+          Scan runs that analysis when the slot is assigned and the LLM worker is installed.
+        </p>
+        <label class="choice">
+          <input v-model="settings.analyze_images" type="checkbox" />
+          Analyze images
+        </label>
+        <label class="choice">
+          <input v-model="settings.analyze_documents" type="checkbox" />
+          Analyze documents
+        </label>
+        <label class="choice">
+          <input v-model="settings.policy.rename_media" type="checkbox" />
+          Rename media from tags
+        </label>
+        <label class="choice">
+          <input v-model="settings.policy.rename_images_with_date" type="checkbox" />
+          Prefix images with capture date
+        </label>
+      </article>
+
+      <WhitelistEditor
+        :mode="mode"
+        :main-text="mainText"
+        :global-text="globalText"
+        :branching-text="branchingText"
+        @update:mode="mode = $event"
+        @update:main-text="mainText = $event"
+        @update:global-text="globalText = $event"
+        @update:branching-text="branchingText = $event"
+      />
+    </fieldset>
   </section>
 </template>

@@ -48,6 +48,8 @@
   line) so long titles no longer resize the layout. Song-title punctuation (`?`,
   `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when
   proposing destinations, instead of dropping those characters.
+- Settings shows a loading state immediately, keeps fields locked until the engine
+  values arrive, and only then enables Save.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
