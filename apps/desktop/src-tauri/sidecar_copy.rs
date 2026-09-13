@@ -1,5 +1,6 @@
 // Copy sidecar binaries only when contents change so `tauri dev` does not loop.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Native library filename prefixes that `aifs-worker-llm` loads at process start.
@@ -103,24 +104,19 @@ fn is_worker_runtime_lib(name: &str) -> bool {
         .any(|prefix| stem.starts_with(prefix))
 }
 
-fn dest_has_cuda_backend(dest_dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dest_dir) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        entry.file_name().to_str().is_some_and(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.contains("ggml-cuda") || lower.contains("ggml_cuda")
-        })
-    })
+fn is_ggml_cuda_lib_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("ggml-cuda") || lower.contains("ggml_cuda")
 }
 
-fn copy_matching_libs_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<usize> {
-    if !src_dir.is_dir() {
-        return Ok(0);
+fn collect_runtime_libs_from(
+    dir: &Path,
+    files: &mut HashMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
     }
-    let mut copied = 0;
-    for entry in std::fs::read_dir(src_dir)? {
+    for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -130,14 +126,35 @@ fn copy_matching_libs_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<u
             continue;
         }
         let src = entry.path();
-        if !src.is_file() {
-            continue;
-        }
-        if copy_if_changed(&src, &dest_dir.join(name))? {
-            copied += 1;
+        if src.is_file() {
+            files.insert(name.to_owned(), src);
         }
     }
-    Ok(copied)
+    Ok(())
+}
+
+fn remove_stale_runtime_libs(
+    dest_dir: &Path,
+    keep: &HashMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    if !dest_dir.is_dir() {
+        return Ok(());
+    }
+    let mut stale = Vec::new();
+    for entry in std::fs::read_dir(dest_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if is_worker_runtime_lib(name) && !keep.contains_key(name) && entry.path().is_file() {
+            stale.push(entry.path());
+        }
+    }
+    for path in stale {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// Copies llama.cpp / CUDA runtime libs from `src_dir` (and `deps`) next to the sidecar.
@@ -153,13 +170,18 @@ fn copy_worker_runtime_libs_from(
     cuda_root: Option<&Path>,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dest_dir)?;
-    copy_matching_libs_from(src_dir, dest_dir)?;
-    copy_matching_libs_from(&src_dir.join("deps"), dest_dir)?;
-    if dest_has_cuda_backend(dest_dir)
+    let mut files = HashMap::new();
+    collect_runtime_libs_from(src_dir, &mut files)?;
+    collect_runtime_libs_from(&src_dir.join("deps"), &mut files)?;
+    if files.keys().any(|name| is_ggml_cuda_lib_name(name))
         && let Some(cuda_root) = cuda_root
     {
-        copy_matching_libs_from(&cuda_root.join("bin"), dest_dir)?;
+        collect_runtime_libs_from(&cuda_root.join("bin"), &mut files)?;
     }
+    for (name, src) in &files {
+        copy_if_changed(src, &dest_dir.join(name))?;
+    }
+    remove_stale_runtime_libs(dest_dir, &files)?;
     Ok(())
 }
 
@@ -234,6 +256,8 @@ mod sidecar_copy_tests {
             "ggml.dll",
             "ggml-cuda.dll",
             "llama.dll",
+            "mtmd.dll",
+            "libmtmd.so",
             "libggml.so",
             "libggml.so.0",
             "libllama.dylib",
@@ -321,6 +345,38 @@ mod sidecar_copy_tests {
             b"cudart"
         );
         assert!(!dest.join("nvcuda.dll").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn copy_worker_runtime_libs_removes_stale_cuda_backend_after_cpu_rebuild() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let dest = root.join("dest");
+        let cuda = root.join("cuda");
+        fs::create_dir_all(&src).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(&dest).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml.dll"), b"cpu").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("ggml-cuda.dll"), b"stale").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("cudart64_12.dll"), b"stale-rt")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("aifs-worker-llm.exe"), b"sidecar")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        copy_worker_runtime_libs_from(&src, &dest, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            fs::read(dest.join("ggml.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cpu"
+        );
+        assert!(!dest.join("ggml-cuda.dll").exists());
+        assert!(!dest.join("cudart64_12.dll").exists());
+        assert_eq!(
+            fs::read(dest.join("aifs-worker-llm.exe")).unwrap_or_else(|error| panic!("{error}")),
+            b"sidecar"
+        );
         fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 }

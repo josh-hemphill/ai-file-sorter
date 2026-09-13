@@ -63,8 +63,9 @@
   exists, usually because ggml/llama/CUDA *runtime* DLLs are not next to the
   spawned sidecar (a working NVIDIA driver in other apps is not enough).
   `tauri` build copies those libs into `src-tauri/binaries/` beside
-  `aifs-worker-llm`, and worker spawn prepends that folder, Cargo
-  `target/{debug,release}`, and `CUDA_PATH/bin` to the library search path.
+  `aifs-worker-llm` and into `resources/llm-runtime/` for the bundle,
+  and worker spawn prepends those folders, Cargo `target/{debug,release}`,
+  and `CUDA_PATH/bin` to the library search path.
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
   Unprobed catalog/local files that look present are `pending` until scan
   hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing

@@ -737,6 +737,11 @@ fn format_disconnected(
 
 /// Directories Windows/Linux/macOS should search for llama.cpp / CUDA runtime libs.
 fn worker_library_dirs(binary: &Path) -> Vec<PathBuf> {
+    let cuda_root = std::env::var_os("CUDA_PATH").map(PathBuf::from);
+    worker_library_dirs_from(binary, cuda_root.as_deref())
+}
+
+fn worker_library_dirs_from(binary: &Path, cuda_root: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let Some(start) = binary.parent() else {
         return dirs;
@@ -758,8 +763,7 @@ fn worker_library_dirs(binary: &Path) -> Vec<PathBuf> {
             break;
         }
     }
-    if let Some(cuda) = std::env::var_os("CUDA_PATH") {
-        let cuda = PathBuf::from(cuda);
+    if let Some(cuda) = cuda_root {
         dirs.push(cuda.join("bin"));
         dirs.push(cuda.join("lib").join("x64"));
         dirs.push(cuda.join("lib64"));
@@ -918,22 +922,24 @@ mod tests {
 
     #[test]
     fn worker_library_dirs_include_exe_dir_target_and_cuda() {
-        let binary = Path::new("/workspace/apps/desktop/src-tauri/binaries/aifs-worker-llm");
-        let dirs = worker_library_dirs(binary);
-        let parent = binary.parent().unwrap_or_else(|| panic!("parent"));
+        let binary = Path::new("repo/apps/desktop/src-tauri/binaries/aifs-worker-llm");
+        let dirs = worker_library_dirs_from(binary, Some(Path::new("cuda-toolkit")));
         assert!(
             dirs.iter()
-                .any(|dir| dir == parent || dir.ends_with("binaries")),
+                .any(|dir| dir == Path::new("repo/apps/desktop/src-tauri/binaries")),
             "{dirs:?}"
         );
         assert!(
-            dirs.iter()
-                .any(|dir| dir.ends_with(Path::new("target").join("debug"))),
-            "{dirs:?}"
+            dirs.iter().any(|dir| dir == Path::new("repo/target/debug")),
+            "must walk to workspace target/debug, not only binaries/target/debug: {dirs:?}"
         );
         assert!(
             dirs.iter()
-                .any(|dir| dir.ends_with(Path::new("target").join("debug").join("deps"))),
+                .any(|dir| dir == Path::new("repo/apps/desktop/src-tauri/resources/llm-runtime")),
+            "{dirs:?}"
+        );
+        assert!(
+            dirs.iter().any(|dir| dir == Path::new("cuda-toolkit/bin")),
             "{dirs:?}"
         );
     }
