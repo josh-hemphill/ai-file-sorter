@@ -81,6 +81,11 @@
   Host `nvcuda.dll` does not complete a CUDA payload. Tauri stages each
   accelerator into that nested folder and bundles the `llm-runtime`
   directory (not a glob) so sibling accelerators are not flattened.
+- The engine autoselects a complete `llm-runtime/<accel>/` payload (CUDA →
+  Vulkan → Metal → CPU) using host driver probes, not `CUDA_PATH`.
+  `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. Spawn sets the
+  library search path to that payload directory only. `get_models` still
+  does not hello the worker.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

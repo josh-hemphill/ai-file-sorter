@@ -1117,12 +1117,13 @@ fn chat_via_worker(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<String, String> {
-    let mut llm = WorkerClient::connect_default(WorkerKind::Llm).map_err(|error| match error {
-        aifs_worker_client::WorkerClientError::NotFound(_) => {
-            "LLM worker is not installed".to_owned()
-        }
-        other => format!("LLM worker failed to start: {other}"),
-    })?;
+    let mut llm =
+        WorkerClient::connect_llm(&inventory.gpu_preference).map_err(|error| match error {
+            aifs_worker_client::WorkerClientError::NotFound(_) => {
+                "LLM worker is not installed".to_owned()
+            }
+            other => format!("LLM worker failed to start: {other}"),
+        })?;
     let context = chat::chat_context(snapshot, revision);
     let storage_dir = resolved_models_dir(&inventory.storage_dir)
         .display()

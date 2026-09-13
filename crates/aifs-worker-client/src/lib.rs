@@ -19,6 +19,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+mod payload;
+
+pub use payload::{
+    LLM_BACKEND_ENV, discover_llm_payload, list_llm_payloads, list_llm_payloads_from,
+    runtime_search_roots, spawn_llm_preference,
+};
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const INFER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -198,7 +205,16 @@ impl WorkerClient {
 
     /// Discovers the binary for `kind` and connects.
     pub fn connect_default(kind: WorkerKind) -> Result<Self, WorkerClientError> {
+        if kind == WorkerKind::Llm {
+            return Self::connect_llm("auto");
+        }
         Self::connect(kind, discover_worker_binary(kind)?)
+    }
+
+    /// Autoselects an LLM payload (`AIFS_LLM_BACKEND` overrides `gpu_preference`) and connects.
+    pub fn connect_llm(gpu_preference: impl Into<String>) -> Result<Self, WorkerClientError> {
+        let payload = discover_llm_payload(&gpu_preference.into())?;
+        Self::connect(WorkerKind::Llm, payload.binary)
     }
 
     /// Connects when the binary is present; `None` when it is not installed.
@@ -735,40 +751,12 @@ fn format_disconnected(
     message
 }
 
-/// Directories Windows/Linux/macOS should search for llama.cpp / CUDA runtime libs.
+/// The folder containing the worker; llama payloads load ggml from this directory only.
 fn worker_library_dirs(binary: &Path) -> Vec<PathBuf> {
-    let cuda_root = std::env::var_os("CUDA_PATH").map(PathBuf::from);
-    worker_library_dirs_from(binary, cuda_root.as_deref())
-}
-
-fn worker_library_dirs_from(binary: &Path, cuda_root: Option<&Path>) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    let Some(start) = binary.parent() else {
-        return dirs;
-    };
-    dirs.push(start.to_path_buf());
-    dirs.push(start.join("deps"));
-    dirs.push(start.join("resources"));
-    dirs.push(start.join("resources").join("binaries"));
-    dirs.push(start.join("resources").join("llm-runtime"));
-    let mut dir = start.to_path_buf();
-    for _ in 0..8 {
-        for profile in ["debug", "release"] {
-            let target = dir.join("target").join(profile);
-            dirs.push(target.clone());
-            dirs.push(target.join("deps"));
-        }
-        dirs.push(dir.join("resources").join("llm-runtime"));
-        if !dir.pop() {
-            break;
-        }
-    }
-    if let Some(cuda) = cuda_root {
-        dirs.push(cuda.join("bin"));
-        dirs.push(cuda.join("lib").join("x64"));
-        dirs.push(cuda.join("lib64"));
-    }
-    dirs
+    binary
+        .parent()
+        .map(|dir| vec![dir.to_path_buf()])
+        .unwrap_or_default()
 }
 
 fn library_path_key() -> &'static str {
@@ -921,26 +909,16 @@ mod tests {
     }
 
     #[test]
-    fn worker_library_dirs_include_exe_dir_target_and_cuda() {
-        let binary = Path::new("repo/apps/desktop/src-tauri/binaries/aifs-worker-llm");
-        let dirs = worker_library_dirs_from(binary, Some(Path::new("cuda-toolkit")));
-        assert!(
-            dirs.iter()
-                .any(|dir| dir == Path::new("repo/apps/desktop/src-tauri/binaries")),
-            "{dirs:?}"
+    fn worker_library_dirs_are_only_the_payload_folder() {
+        let binary = Path::new("repo/target/debug/llm-runtime/cuda/aifs-worker-llm");
+        let dirs = worker_library_dirs(binary);
+        assert_eq!(
+            dirs,
+            vec![PathBuf::from("repo/target/debug/llm-runtime/cuda")]
         );
         assert!(
-            dirs.iter().any(|dir| dir == Path::new("repo/target/debug")),
-            "must walk to workspace target/debug, not only binaries/target/debug: {dirs:?}"
-        );
-        assert!(
-            dirs.iter()
-                .any(|dir| dir == Path::new("repo/apps/desktop/src-tauri/resources/llm-runtime")),
-            "{dirs:?}"
-        );
-        assert!(
-            dirs.iter().any(|dir| dir == Path::new("cuda-toolkit/bin")),
-            "{dirs:?}"
+            !dirs.iter().any(|dir| dir == Path::new("repo/target/debug")),
+            "must not search Cargo target or CUDA_PATH: {dirs:?}"
         );
     }
 
