@@ -115,7 +115,8 @@ Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 non-empty binary next to the engine or in ancestor `target/{debug,release}/`
 (empty Tauri debug sidecar placeholders are skipped). Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
-in the error text. Scan prefers a live
+in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
+`0xC0000135`) is named in that text (loader failure, no stderr). Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
 missing. The document worker extracts PDF/Office/text (with an in-process
 fallback). The vision worker reads EXIF (`image.captured_on`, `image.camera`,

@@ -553,13 +553,15 @@ impl WorkerClient {
         };
         let line =
             encode_line(&request).map_err(|error| WorkerClientError::Codec(error.to_string()))?;
-        {
+        let write_error = {
             let stdin = self
                 .stdin
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("worker stdin closed"))?;
-            writeln!(stdin, "{line}")?;
-            stdin.flush()?;
+            writeln!(stdin, "{line}").and_then(|()| stdin.flush()).err()
+        };
+        if let Some(error) = write_error {
+            return Err(self.io_or_disconnected(error));
         }
         let deadline = Instant::now() + timeout;
         let mut last_wait = Instant::now();
@@ -621,6 +623,14 @@ impl WorkerClient {
             status,
             &diagnostic_snapshot(&self.diagnostics),
         ))
+    }
+
+    fn io_or_disconnected(&mut self, error: std::io::Error) -> WorkerClientError {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            self.disconnected_error()
+        } else {
+            WorkerClientError::Spawn(error)
+        }
     }
 }
 
@@ -694,7 +704,7 @@ fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> St
     let mut message = String::from("worker closed stdout unexpectedly");
     if let Some(status) = status {
         if let Some(code) = status.code() {
-            message.push_str(&format!(" (exit {code})"));
+            message.push_str(&format!(" ({})", format_exit_code(code)));
         } else {
             message.push_str(&format!(" ({status})"));
         }
@@ -704,6 +714,37 @@ fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> St
         message.push_str(&diagnostics.join(" | "));
     }
     message
+}
+
+/// Windows `STATUS_DLL_NOT_FOUND` (`NtStatus` 0xC0000135) as a process exit code.
+const WINDOWS_STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
+const WINDOWS_STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
+const WINDOWS_STATUS_INVALID_IMAGE_FORMAT: u32 = 0xC000_007B;
+const WINDOWS_STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
+
+fn format_exit_code(code: i32) -> String {
+    match explain_worker_exit_code(code) {
+        Some(meaning) => format!("exit {code} / 0x{:08X}: {meaning}", code as u32),
+        None => format!("exit {code}"),
+    }
+}
+
+fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
+    match code as u32 {
+        WINDOWS_STATUS_DLL_NOT_FOUND => Some(
+            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The process dies in the loader before stderr exists — for a CUDA llama worker this is usually a missing NVIDIA driver library (nvcuda.dll) or a CUDA/ggml DLL not next to aifs-worker-llm",
+        ),
+        WINDOWS_STATUS_DLL_INIT_FAILED => {
+            Some("a DLL failed to initialize (Windows STATUS_DLL_INIT_FAILED)")
+        }
+        WINDOWS_STATUS_INVALID_IMAGE_FORMAT => Some(
+            "invalid image format (Windows STATUS_INVALID_IMAGE_FORMAT; often 32-bit vs 64-bit DLL mismatch)",
+        ),
+        WINDOWS_STATUS_ACCESS_VIOLATION => {
+            Some("access violation (Windows STATUS_ACCESS_VIOLATION)")
+        }
+        _ => None,
+    }
 }
 
 fn worker_file_name(kind: WorkerKind) -> String {
@@ -742,6 +783,19 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("libcuda.so.1"), "{message}");
+    }
+
+    #[test]
+    fn windows_dll_not_found_exit_explains_missing_cuda_loader() {
+        let code = WINDOWS_STATUS_DLL_NOT_FOUND as i32;
+        assert_eq!(code, -1_073_741_515);
+        let meaning = explain_worker_exit_code(code)
+            .unwrap_or_else(|| panic!("expected STATUS_DLL_NOT_FOUND"));
+        assert!(meaning.contains("STATUS_DLL_NOT_FOUND"), "{meaning}");
+        assert!(meaning.contains("nvcuda.dll"), "{meaning}");
+        let message = format_exit_code(code);
+        assert!(message.contains("0xC0000135"), "{message}");
+        assert!(message.contains("STATUS_DLL_NOT_FOUND"), "{message}");
     }
 
     #[cfg(unix)]
