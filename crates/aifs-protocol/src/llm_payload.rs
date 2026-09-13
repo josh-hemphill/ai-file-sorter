@@ -148,16 +148,22 @@ fn runtime_lib_stem(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
     let file = lower.rsplit(['/', '\\']).next().unwrap_or(lower.as_str());
     let file = file.strip_prefix("lib").unwrap_or(file);
-    if let Some(stem) = file.strip_suffix(".dll") {
-        return stem.to_owned();
+    let mut stem = if let Some(stem) = file.strip_suffix(".dll") {
+        stem.to_owned()
+    } else if let Some(stem) = file.strip_suffix(".dylib") {
+        stem.to_owned()
+    } else if let Some(idx) = file.find(".so") {
+        file[..idx].to_owned()
+    } else {
+        file.to_owned()
+    };
+    while let Some((head, tail)) = stem.rsplit_once('.')
+        && !tail.is_empty()
+        && tail.bytes().all(|b| b.is_ascii_digit())
+    {
+        stem = head.to_owned();
     }
-    if let Some(stem) = file.strip_suffix(".dylib") {
-        return stem.to_owned();
-    }
-    if let Some(idx) = file.find(".so") {
-        return file[..idx].to_owned();
-    }
-    file.to_owned()
+    stem
 }
 
 /// Core ggml loader stems; accelerator plugins (`ggml-cuda`, `ggml-vulkan`) are separate.
@@ -218,6 +224,7 @@ mod tests {
         assert!(runtime_lib_matches_prefix("llama.dll", "llama"));
         assert!(runtime_lib_matches_prefix("libllama.so", "llama"));
         assert!(runtime_lib_matches_prefix("ggml-base.dll", "ggml"));
+        assert!(runtime_lib_matches_prefix("libllama.0.dylib", "llama"));
         assert!(runtime_lib_matches_prefix("ggml-cpu.dll", "ggml"));
         assert!(!runtime_lib_matches_prefix("ggml-cuda.dll", "ggml"));
         assert!(!runtime_lib_matches_prefix("nvcuda.dll", "ggml-cuda"));
