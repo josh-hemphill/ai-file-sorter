@@ -76,6 +76,22 @@ test("inventorySummary does not claim heuristics when infer is stub or llama", (
     }),
     "1 assigned · 1 off",
   );
+  assert.equal(
+    inventorySummary({
+      storage_dir: "",
+      gpu_preference: "auto",
+      slots: [
+        {
+          id: "categorize",
+          kind: "catalog",
+          catalog_id: "gemma-3-4b-it",
+          runtime: { kind: "pending", detail: "deferred" },
+        },
+        { id: "vision", kind: "off", runtime: { kind: "off", detail: "off" } },
+      ],
+    }),
+    "1 assigned · 1 off",
+  );
 });
 
 test("withPresentedRuntime refreshes slot runtime after download", () => {

@@ -51,6 +51,8 @@ function runtimeKindLabel(kind: SlotRuntime["kind"]): string {
       return "hosted";
     case "stub":
       return "stub infer";
+    case "pending":
+      return "assigned";
     case "missing_worker":
       return "no worker";
     case "missing_files":
