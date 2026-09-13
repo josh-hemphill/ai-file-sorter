@@ -8,6 +8,8 @@ use aifs_protocol::{
     ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, discover_process_binary,
     encode_line, is_usable_process_binary,
 };
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -87,6 +89,7 @@ impl WorkerClientError {
 /// Client that owns a worker child process.
 pub struct WorkerClient {
     kind: WorkerKind,
+    binary: PathBuf,
     child: Child,
     stdin: Option<ChildStdin>,
     rx: Receiver<Result<WorkerEnvelope, WorkerClientError>>,
@@ -121,6 +124,7 @@ impl WorkerClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure(&mut command);
+        apply_worker_library_path(&mut command, binary);
         let mut child = command.spawn()?;
         let stdin = child
             .stdin
@@ -173,6 +177,7 @@ impl WorkerClient {
         });
         let mut client = Self {
             kind,
+            binary: binary.to_path_buf(),
             child,
             stdin: Some(stdin),
             rx,
@@ -622,6 +627,7 @@ impl WorkerClient {
         WorkerClientError::Disconnected(format_disconnected(
             status,
             &diagnostic_snapshot(&self.diagnostics),
+            Some(&self.binary),
         ))
     }
 
@@ -700,11 +706,24 @@ fn diagnostic_snapshot(buffer: &Mutex<Vec<String>>) -> Vec<String> {
     buffer.lock().map(|lines| lines.clone()).unwrap_or_default()
 }
 
-fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> String {
+fn format_disconnected(
+    status: Option<ExitStatus>,
+    diagnostics: &[String],
+    spawned: Option<&Path>,
+) -> String {
     let mut message = String::from("worker closed stdout unexpectedly");
+    if let Some(path) = spawned {
+        message.push_str(&format!(" [{}]", path.display()));
+    }
     if let Some(status) = status {
         if let Some(code) = status.code() {
             message.push_str(&format!(" ({})", format_exit_code(code)));
+            if let Some(path) = spawned
+                && let Some(hint) = dll_search_hint(code, path)
+            {
+                message.push(' ');
+                message.push_str(&hint);
+            }
         } else {
             message.push_str(&format!(" ({status})"));
         }
@@ -714,6 +733,79 @@ fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> St
         message.push_str(&diagnostics.join(" | "));
     }
     message
+}
+
+/// Directories Windows/Linux/macOS should search for llama.cpp / CUDA runtime libs.
+fn worker_library_dirs(binary: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let Some(start) = binary.parent() else {
+        return dirs;
+    };
+    dirs.push(start.to_path_buf());
+    dirs.push(start.join("deps"));
+    dirs.push(start.join("resources"));
+    dirs.push(start.join("resources").join("binaries"));
+    dirs.push(start.join("resources").join("llm-runtime"));
+    let mut dir = start.to_path_buf();
+    for _ in 0..8 {
+        for profile in ["debug", "release"] {
+            let target = dir.join("target").join(profile);
+            dirs.push(target.clone());
+            dirs.push(target.join("deps"));
+        }
+        dirs.push(dir.join("resources").join("llm-runtime"));
+        if !dir.pop() {
+            break;
+        }
+    }
+    if let Some(cuda) = std::env::var_os("CUDA_PATH") {
+        let cuda = PathBuf::from(cuda);
+        dirs.push(cuda.join("bin"));
+        dirs.push(cuda.join("lib").join("x64"));
+        dirs.push(cuda.join("lib64"));
+    }
+    dirs
+}
+
+fn library_path_key() -> &'static str {
+    if cfg!(windows) {
+        "PATH"
+    } else if cfg!(target_os = "macos") {
+        "DYLD_LIBRARY_PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    }
+}
+
+fn merge_search_path(existing: Option<OsString>, dirs: &[PathBuf]) -> OsString {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in dirs.iter().filter(|dir| dir.is_dir()) {
+        if seen.insert(dir.clone()) {
+            parts.push(dir.clone());
+        }
+    }
+    if let Some(existing) = &existing {
+        for part in std::env::split_paths(existing) {
+            if !part.as_os_str().is_empty() && seen.insert(part.clone()) {
+                parts.push(part);
+            }
+        }
+    }
+    std::env::join_paths(&parts).unwrap_or_else(|_| existing.unwrap_or_default())
+}
+
+fn apply_worker_library_path(command: &mut Command, binary: &Path) {
+    let key = library_path_key();
+    let existing = command
+        .get_envs()
+        .find(|(name, _)| *name == key)
+        .and_then(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .or_else(|| std::env::var_os(key));
+    command.env(
+        key,
+        merge_search_path(existing, &worker_library_dirs(binary)),
+    );
 }
 
 /// Windows `STATUS_DLL_NOT_FOUND` (`NtStatus` 0xC0000135) as a process exit code.
@@ -729,10 +821,21 @@ fn format_exit_code(code: i32) -> String {
     }
 }
 
+fn dll_search_hint(code: i32, spawned: &Path) -> Option<String> {
+    if code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND {
+        return None;
+    }
+    let folder = spawned.parent().unwrap_or(spawned);
+    Some(format!(
+        "Windows searched {folder} first for PE imports; ggml/llama/CUDA runtime DLLs must sit in that folder (other CUDA apps working does not put those sidecar DLLs beside this worker)",
+        folder = folder.display()
+    ))
+}
+
 fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
     match code as u32 {
         WINDOWS_STATUS_DLL_NOT_FOUND => Some(
-            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The process dies in the loader before stderr exists — for a CUDA llama worker this is usually a missing NVIDIA driver library (nvcuda.dll) or a CUDA/ggml DLL not next to aifs-worker-llm",
+            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The loader exits before stderr exists. Windows looks in the worker exe folder first — ggml/llama/CUDA runtime DLLs must sit beside that sidecar; a working NVIDIA driver is not enough if those DLLs were left in target/debug",
         ),
         WINDOWS_STATUS_DLL_INIT_FAILED => {
             Some("a DLL failed to initialize (Windows STATUS_DLL_INIT_FAILED)")
@@ -777,7 +880,7 @@ mod tests {
 
     #[test]
     fn format_disconnected_includes_stderr_lines() {
-        let message = format_disconnected(None, &["libcuda.so.1: cannot open".to_owned()]);
+        let message = format_disconnected(None, &["libcuda.so.1: cannot open".to_owned()], None);
         assert!(
             message.contains("worker closed stdout unexpectedly"),
             "{message}"
@@ -786,16 +889,77 @@ mod tests {
     }
 
     #[test]
-    fn windows_dll_not_found_exit_explains_missing_cuda_loader() {
+    fn format_disconnected_includes_spawned_path() {
+        let path = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-llm.exe");
+        let message = format_disconnected(None, &[], Some(path));
+        assert!(message.contains("aifs-worker-llm.exe"), "{message}");
+    }
+
+    #[test]
+    fn windows_dll_not_found_exit_explains_sidecar_runtime_libs() {
         let code = WINDOWS_STATUS_DLL_NOT_FOUND as i32;
         assert_eq!(code, -1_073_741_515);
         let meaning = explain_worker_exit_code(code)
             .unwrap_or_else(|| panic!("expected STATUS_DLL_NOT_FOUND"));
         assert!(meaning.contains("STATUS_DLL_NOT_FOUND"), "{meaning}");
-        assert!(meaning.contains("nvcuda.dll"), "{meaning}");
+        assert!(meaning.contains("target/debug"), "{meaning}");
+        assert!(
+            !meaning.contains("nvcuda.dll"),
+            "driver DLL is the wrong default cause: {meaning}"
+        );
         let message = format_exit_code(code);
         assert!(message.contains("0xC0000135"), "{message}");
         assert!(message.contains("STATUS_DLL_NOT_FOUND"), "{message}");
+        let spawned = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-llm.exe");
+        let hint = dll_search_hint(code, spawned).unwrap_or_else(|| panic!("hint"));
+        assert!(hint.contains("binaries"), "{hint}");
+        assert!(hint.contains("other CUDA apps"), "{hint}");
+    }
+
+    #[test]
+    fn worker_library_dirs_include_exe_dir_target_and_cuda() {
+        let binary = Path::new("/workspace/apps/desktop/src-tauri/binaries/aifs-worker-llm");
+        let dirs = worker_library_dirs(binary);
+        let parent = binary.parent().unwrap_or_else(|| panic!("parent"));
+        assert!(
+            dirs.iter()
+                .any(|dir| dir == parent || dir.ends_with("binaries")),
+            "{dirs:?}"
+        );
+        assert!(
+            dirs.iter()
+                .any(|dir| dir.ends_with(Path::new("target").join("debug"))),
+            "{dirs:?}"
+        );
+        assert!(
+            dirs.iter()
+                .any(|dir| dir.ends_with(Path::new("target").join("debug").join("deps"))),
+            "{dirs:?}"
+        );
+    }
+
+    #[test]
+    fn merge_search_path_prepends_existing_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "aifs-worker-libpath-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+        let merged =
+            merge_search_path(Some(OsString::from("keep-me")), std::slice::from_ref(&root));
+        let merged = merged.to_string_lossy();
+        assert!(merged.contains(&root.display().to_string()), "{merged}");
+        assert!(merged.contains("keep-me"), "{merged}");
+        let root_pos = merged
+            .find(&root.display().to_string())
+            .unwrap_or(usize::MAX);
+        let keep_pos = merged.find("keep-me").unwrap_or(0);
+        assert!(root_pos < keep_pos, "{merged}");
+        std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[cfg(unix)]

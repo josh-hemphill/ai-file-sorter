@@ -1,6 +1,8 @@
 # Sidecar copies live here. Watching them makes `tauri dev` rebuild forever:
 # build.rs copies the engine, the watcher restarts cargo, copy updates mtime again.
 binaries/
+# Copied llama/CUDA runtime libs (build.rs). Watching them retriggers tauri dev.
+resources/llm-runtime/
 # tauri_build rewrites ACL schemas on each compile.
 gen/
 

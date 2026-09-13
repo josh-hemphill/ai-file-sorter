@@ -10,3 +10,7 @@
 /binaries/*
 !/binaries/.gitkeep
 
+# Copied llama/CUDA runtime libs (keep the folder via .gitkeep)
+/resources/llm-runtime/*
+!/resources/llm-runtime/.gitkeep
+
