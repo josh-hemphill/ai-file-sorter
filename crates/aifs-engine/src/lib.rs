@@ -3889,14 +3889,57 @@ mod tests {
             Some("pending"),
             "listed files without worker hello must be pending, not stub or llama"
         );
-        assert!(
-            pending
-                .llm_payloads
-                .iter()
-                .all(|payload| !payload.dir.is_empty() && !payload.binary.is_empty()),
-            "get_models lists payload dirs without hello: {:?}",
-            pending.llm_payloads
+    }
+
+    #[test]
+    fn get_models_lists_payloads_without_hello_and_does_not_persist_them() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let payload_dir = aifs_protocol::llm_payload_dir(&manifest, aifs_protocol::LlmAccel::Cpu);
+        fs::create_dir_all(&payload_dir).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(payload_dir.join("aifs-worker-llm"), b"worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(payload_dir.join("llama.dll"), b"llama")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(payload_dir.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+        let listed = present_models(ModelInventory::default());
+        let cpu = listed
+            .llm_payloads
+            .iter()
+            .find(|payload| payload.accel == aifs_protocol::LlmAccel::Cpu)
+            .unwrap_or_else(|| panic!("expected cpu payload in {:?}", listed.llm_payloads));
+        assert_eq!(
+            cpu.host_available,
+            aifs_protocol::host_accel_available(aifs_protocol::LlmAccel::Cpu)
         );
+        assert!(cpu.binary.contains("aifs-worker-llm"), "{}", cpu.binary);
+        let db = tempfile::NamedTempFile::new().unwrap_or_else(|error| panic!("{error}"));
+        let mut engine =
+            Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
+        hello_ok(&mut engine);
+        let mut inventory = ModelInventory::default();
+        inventory
+            .llm_payloads
+            .push(aifs_protocol::LlmPayloadStatus {
+                accel: aifs_protocol::LlmAccel::Cuda,
+                dir: "/tmp/client-should-not-persist-cuda".into(),
+                binary: "/tmp/fake-worker".into(),
+                host_available: true,
+            });
+        terminal(engine.handle(Request {
+            id: "put".into(),
+            command: Command::PutModels { inventory },
+        }));
+        drop(engine);
+        let stored = aifs_store::WorkspaceStore::open(db.path())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .get_meta("model_inventory")
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("models meta"));
+        assert!(
+            !stored.contains("client-should-not-persist-cuda"),
+            "persisted inventory must not keep computed llm_payloads: {stored}"
+        );
+        let _ = fs::remove_dir_all(manifest.join(aifs_protocol::LLM_RUNTIME_DIR));
     }
 
     #[test]

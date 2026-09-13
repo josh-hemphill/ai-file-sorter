@@ -496,6 +496,14 @@ mod tests {
         let json = serde_json::to_value(&status).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(json["accel"], "cpu");
         assert_eq!(json["host_available"], true);
+        assert_eq!(status.host_available, host_accel_available(LlmAccel::Cpu));
         assert!(json["dir"].as_str().unwrap_or("").contains("cpu"));
+        assert!(
+            json["binary"]
+                .as_str()
+                .unwrap_or("")
+                .contains("aifs-worker-llm"),
+            "{json}"
+        );
     }
 }

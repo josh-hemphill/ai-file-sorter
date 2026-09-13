@@ -162,6 +162,7 @@ export function withPresentedRuntime(
     ...current,
     storage_dir: presented.storage_dir || current.storage_dir,
     artifacts: presented.artifacts ?? current.artifacts,
+    llm_payloads: presented.llm_payloads ?? current.llm_payloads,
     slots: current.slots.map((slot) => ({
       ...slot,
       runtime: runtimeById.has(slot.id) ? runtimeById.get(slot.id) : slot.runtime,

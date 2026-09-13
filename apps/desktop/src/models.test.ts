@@ -113,6 +113,7 @@ test("withPresentedRuntime refreshes slot runtime after download", () => {
       { id: "vision", kind: "off" as const, runtime: { kind: "off" as const, detail: "off" } },
     ],
     artifacts: [],
+    llm_payloads: [],
   };
   const presented = {
     storage_dir: "/models",
@@ -137,12 +138,21 @@ test("withPresentedRuntime refreshes slot runtime after download", () => {
         used_by: ["gemma-3-4b-it"],
       },
     ],
+    llm_payloads: [
+      {
+        accel: "cpu" as const,
+        dir: "/models/llm-runtime/cpu",
+        binary: "/models/llm-runtime/cpu/aifs-worker-llm",
+        host_available: true,
+      },
+    ],
   };
   const next = withPresentedRuntime(current, presented);
   assert.equal(next.storage_dir, "/models");
   assert.equal(next.slots[0].runtime?.kind, "llama");
   assert.equal(next.slots[0].kind, "catalog");
   assert.equal(next.artifacts?.[0].present, true);
+  assert.equal(next.llm_payloads?.[0].accel, "cpu");
 });
 
 test("withSlotKind clears foreign fields", () => {
