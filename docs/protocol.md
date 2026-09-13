@@ -116,7 +116,10 @@ non-empty binary next to the engine or in ancestor `target/{debug,release}/`
 (empty Tauri debug sidecar placeholders are skipped). Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
-`0xC0000135`) is named in that text (loader failure, no stderr). Scan prefers a live
+`0xC0000135`) is named in that text (loader failure, no stderr). That exit
+means a DLL was missing from the worker exe folder — typically ggml/llama/CUDA
+runtime libraries left in `target/debug` after Tauri copied only the sidecar
+exe, not a missing NVIDIA driver. Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
 missing. The document worker extracts PDF/Office/text (with an in-process
 fallback). The vision worker reads EXIF (`image.captured_on`, `image.camera`,
