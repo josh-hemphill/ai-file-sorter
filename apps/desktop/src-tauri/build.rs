@@ -2,7 +2,6 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
 
 include!("sidecar_copy.rs");
 
@@ -22,6 +21,9 @@ fn main() {
 
 /// Copies `target/{profile}/{stem}` to `binaries/{stem}-{triple}`.
 ///
+/// After a real `aifs-worker-llm` copy, ggml/llama/CUDA runtime libraries from
+/// that profile (and `CUDA_PATH/bin` when `ggml-cuda` is present) are copied
+/// beside the sidecar so Windows can resolve PE imports from the exe folder.
 /// Debug builds write empty placeholders when the real binaries are missing so
 /// `tauri_build` can compile `aifs-desktop` during clippy/test. Release panics.
 /// Copies are skipped when the destination already matches so `tauri dev` does
@@ -39,6 +41,7 @@ fn copy_sidecars() {
         ""
     };
     let release = profile == "release";
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
     let _ = fs::create_dir_all(&dest_dir);
     if triple.is_empty() {
         panic!("TARGET is unset; cannot name sidecar files");
@@ -52,6 +55,17 @@ fn copy_sidecars() {
         if src.is_file() {
             if let Err(error) = copy_if_changed(&src, &dest) {
                 panic!("copy {} → {}: {error}", src.display(), dest.display());
+            }
+            if *stem == "aifs-worker-llm" {
+                let resource_dir = manifest.join("resources/llm-runtime");
+                for dir in [&dest_dir, &resource_dir] {
+                    if let Err(error) = copy_worker_runtime_libs(&src_dir, dir) {
+                        panic!(
+                            "copy llama/CUDA runtime libs into {}: {error}",
+                            dir.display()
+                        );
+                    }
+                }
             }
             continue;
         }

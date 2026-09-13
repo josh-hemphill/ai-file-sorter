@@ -59,8 +59,13 @@
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
 - Windows loader deaths such as exit `-1073741515` (`STATUS_DLL_NOT_FOUND`)
-  are decoded in that message. CUDA workers often fail here with no stderr
-  because `nvcuda.dll` or a CUDA/ggml DLL is missing.
+  are decoded in that message. This is the loader failing before stderr
+  exists, usually because ggml/llama/CUDA *runtime* DLLs are not next to the
+  spawned sidecar (a working NVIDIA driver in other apps is not enough).
+  `tauri` build copies those libs into `src-tauri/binaries/` beside
+  `aifs-worker-llm` and into `resources/llm-runtime/` for the bundle,
+  and worker spawn prepends those folders, Cargo `target/{debug,release}`,
+  and `CUDA_PATH/bin` to the library search path.
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
   Unprobed catalog/local files that look present are `pending` until scan
   hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing
