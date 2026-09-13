@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+aifs-protocol = { path = "../../../crates/aifs-protocol" }
 
 [dependencies]
 aifs-domain = { path = "../../../crates/aifs-domain" }
