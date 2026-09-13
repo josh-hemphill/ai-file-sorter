@@ -64,10 +64,10 @@
   spawned sidecar (a working NVIDIA driver in other apps is not enough).
   `tauri` build copies those libs into `src-tauri/binaries/` beside
   `aifs-worker-llm` and snapshots worker + libs into
-  `llm-runtime/<accel>/` under the Cargo profile and
-  `resources/` (sibling accelerators are not deleted),
-  and worker spawn prepends those folders, Cargo `target/{debug,release}`,
-  and `CUDA_PATH/bin` to the library search path.
+  `llm-runtime/<accel>/` under the Cargo profile and `resources/`
+  (sibling accelerators are not deleted). Worker spawn still prepends the
+  sidecar folder, Cargo `target/{debug,release}`, and `CUDA_PATH/bin` to
+  the library search path.
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
   Unprobed catalog/local files that look present are `pending` until scan
   hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing
@@ -79,8 +79,8 @@
 - LLM accelerator payloads are a directory contract (`llm-runtime/<accel>/`):
   a non-empty worker plus llama/core ggml libs; CUDA also needs `ggml-cuda`.
   Host `nvcuda.dll` does not complete a CUDA payload. Tauri stages each
-  accelerator into that nested folder and bundles `llm-runtime/**` without
-  flattening siblings into one directory.
+  accelerator into that nested folder and bundles the `llm-runtime`
+  directory (not a glob) so sibling accelerators are not flattened.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

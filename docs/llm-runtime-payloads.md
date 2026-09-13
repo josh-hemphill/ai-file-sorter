@@ -52,7 +52,9 @@ including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
 complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
 into a CUDA payload. Staging one accelerator does not delete sibling folders
 (`cpu` must not wipe `cuda`). Sidecar copies into `binaries/` stay flat until
-spawn uses the payload directory.
+spawn uses the payload directory. Tauri bundles `resources/llm-runtime` as
+the directory `llm-runtime` (a glob map would flatten `cuda/ggml.dll` and
+`cpu/ggml.dll` onto the same filename).
 
 See `crates/aifs-protocol/src/llm_payload.rs` and
 `apps/desktop/src-tauri/sidecar_copy.rs`.

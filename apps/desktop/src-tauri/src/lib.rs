@@ -620,14 +620,16 @@ mod tests {
             .unwrap_or_else(|| panic!("resources"));
         assert_eq!(
             resources
-                .get("resources/llm-runtime/**/*")
+                .get("resources/llm-runtime")
                 .and_then(|value| value.as_str()),
-            Some("llm-runtime/"),
-            "llama/CUDA payload dirs must keep llm-runtime/<accel>/ in the bundle: {resources:?}"
+            Some("llm-runtime"),
+            "Tauri glob maps flatten to dest.join(file_name); walk the directory so <accel>/ is kept: {resources:?}"
         );
         assert!(
-            !resources.contains_key("resources/llm-runtime/*"),
-            "flattening llm-runtime/* into ./ clobbers per-accelerator payloads: {resources:?}"
+            resources
+                .keys()
+                .all(|key| !key.contains("llm-runtime") || !key.contains('*')),
+            "llm-runtime glob resources flatten sibling accelerators: {resources:?}"
         );
     }
 
