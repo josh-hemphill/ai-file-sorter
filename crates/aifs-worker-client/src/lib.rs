@@ -10,8 +10,9 @@ use aifs_protocol::{
 };
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -25,6 +26,9 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const WAIT_SLICE: Duration = Duration::from_secs(15);
 /// How often infer waits re-check scan cancel. Stays far below [`INFER_TIMEOUT`].
 const CANCEL_POLL: Duration = Duration::from_millis(100);
+/// Last stderr / non-JSON stdout lines kept for spawn/hello failures.
+const DIAGNOSTIC_LINE_CAP: usize = 16;
+const DIAGNOSTIC_DRAIN: Duration = Duration::from_millis(50);
 
 /// Successful `load` reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +53,8 @@ pub enum WorkerClientError {
     #[error("failed to spawn worker: {0}")]
     Spawn(#[from] std::io::Error),
     /// The worker closed stdout before a terminal event.
-    #[error("worker closed stdout unexpectedly")]
-    Disconnected,
+    #[error("{0}")]
+    Disconnected(String),
     /// Timed out waiting for a terminal event.
     #[error("timed out waiting for the worker")]
     Timeout,
@@ -88,6 +92,7 @@ pub struct WorkerClient {
     rx: Receiver<Result<WorkerEnvelope, WorkerClientError>>,
     next_id: u64,
     capabilities: Vec<String>,
+    diagnostics: Arc<Mutex<Vec<String>>>,
 }
 
 impl WorkerClient {
@@ -125,15 +130,20 @@ impl WorkerClient {
             .stdout
             .take()
             .ok_or_else(|| std::io::Error::other("worker stdout was not piped"))?;
+        let diagnostics = Arc::new(Mutex::new(Vec::new()));
+        let prefix = kind.binary_stem();
         if let Some(stderr) = child.stderr.take() {
+            let captured = Arc::clone(&diagnostics);
             thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines().map_while(Result::ok) {
-                    eprintln!("[{}] {line}", kind.binary_stem());
+                    eprintln!("[{prefix}] {line}");
+                    push_diagnostic(&captured, line);
                 }
             });
         }
         let (tx, rx) = mpsc::channel();
+        let stdout_diag = Arc::clone(&diagnostics);
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -144,7 +154,8 @@ impl WorkerClient {
                         }
                         // llama.cpp / CUDA may print banners on stdout before hello JSONL.
                         if !line.trim_start().starts_with('{') {
-                            eprintln!("[{}] {line}", kind.binary_stem());
+                            eprintln!("[{prefix}] {line}");
+                            push_diagnostic(&stdout_diag, line);
                             continue;
                         }
                         let parsed = decode_line::<WorkerEnvelope>(&line)
@@ -167,6 +178,7 @@ impl WorkerClient {
             rx,
             next_id: 1,
             capabilities: Vec::new(),
+            diagnostics,
         };
         client.hello()?;
         Ok(client)
@@ -589,10 +601,26 @@ impl WorkerClient {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(WorkerClientError::Disconnected);
+                    return Err(self.disconnected_error());
                 }
             }
         }
+    }
+
+    fn disconnected_error(&mut self) -> WorkerClientError {
+        thread::sleep(DIAGNOSTIC_DRAIN);
+        let status = match self.child.try_wait() {
+            Ok(Some(status)) => Some(status),
+            Ok(None) => {
+                thread::sleep(DIAGNOSTIC_DRAIN);
+                self.child.try_wait().ok().flatten()
+            }
+            Err(_) => None,
+        };
+        WorkerClientError::Disconnected(format_disconnected(
+            status,
+            &diagnostic_snapshot(&self.diagnostics),
+        ))
     }
 }
 
@@ -648,6 +676,36 @@ pub fn discover_worker_binary(kind: WorkerKind) -> Result<PathBuf, WorkerClientE
     })
 }
 
+fn push_diagnostic(buffer: &Mutex<Vec<String>>, line: String) {
+    let Ok(mut lines) = buffer.lock() else {
+        return;
+    };
+    if lines.len() >= DIAGNOSTIC_LINE_CAP {
+        lines.remove(0);
+    }
+    lines.push(line);
+}
+
+fn diagnostic_snapshot(buffer: &Mutex<Vec<String>>) -> Vec<String> {
+    buffer.lock().map(|lines| lines.clone()).unwrap_or_default()
+}
+
+fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> String {
+    let mut message = String::from("worker closed stdout unexpectedly");
+    if let Some(status) = status {
+        if let Some(code) = status.code() {
+            message.push_str(&format!(" (exit {code})"));
+        } else {
+            message.push_str(&format!(" ({status})"));
+        }
+    }
+    if !diagnostics.is_empty() {
+        message.push_str(": ");
+        message.push_str(&diagnostics.join(" | "));
+    }
+    message
+}
+
 fn worker_file_name(kind: WorkerKind) -> String {
     if cfg!(windows) {
         format!("{}.exe", kind.binary_stem())
@@ -674,5 +732,29 @@ mod tests {
     fn cancelled_error_is_distinct_from_timeout() {
         assert!(WorkerClientError::Cancelled.is_cancelled());
         assert!(!WorkerClientError::Timeout.is_cancelled());
+    }
+
+    #[test]
+    fn format_disconnected_includes_stderr_lines() {
+        let message = format_disconnected(None, &["libcuda.so.1: cannot open".to_owned()]);
+        assert!(
+            message.contains("worker closed stdout unexpectedly"),
+            "{message}"
+        );
+        assert!(message.contains("libcuda.so.1"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hello_failure_includes_stderr_and_exit_code() {
+        let error = WorkerClient::connect_command(WorkerKind::Llm, "/bin/sh", |cmd| {
+            cmd.arg("-c")
+                .arg("echo 'error while loading shared libraries: libcuda.so.1' >&2; exit 127");
+        })
+        .err()
+        .unwrap_or_else(|| panic!("expected hello to fail"));
+        let text = error.to_string();
+        assert!(text.contains("exit 127"), "{text}");
+        assert!(text.contains("libcuda.so.1"), "{text}");
     }
 }
