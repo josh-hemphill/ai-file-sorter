@@ -46,6 +46,7 @@ pnpm llama
 pnpm llama:cuda     # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while nvcc runs.
 pnpm llama:vulkan
 pnpm desktop:cuda   # full desktop start; do not follow a CUDA llama with plain pnpm desktop
+# CUDA and Vulkan are separate payloads; never AIFS_LLM_FEATURES=cuda,vulkan on one cargo build
 ```
 
 Do not run bare `cargo build -p aifs-worker-llm --features llama,cuda` without

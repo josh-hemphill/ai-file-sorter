@@ -95,11 +95,15 @@ pnpm llama:vulkan
 pnpm desktop:cuda
 pnpm desktop:vulkan
 pnpm desktop:metal    # macOS
-AIFS_LLM_FEATURES=cuda,vulkan pnpm desktop
+AIFS_LLM_FEATURES=cuda pnpm desktop
 CXX=g++ cargo engine-llm
 cargo build -p aifs-worker-llm --features llama,vulkan
 cargo build -p aifs-worker-llm --features llama,metal   # macOS
 ```
+
+Do not set `AIFS_LLM_FEATURES=cuda,vulkan` on one cargo build: CUDA and Vulkan
+are separate `llm-runtime/<accel>/` payloads. Run `pnpm llama:cuda` then
+`pnpm llama` (CPU) so each snapshot is kept.
 
 A CUDA build spends most of its time in `llama-cpp-sys-2`'s CMake step. Cargo's
 bar stays on that crate with no further output because cmake-rs hides nvcc

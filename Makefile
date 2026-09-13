@@ -5,7 +5,7 @@
 #   pnpm desktop                stub engine/workers, then llama.cpp LLM worker, then Tauri/Vue
 #   pnpm desktop:cuda           same with CUDA (sets AIFS_LLM_FEATURES so Tauri does not rebuild CPU llama)
 #   pnpm desktop:vulkan         same with Vulkan
-#   pnpm llama                  overwrite aifs-worker-llm with llama.cpp (needs a C++ compiler)
+#   pnpm llama                  llama.cpp LLM worker; stages llm-runtime/<accel>/ (needs a C++ compiler)
 #   pnpm llama:cuda             same with CUDA (pins GPU SM; cargo looks idle on llama-cpp-sys-2)
 #   pnpm llama:vulkan           same with Vulkan
 #   pnpm cli -- scan fixtures/inbox-mixed
