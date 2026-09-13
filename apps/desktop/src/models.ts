@@ -59,6 +59,7 @@ export function defaultInventory(): ModelInventory {
     gpu_preference: "auto",
     slots: MODEL_SLOT_META.map((slot) => ({ id: slot.id, kind: "off" as const })),
     artifacts: [],
+    llm_payloads: [],
   };
 }
 

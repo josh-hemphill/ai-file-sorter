@@ -84,6 +84,31 @@ pub struct LlmPayload {
     pub binary: PathBuf,
 }
 
+/// Wire view of a discovered payload (no worker hello).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmPayloadStatus {
+    /// `cpu` / `cuda` / `vulkan` / `metal`.
+    pub accel: LlmAccel,
+    /// Payload directory.
+    pub dir: String,
+    /// Worker binary inside [`Self::dir`].
+    pub binary: String,
+    /// True when the host driver/OS can run this accelerator.
+    pub host_available: bool,
+}
+
+impl LlmPayloadStatus {
+    /// Copies paths from a complete payload and a host probe.
+    pub fn from_payload(payload: &LlmPayload, host_available: bool) -> Self {
+        Self {
+            accel: payload.accel,
+            dir: payload.dir.display().to_string(),
+            binary: payload.binary.display().to_string(),
+            host_available,
+        }
+    }
+}
+
 /// `root/llm-runtime/<accel>`.
 pub fn llm_payload_dir(root: impl AsRef<Path>, accel: LlmAccel) -> PathBuf {
     root.as_ref().join(LLM_RUNTIME_DIR).join(accel.as_str())
@@ -459,5 +484,18 @@ mod tests {
             host_accel_available(LlmAccel::Metal),
             cfg!(target_os = "macos")
         );
+    }
+
+    #[test]
+    fn payload_status_serializes_accel_and_host_flag() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cpu);
+        write_complete_cpu(&dir);
+        let payload = inspect_payload(&dir, LlmAccel::Cpu).unwrap_or_else(|| panic!("cpu"));
+        let status = LlmPayloadStatus::from_payload(&payload, true);
+        let json = serde_json::to_value(&status).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(json["accel"], "cpu");
+        assert_eq!(json["host_available"], true);
+        assert!(json["dir"].as_str().unwrap_or("").contains("cpu"));
     }
 }

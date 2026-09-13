@@ -195,6 +195,20 @@ onUnmounted(() => {
         </select>
         <span class="muted">{{ gpuHint }}</span>
       </label>
+      <ul v-if="inventory.llm_payloads?.length" class="artifact-list">
+        <li v-for="payload in inventory.llm_payloads" :key="payload.dir">
+          <div class="artifact-head">
+            <strong>{{ payload.accel }}</strong>
+            <span v-if="payload.host_available" class="badge ok-badge">Host ready</span>
+            <span v-else class="badge">Host missing</span>
+          </div>
+          <p class="muted">{{ payload.dir }}</p>
+        </li>
+      </ul>
+      <p v-else class="muted">
+        No staged `llm-runtime` payloads yet. `pnpm llama` / `pnpm llama:cuda` snapshot
+        CPU and CUDA side by side; this list does not start the worker.
+      </p>
       <p class="callout">
         <Icon :path="mdiInformationOutline" :size="18" />
         CUDA lives only in `aifs-worker-llm`. From-source, run `pnpm desktop:cuda` (or

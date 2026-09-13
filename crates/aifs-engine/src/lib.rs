@@ -1237,6 +1237,7 @@ fn save_models(
 ) -> Result<(), aifs_store::StoreError> {
     let mut stored = inventory.clone();
     stored.artifacts.clear();
+    stored.llm_payloads.clear();
     for slot in &mut stored.slots {
         slot.runtime = None;
     }
@@ -1245,7 +1246,21 @@ fn save_models(
 }
 
 fn present_models(inventory: ModelInventory) -> ModelInventory {
-    present_models_with(inventory, LlmWorkerStatus::Unprobed)
+    let mut next = present_models_with(inventory, LlmWorkerStatus::Unprobed);
+    next.llm_payloads = listed_llm_payloads();
+    next
+}
+
+fn listed_llm_payloads() -> Vec<aifs_protocol::LlmPayloadStatus> {
+    aifs_worker_client::list_llm_payloads()
+        .iter()
+        .map(|payload| {
+            aifs_protocol::LlmPayloadStatus::from_payload(
+                payload,
+                aifs_protocol::host_accel_available(payload.accel),
+            )
+        })
+        .collect()
 }
 
 fn present_models_with(inventory: ModelInventory, worker: LlmWorkerStatus) -> ModelInventory {
@@ -3873,6 +3888,14 @@ mod tests {
             pending.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
             Some("pending"),
             "listed files without worker hello must be pending, not stub or llama"
+        );
+        assert!(
+            pending
+                .llm_payloads
+                .iter()
+                .all(|payload| !payload.dir.is_empty() && !payload.binary.is_empty()),
+            "get_models lists payload dirs without hello: {:?}",
+            pending.llm_payloads
         );
     }
 

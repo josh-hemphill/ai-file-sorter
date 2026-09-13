@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   catalogIsDownloaded,
+  defaultInventory,
   formatBytes,
   inventorySummary,
   slotBackend,
   withPresentedRuntime,
   withSlotKind,
 } from "./models.ts";
+
+test("defaultInventory starts with no staged llm payloads", () => {
+  assert.deepEqual(defaultInventory().llm_payloads, []);
+});
 
 test("inventorySummary treats off slots as unused", () => {
   assert.equal(
