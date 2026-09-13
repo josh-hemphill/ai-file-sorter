@@ -409,15 +409,13 @@ mod tests {
         write_worker(&llm_payload_dir(root.path(), LlmAccel::Cuda));
         write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "llama.dll");
         write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "ggml.dll");
-        write_lib(
-            &llm_payload_dir(root.path(), LlmAccel::Cuda),
-            "ggml-cuda.dll",
-        );
         let listed = list_payloads_under(root.path());
         let accels: Vec<_> = listed.iter().map(|payload| payload.accel).collect();
         assert!(accels.contains(&LlmAccel::Cpu), "{accels:?}");
-        assert!(accels.contains(&LlmAccel::Cuda), "{accels:?}");
-        assert!(!accels.contains(&LlmAccel::Vulkan), "{accels:?}");
+        assert!(
+            !accels.contains(&LlmAccel::Cuda),
+            "CUDA without ggml-cuda must be skipped: {accels:?}"
+        );
     }
 
     #[test]

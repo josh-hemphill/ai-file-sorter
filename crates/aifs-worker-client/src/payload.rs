@@ -14,11 +14,18 @@ pub const LLM_BACKEND_ENV: &str = "AIFS_LLM_BACKEND";
 
 /// Preference used for spawn: `AIFS_LLM_BACKEND` when set, else `gpu_preference`.
 pub fn spawn_llm_preference(gpu_preference: &str) -> String {
-    std::env::var(LLM_BACKEND_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
+    spawn_llm_preference_from(
+        gpu_preference,
+        std::env::var(LLM_BACKEND_ENV).ok().as_deref(),
+    )
+}
+
+fn spawn_llm_preference_from(gpu_preference: &str, backend_env: Option<&str>) -> String {
+    backend_env
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| gpu_preference.to_owned())
+        .unwrap_or(gpu_preference)
+        .to_owned()
 }
 
 /// Complete payloads under Cargo/Tauri search roots (no worker hello).
@@ -131,8 +138,11 @@ fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    use super::{list_llm_payloads_from, payload_from_explicit_binary, runtime_search_roots_from};
-    use aifs_protocol::{LlmAccel, host_accel_available, llm_payload_dir, select_llm_payload};
+    use super::{
+        list_llm_payloads_from, payload_from_explicit_binary, runtime_search_roots_from,
+        spawn_llm_preference_from,
+    };
+    use aifs_protocol::{LlmAccel, llm_payload_dir, select_llm_payload};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -215,7 +225,13 @@ mod tests {
     }
 
     #[test]
-    fn host_probe_is_the_select_predicate() {
-        assert!(host_accel_available(LlmAccel::Cpu));
+    fn spawn_preference_uses_backend_env_unless_blank() {
+        assert_eq!(spawn_llm_preference_from("cpu", Some("cuda")), "cuda");
+        assert_eq!(
+            spawn_llm_preference_from("cpu", Some("  vulkan  ")),
+            "vulkan"
+        );
+        assert_eq!(spawn_llm_preference_from("cpu", Some("")), "cpu");
+        assert_eq!(spawn_llm_preference_from("auto", None), "auto");
     }
 }

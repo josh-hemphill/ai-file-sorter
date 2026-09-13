@@ -116,7 +116,7 @@ non-empty binary next to the engine or in ancestor `target/{debug,release}/`
 (empty Tauri debug sidecar placeholders are skipped). The LLM worker is chosen
 from complete `llm-runtime/<accel>/` payloads (CUDA → Vulkan → Metal → CPU when
 the host driver is present), then the sidecar fallback. `$AIFS_LLM_BACKEND`
-overrides Settings `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
+overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
 the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /

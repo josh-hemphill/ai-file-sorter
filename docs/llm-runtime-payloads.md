@@ -61,7 +61,7 @@ the directory `llm-runtime` (a glob map would flatten `cuda/ggml.dll` and
 `list_payloads_under(root)` returns complete `llm-runtime/<accel>/` folders.
 The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 (`resources/`, `target/{debug,release}`). `select_llm_payload` uses
-`AIFS_LLM_BACKEND` when set, else Settings `gpu_preference`, else `auto`
+`AIFS_LLM_BACKEND` when set, else inventory `gpu_preference`, else `auto`
 (`LLM_ACCEL_AUTO_ORDER`). CUDA/Vulkan/Metal are skipped when
 `host_accel_available` is false (`CUDA_PATH` is not a host probe). `AIFS_WORKER_LLM`
 still overrides discovery; library search is that file's directory.
