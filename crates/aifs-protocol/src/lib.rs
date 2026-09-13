@@ -11,6 +11,7 @@
 pub mod catalog;
 pub mod codec;
 pub mod hosted;
+pub mod llm_payload;
 pub mod models;
 pub mod options;
 pub mod worker;
@@ -35,6 +36,10 @@ pub use codec::{CodecError, decode_line, encode_line};
 pub use hosted::{
     OPENAI_CHAT_URL, OPENAI_MODELS_URL, custom_chat_url, gemini_generate_url, gemini_model_url,
     hosted_model_label, is_hosted_backend, sanitize_hosted_text,
+};
+pub use llm_payload::{
+    LLM_ACCEL_AUTO_ORDER, LLM_RUNTIME_DIR, LlmAccel, LlmPayload, infer_accel_from_libs,
+    inspect_payload, llm_payload_dir, payload_complete, runtime_lib_matches_prefix,
 };
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, LlmWorkerStatus, MODEL_SLOT_IDS, ModelArtifactStatus,
