@@ -83,8 +83,14 @@ function collectRuntimeLibsFrom(dir, files) {
     return;
   }
   for (const entry of entries) {
-    if (!entry.isFile() || !isWorkerRuntimeLib(entry.name)) continue;
-    files.set(entry.name, join(dir, entry.name));
+    if (!isWorkerRuntimeLib(entry.name)) continue;
+    const path = join(dir, entry.name);
+    try {
+      if (!statSync(path).isFile()) continue;
+    } catch {
+      continue;
+    }
+    files.set(entry.name, path);
   }
 }
 
@@ -96,9 +102,15 @@ function pruneStaleLibs(destDir, keep) {
     return;
   }
   for (const entry of entries) {
-    if (!entry.isFile() || !isWorkerRuntimeLib(entry.name)) continue;
+    if (!isWorkerRuntimeLib(entry.name)) continue;
+    const path = join(destDir, entry.name);
+    try {
+      if (!statSync(path).isFile()) continue;
+    } catch {
+      continue;
+    }
     if (!keep.has(entry.name)) {
-      rmSync(join(destDir, entry.name));
+      rmSync(path);
     }
   }
 }
@@ -157,6 +169,11 @@ export function defaultStagePlan({
     runtimeRoots: [srcDir, join(cwd, 'apps/desktop/src-tauri/resources')],
     cudaRoot: env.CUDA_PATH,
   };
+}
+
+/** True when the wrapper should snapshot after a real `cargo engine-llm`. */
+export function shouldStageAfterEngineLlm(command, argv) {
+  return command === 'cargo' && argv.includes('engine-llm');
 }
 
 const invokedDirectly =

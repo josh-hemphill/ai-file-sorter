@@ -65,7 +65,8 @@ export function argvHasFeature(argv, feature) {
  */
 export function appendEngineLlmFeatures(argv, env = process.env) {
   const extras = parseLlmFeatures(env.AIFS_LLM_FEATURES);
-  assertSingleLlmAccel(extras);
+  const fromArgv = LLM_ACCEL_FEATURES.filter((feature) => argvHasFeature(argv, feature));
+  assertSingleLlmAccel([...new Set([...extras, ...fromArgv])]);
   if (extras.length === 0 || !isCargoEngineLlm(argv)) return argv;
   const missing = extras.filter((feature) => !argvHasFeature(argv, feature));
   if (missing.length === 0) return argv;

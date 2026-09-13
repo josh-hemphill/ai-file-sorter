@@ -5,7 +5,7 @@ import { parseLlmFeatures, assertSingleLlmAccel } from './llm-features.mjs';
 const [features, command, ...args] = process.argv.slice(2);
 if (!features || !command) {
   console.error(
-    'usage: with-llm-features.mjs <cuda|vulkan|metal[,...]> <command> [args...]',
+    'usage: with-llm-features.mjs <cuda|vulkan|metal> <command> [args...]',
   );
   process.exit(2);
 }

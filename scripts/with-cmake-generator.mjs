@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { applyLlamaCudaBuildEnv } from './llama-cuda-env.mjs';
-import { appendEngineLlmFeatures, applyLinuxLlamaCxx, isCargoEngineLlm } from './llm-features.mjs';
+import { appendEngineLlmFeatures, applyLinuxLlamaCxx } from './llm-features.mjs';
 import { applyPackagedGgmlEnv } from './packaged-ggml.mjs';
-import { defaultStagePlan, stageLlmPayloadFromDir } from './stage-llm-payload.mjs';
+import { defaultStagePlan, shouldStageAfterEngineLlm, stageLlmPayloadFromDir } from './stage-llm-payload.mjs';
 import { applyWindowsCmakeGenerator } from './windows-cmake-generator.mjs';
 
 applyWindowsCmakeGenerator();
@@ -45,7 +45,7 @@ child.on('exit', (code, signal) => {
     process.kill(process.pid, signal);
     return;
   }
-  if (code === 0 && command === 'cargo' && isCargoEngineLlm(forwarded)) {
+  if (code === 0 && shouldStageAfterEngineLlm(command, forwarded)) {
     try {
       const accel = stageLlmPayloadFromDir(defaultStagePlan({ argv: forwarded }));
       console.error(`aifs: staged llm-runtime/${accel} (siblings left in place)`);

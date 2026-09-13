@@ -65,6 +65,13 @@ test('appendEngineLlmFeatures adds missing CUDA/Vulkan from AIFS_LLM_FEATURES', 
       }),
     /refuse compiling cuda\+vulkan/,
   );
+  assert.throws(
+    () =>
+      appendEngineLlmFeatures(['cargo', 'engine-llm', '--features', 'llama,vulkan'], {
+        AIFS_LLM_FEATURES: 'cuda',
+      }),
+    /refuse compiling/,
+  );
 });
 
 test('argvHasFeature reads cargo -F lists', () => {
