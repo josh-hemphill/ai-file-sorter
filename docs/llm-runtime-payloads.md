@@ -70,9 +70,11 @@ The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 (`LLM_ACCEL_AUTO_ORDER`). `auto` skips CUDA/Vulkan/Metal when
 `host_accel_available` is false (`CUDA_PATH` is not a host probe). An explicit
 `gpu_preference` of `cuda` still spawns a complete CUDA payload if the probe
-fails. Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned.
-Discovery then names why CUDA was not used (no `llm-runtime/cuda`, missing
-`ggml-cuda`, or NVIDIA probe failed at `%SystemRoot%\System32\nvcuda.dll`).
+fails. Incomplete llama-linked Cargo `target/debug/aifs-worker-llm` is not
+spawned as a stub; a complete CUDA snapshot is still used if the NVIDIA probe
+is a false negative. Discovery then names why CUDA was not used (no
+`llm-runtime/cuda`, missing `ggml-cuda`, or NVIDIA probe failed at
+`%SystemRoot%\System32\nvcuda.dll`).
 `AIFS_WORKER_LLM` still overrides discovery; library search is that file's
 directory.
 
