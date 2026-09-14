@@ -30,8 +30,13 @@ A directory is complete for an accelerator when:
 | Accel | Required prefixes |
 |-------|-------------------|
 | cpu, metal | `llama`, `ggml` (core: `ggml`, `ggml-base`, or `ggml-cpu` only) |
-| cuda | those, plus `ggml-cuda` |
+| cuda | those, plus `ggml-cuda` **or** a statically linked worker that imports `cublas`/`cudart` with those toolkit DLLs beside it |
 | vulkan | those, plus `ggml-vulkan` |
+
+MSVC `llama-cpp-sys-2` often sets `BUILD_SHARED_LIBS=OFF`, so there is no
+`llama.dll` / `ggml-cuda.dll`. CUDA 13 keeps `cublas64_*.dll` in
+`CUDA_PATH/bin/x64` (not `bin/`). Staging copies that toolkit slice next to
+the worker and does not copy `nvcuda.dll`.
 
 `nvcuda.dll` / `libcuda.so` are host driver libraries. They never satisfy
 `ggml-cuda` or core `ggml`. `ggml-cuda.dll` does not count as core `ggml`.

@@ -466,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn cublas_linked_cargo_exe_is_not_a_stub() {
+        let root = temp_dir();
+        let binary = root.join("aifs-worker-llm.exe");
+        fs::write(&binary, b"MZ\0cublas64_13.dll\0").unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            complete_or_stub_sidecar(&binary).is_none(),
+            "PE import of cublas64_*.dll must not spawn target/debug as a stub"
+        );
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
     fn cuda_plugin_in_llm_runtime_blocks_stub_sidecar() {
         let root = temp_dir();
         let binary = root.join("aifs-worker-llm");

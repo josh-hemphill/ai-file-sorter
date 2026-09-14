@@ -125,11 +125,7 @@ pub fn payload_complete(dir: &Path, accel: LlmAccel) -> bool {
 pub fn inspect_payload(dir: &Path, accel: LlmAccel) -> Option<LlmPayload> {
     let binary = first_process_binary(dir, WorkerKind::Llm.binary_stem())
         .filter(|path| is_usable_process_binary(path))?;
-    if !accel
-        .required_lib_prefixes()
-        .iter()
-        .all(|prefix| dir_has_runtime_lib(dir, prefix))
-    {
+    if !accel_libs_present(dir, accel, &binary) {
         return None;
     }
     Some(LlmPayload {
@@ -137,6 +133,26 @@ pub fn inspect_payload(dir: &Path, accel: LlmAccel) -> Option<LlmPayload> {
         dir: dir.to_path_buf(),
         binary,
     })
+}
+
+/// Shared plugin DLLs, or a statically linked CUDA worker with cublas/cudart beside it.
+fn accel_libs_present(dir: &Path, accel: LlmAccel, binary: &Path) -> bool {
+    if accel
+        .required_lib_prefixes()
+        .iter()
+        .all(|prefix| dir_has_runtime_lib(dir, prefix))
+    {
+        return true;
+    }
+    accel == LlmAccel::Cuda && static_cuda_toolkit_payload(dir, binary)
+}
+
+fn static_cuda_toolkit_payload(dir: &Path, binary: &Path) -> bool {
+    dir_has_cuda_toolkit_lib(dir) && binary_imports_cuda_runtime(binary)
+}
+
+fn dir_has_cuda_toolkit_lib(dir: &Path) -> bool {
+    dir_has_runtime_lib(dir, "cublas") || dir_has_runtime_lib(dir, "cudart")
 }
 
 /// Infers accelerator from libraries present (CUDA, then Vulkan, else CPU).
@@ -185,6 +201,13 @@ pub fn accel_from_payload_dir(dir: &Path) -> Option<LlmAccel> {
 
 /// Required native-lib prefixes for `accel` that are not present in `dir`.
 pub fn missing_required_lib_prefixes(dir: &Path, accel: LlmAccel) -> Vec<&'static str> {
+    if accel == LlmAccel::Cuda
+        && let Some(binary) = first_process_binary(dir, WorkerKind::Llm.binary_stem())
+            .filter(|path| is_usable_process_binary(path))
+        && static_cuda_toolkit_payload(dir, &binary)
+    {
+        return Vec::new();
+    }
     accel
         .required_lib_prefixes()
         .iter()
@@ -291,7 +314,8 @@ fn nvidia_driver_lookup_copy() -> String {
 
 /// True when `path` is linked against llama/ggml (PE import names or ELF/dylib sonames).
 ///
-/// A CUDA-linked `aifs-worker-llm.exe` still matches when llama.dll is not on disk.
+/// A CUDA-linked `aifs-worker-llm.exe` still matches when llama.dll is not on disk
+/// (MSVC llama-cpp-sys-2 often static-links llama/ggml and imports `cublas64_*.dll`).
 pub fn binary_links_llama_runtime(path: &Path) -> bool {
     let Ok(data) = std::fs::read(path) else {
         return false;
@@ -309,6 +333,30 @@ pub fn binary_links_llama_runtime(path: &Path) -> bool {
         .iter()
         .copied()
         .any(|marker| find_bytes(&data, marker))
+        || binary_bytes_import_cuda_runtime(&data)
+}
+
+/// True when the worker imports CUDA toolkit runtime (`cublas` / `cudart`), not `nvcuda`.
+pub fn binary_imports_cuda_runtime(path: &Path) -> bool {
+    let Ok(data) = std::fs::read(path) else {
+        return false;
+    };
+    binary_bytes_import_cuda_runtime(&data)
+}
+
+fn binary_bytes_import_cuda_runtime(data: &[u8]) -> bool {
+    const MARKERS: &[&[u8]] = &[
+        b"cublas64_",
+        b"cudart64_",
+        b"cublas.dll\0",
+        b"cudart.dll\0",
+        b"libcublas.so",
+        b"libcudart.so",
+    ];
+    MARKERS
+        .iter()
+        .copied()
+        .any(|marker| find_bytes(data, marker))
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -416,7 +464,7 @@ pub fn explain_llm_payload_selection_failure(
         }
     }
     parts.push(
-        "Rebuild with `pnpm llama:cuda` so llm-runtime/cuda contains the worker, llama, ggml, and ggml-cuda."
+        "Rebuild with `pnpm llama:cuda` so llm-runtime/cuda contains the worker and either ggml-cuda or CUDA toolkit cublas/cudart (CUDA 13: CUDA_PATH/bin/x64)."
             .to_owned(),
     );
     parts.join(" ")
@@ -563,6 +611,9 @@ pub fn runtime_lib_matches_prefix(name: &str, prefix: &str) -> bool {
     if prefix == "ggml" {
         return GGML_CORE_STEMS.iter().any(|core| stem == *core);
     }
+    if prefix == "cublas" || prefix == "cudart" {
+        return stem.starts_with(&prefix);
+    }
     stem == prefix
         || stem.starts_with(&format!("{prefix}-"))
         || stem.starts_with(&format!("{prefix}_"))
@@ -612,6 +663,10 @@ mod tests {
         assert!(!runtime_lib_matches_prefix("nvcuda.dll", "ggml"));
         assert!(!runtime_lib_matches_prefix("libcuda.so.1", "ggml-cuda"));
         assert!(!runtime_lib_matches_prefix("aifs-worker-llm.exe", "llama"));
+        assert!(runtime_lib_matches_prefix("cublas64_13.dll", "cublas"));
+        assert!(runtime_lib_matches_prefix("cublasLt64_13.dll", "cublas"));
+        assert!(runtime_lib_matches_prefix("cudart64_12.dll", "cudart"));
+        assert!(!runtime_lib_matches_prefix("nvcuda.dll", "cublas"));
     }
 
     #[test]
@@ -840,6 +895,38 @@ mod tests {
         fs::write(&linked, b"MZ\0llama.dll\0ggml.dll\0").unwrap_or_else(|error| panic!("{error}"));
         assert!(!binary_links_llama_runtime(&stub));
         assert!(binary_links_llama_runtime(&linked));
+    }
+
+    #[test]
+    fn binary_links_llama_runtime_detects_static_cublas_imports() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let linked = root.path().join("cuda-static.exe");
+        fs::write(&linked, b"MZ\0cublas64_13.dll\0").unwrap_or_else(|error| panic!("{error}"));
+        assert!(binary_imports_cuda_runtime(&linked));
+        assert!(binary_links_llama_runtime(&linked));
+    }
+
+    #[test]
+    fn static_cuda_worker_with_cublas_is_complete() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.join("aifs-worker-llm.exe"), b"MZ\0cublas64_13.dll\0")
+            .unwrap_or_else(|error| panic!("{error}"));
+        write_lib(&dir, "cublas64_13.dll");
+        write_lib(&dir, "cublasLt64_13.dll");
+        assert!(payload_complete(&dir, LlmAccel::Cuda));
+        assert!(missing_required_lib_prefixes(&dir, LlmAccel::Cuda).is_empty());
+        assert!(!payload_complete(&dir, LlmAccel::Cpu));
+    }
+
+    #[test]
+    fn cublas_without_cuda_import_does_not_complete_cuda() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        write_worker(&dir);
+        write_lib(&dir, "cublas64_13.dll");
+        assert!(!payload_complete(&dir, LlmAccel::Cuda));
     }
 
     #[test]

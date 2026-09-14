@@ -39,11 +39,12 @@ pub use hosted::{
 };
 pub use llm_payload::{
     LLM_ACCEL_AUTO_ORDER, LLM_ACCELS, LLM_RUNTIME_DIR, LlmAccel, LlmPayload, LlmPayloadStatus,
-    accel_from_payload_dir, binary_links_llama_runtime, explain_llm_payload_selection_failure,
-    host_accel_available, host_accel_unavailable_reason, infer_accel_from_libs, inspect_payload,
-    is_staged_payload_dir, list_payloads_under, llm_payload_dir, missing_required_lib_prefixes,
-    payload_complete, payload_dir_has_lib_prefix, runtime_lib_matches_prefix, select_llm_payload,
-    windows_nvidia_driver_dlls, windows_nvidia_driver_dlls_from,
+    accel_from_payload_dir, binary_imports_cuda_runtime, binary_links_llama_runtime,
+    explain_llm_payload_selection_failure, host_accel_available, host_accel_unavailable_reason,
+    infer_accel_from_libs, inspect_payload, is_staged_payload_dir, list_payloads_under,
+    llm_payload_dir, missing_required_lib_prefixes, payload_complete, payload_dir_has_lib_prefix,
+    runtime_lib_matches_prefix, select_llm_payload, windows_nvidia_driver_dlls,
+    windows_nvidia_driver_dlls_from,
 };
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, LlmWorkerStatus, MODEL_SLOT_IDS, ModelArtifactStatus,

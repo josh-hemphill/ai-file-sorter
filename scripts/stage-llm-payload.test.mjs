@@ -167,6 +167,34 @@ test('expected cuda without plugin does not stage cpu', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('static CUDA worker copies cublas from CUDA 13 bin/x64', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-stage-llm-cuda13-'));
+  const src = join(root, 'src');
+  const resources = join(root, 'resources');
+  const toolkit = join(root, 'toolkit');
+  const libDir = join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out', 'lib');
+  const x64 = join(toolkit, 'bin', 'x64');
+  mkdirSync(libDir, { recursive: true });
+  mkdirSync(x64, { recursive: true });
+  writeFileSync(join(src, 'aifs-worker-llm.exe'), 'MZ\0cublas64_13.dll\0');
+  writeFileSync(join(libDir, 'ggml-cuda.lib'), 'static');
+  writeFileSync(join(x64, 'cublas64_13.dll'), 'cublas');
+  writeFileSync(join(x64, 'cublasLt64_13.dll'), 'lt');
+  writeFileSync(join(x64, 'nvcuda.dll'), 'driver');
+  const { accel, copiedLibNames } = stageLlmPayloadFromDir({
+    srcDir: src,
+    runtimeRoots: [resources],
+    cudaRoot: toolkit,
+    expectedAccel: 'cuda',
+  });
+  assert.equal(accel, 'cuda');
+  assert.ok(copiedLibNames.includes('cublas64_13.dll'));
+  assert.ok(copiedLibNames.includes('cublasLt64_13.dll'));
+  assert.equal(existsSync(join(llmPayloadDir(resources, 'cuda'), 'nvcuda.dll')), false);
+  assert.equal(existsSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-cuda.lib')), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('expectedAccelFromEnv reads AIFS_LLM_FEATURES', () => {
   assert.equal(expectedAccelFromEnv({ AIFS_LLM_FEATURES: 'cuda' }), 'cuda');
   assert.equal(expectedAccelFromEnv({ AIFS_LLM_FEATURES: 'vulcan' }), 'vulkan');
