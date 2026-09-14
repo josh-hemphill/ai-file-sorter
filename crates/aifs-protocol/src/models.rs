@@ -232,6 +232,9 @@ pub struct ModelInventory {
     /// Catalog files under `storage_dir`. Computed on get/download; not a stored secret.
     #[serde(default)]
     pub artifacts: Vec<ModelArtifactStatus>,
+    /// Complete `llm-runtime/<accel>/` payloads on disk. Computed on get; not stored.
+    #[serde(default)]
+    pub llm_payloads: Vec<crate::LlmPayloadStatus>,
 }
 
 /// One GGUF on disk that one or more catalog ids share.
@@ -264,6 +267,7 @@ impl Default for ModelInventory {
                 .map(|id| ModelSlot::off(*id))
                 .collect(),
             artifacts: Vec::new(),
+            llm_payloads: Vec::new(),
         }
     }
 }

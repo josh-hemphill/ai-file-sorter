@@ -196,11 +196,19 @@ export interface ModelSlot {
   runtime?: SlotRuntime;
 }
 
+export interface LlmPayloadStatus {
+  accel: "cpu" | "cuda" | "vulkan" | "metal";
+  dir: string;
+  binary: string;
+  host_available: boolean;
+}
+
 export interface ModelInventory {
   storage_dir: string;
   gpu_preference: string;
   slots: ModelSlot[];
   artifacts?: ModelArtifactStatus[];
+  llm_payloads?: LlmPayloadStatus[];
 }
 
 export interface ModelArtifactStatus {

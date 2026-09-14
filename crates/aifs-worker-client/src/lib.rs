@@ -5,9 +5,12 @@ use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
 use aifs_protocol::{
-    ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, discover_process_binary,
-    encode_line, is_usable_process_binary,
+    ErrorCode, FolderStyle, ModelBackend, RequestId, accel_from_payload_dir, decode_line,
+    discover_process_binary, encode_line, ensure_process_binary_executable,
+    is_usable_process_binary, missing_required_lib_prefixes,
 };
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -16,6 +19,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+mod payload;
+
+pub use payload::{
+    LLM_BACKEND_ENV, LlmListRootsGuard, discover_llm_payload, list_llm_payloads,
+    list_llm_payloads_from, override_llm_list_roots, runtime_search_roots, spawn_llm_preference,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -87,6 +97,7 @@ impl WorkerClientError {
 /// Client that owns a worker child process.
 pub struct WorkerClient {
     kind: WorkerKind,
+    binary: PathBuf,
     child: Child,
     stdin: Option<ChildStdin>,
     rx: Receiver<Result<WorkerEnvelope, WorkerClientError>>,
@@ -115,12 +126,14 @@ impl WorkerClient {
         if !binary.exists() {
             return Err(WorkerClientError::NotFound(binary.display().to_string()));
         }
+        ensure_process_binary_executable(binary)?;
         let mut command = Command::new(binary);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure(&mut command);
+        apply_worker_library_path(&mut command, binary);
         let mut child = command.spawn()?;
         let stdin = child
             .stdin
@@ -173,6 +186,7 @@ impl WorkerClient {
         });
         let mut client = Self {
             kind,
+            binary: binary.to_path_buf(),
             child,
             stdin: Some(stdin),
             rx,
@@ -193,7 +207,16 @@ impl WorkerClient {
 
     /// Discovers the binary for `kind` and connects.
     pub fn connect_default(kind: WorkerKind) -> Result<Self, WorkerClientError> {
+        if kind == WorkerKind::Llm {
+            return Self::connect_llm("auto");
+        }
         Self::connect(kind, discover_worker_binary(kind)?)
+    }
+
+    /// Autoselects an LLM payload (`AIFS_LLM_BACKEND` overrides `gpu_preference`) and connects.
+    pub fn connect_llm(gpu_preference: impl Into<String>) -> Result<Self, WorkerClientError> {
+        let payload = discover_llm_payload(&gpu_preference.into())?;
+        Self::connect(WorkerKind::Llm, payload.binary)
     }
 
     /// Connects when the binary is present; `None` when it is not installed.
@@ -622,6 +645,7 @@ impl WorkerClient {
         WorkerClientError::Disconnected(format_disconnected(
             status,
             &diagnostic_snapshot(&self.diagnostics),
+            Some(&self.binary),
         ))
     }
 
@@ -700,20 +724,91 @@ fn diagnostic_snapshot(buffer: &Mutex<Vec<String>>) -> Vec<String> {
     buffer.lock().map(|lines| lines.clone()).unwrap_or_default()
 }
 
-fn format_disconnected(status: Option<ExitStatus>, diagnostics: &[String]) -> String {
+fn format_disconnected(
+    status: Option<ExitStatus>,
+    diagnostics: &[String],
+    spawned: Option<&Path>,
+) -> String {
     let mut message = String::from("worker closed stdout unexpectedly");
+    if let Some(path) = spawned {
+        message.push_str(&format!(" [{}]", path.display()));
+    }
     if let Some(status) = status {
         if let Some(code) = status.code() {
             message.push_str(&format!(" ({})", format_exit_code(code)));
+            if let Some(path) = spawned
+                && let Some(hint) = dll_search_hint(code, path)
+            {
+                message.push(' ');
+                message.push_str(&hint);
+            }
         } else {
             message.push_str(&format!(" ({status})"));
         }
+    }
+    if let Some(path) = spawned
+        && status
+            .and_then(|value| value.code())
+            .is_none_or(|code| code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND)
+        && let Some(hint) = llm_missing_lib_hint(path)
+    {
+        message.push(' ');
+        message.push_str(&hint);
     }
     if !diagnostics.is_empty() {
         message.push_str(": ");
         message.push_str(&diagnostics.join(" | "));
     }
     message
+}
+
+/// The folder containing the worker; llama payloads load ggml from this directory only.
+fn worker_library_dirs(binary: &Path) -> Vec<PathBuf> {
+    binary
+        .parent()
+        .map(|dir| vec![dir.to_path_buf()])
+        .unwrap_or_default()
+}
+
+fn library_path_key() -> &'static str {
+    if cfg!(windows) {
+        "PATH"
+    } else if cfg!(target_os = "macos") {
+        "DYLD_LIBRARY_PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    }
+}
+
+fn merge_search_path(existing: Option<OsString>, dirs: &[PathBuf]) -> OsString {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in dirs.iter().filter(|dir| dir.is_dir()) {
+        if seen.insert(dir.clone()) {
+            parts.push(dir.clone());
+        }
+    }
+    if let Some(existing) = &existing {
+        for part in std::env::split_paths(existing) {
+            if !part.as_os_str().is_empty() && seen.insert(part.clone()) {
+                parts.push(part);
+            }
+        }
+    }
+    std::env::join_paths(&parts).unwrap_or_else(|_| existing.unwrap_or_default())
+}
+
+fn apply_worker_library_path(command: &mut Command, binary: &Path) {
+    let key = library_path_key();
+    let existing = command
+        .get_envs()
+        .find(|(name, _)| *name == key)
+        .and_then(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .or_else(|| std::env::var_os(key));
+    command.env(
+        key,
+        merge_search_path(existing, &worker_library_dirs(binary)),
+    );
 }
 
 /// Windows `STATUS_DLL_NOT_FOUND` (`NtStatus` 0xC0000135) as a process exit code.
@@ -729,10 +824,74 @@ fn format_exit_code(code: i32) -> String {
     }
 }
 
+fn dll_search_hint(code: i32, spawned: &Path) -> Option<String> {
+    if code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND {
+        return None;
+    }
+    if is_llm_worker_path(spawned) {
+        return Some(payload_runtime_hint(spawned, true));
+    }
+    let dir = spawned.parent().unwrap_or(spawned);
+    Some(format!(
+        "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+        dir = dir.display()
+    ))
+}
+
+fn is_llm_worker_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("aifs-worker-llm"))
+}
+
+fn llm_missing_lib_hint(spawned: &Path) -> Option<String> {
+    if !is_llm_worker_path(spawned) {
+        return None;
+    }
+    let dir = spawned.parent().unwrap_or(spawned);
+    let accel = accel_from_payload_dir(dir);
+    if missing_required_lib_prefixes(dir, accel).is_empty() {
+        return None;
+    }
+    Some(payload_runtime_hint(spawned, false))
+}
+
+fn payload_runtime_hint(spawned: &Path, dll_not_found: bool) -> String {
+    let dir = spawned.parent().unwrap_or(spawned);
+    let accel = accel_from_payload_dir(dir);
+    let missing = missing_required_lib_prefixes(dir, accel);
+    let required = accel.required_lib_prefixes().join(", ");
+    let mut text = if dll_not_found {
+        format!(
+            "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+            dir = dir.display()
+        )
+    } else {
+        format!(
+            "payload directory {dir} ({accel})",
+            dir = dir.display(),
+            accel = accel.as_str()
+        )
+    };
+    if missing.is_empty() {
+        text.push_str(&format!(
+            " Required {accel} libraries ({required}) are present in that folder; a working NVIDIA driver is not a payload library.",
+            accel = accel.as_str(),
+        ));
+    } else {
+        text.push_str(&format!(
+            " {accel} payload is missing required libraries: {names}.",
+            accel = accel.as_str(),
+            names = missing.join(", "),
+        ));
+    }
+    text
+}
+
 fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
     match code as u32 {
         WINDOWS_STATUS_DLL_NOT_FOUND => Some(
-            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The process dies in the loader before stderr exists — for a CUDA llama worker this is usually a missing NVIDIA driver library (nvcuda.dll) or a CUDA/ggml DLL not next to aifs-worker-llm",
+            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The loader exits before stderr exists. Windows looks in the payload directory first for llama/ggml (and ggml-cuda or ggml-vulkan when that accelerator applies); a working NVIDIA driver is not enough",
         ),
         WINDOWS_STATUS_DLL_INIT_FAILED => {
             Some("a DLL failed to initialize (Windows STATUS_DLL_INIT_FAILED)")
@@ -777,7 +936,7 @@ mod tests {
 
     #[test]
     fn format_disconnected_includes_stderr_lines() {
-        let message = format_disconnected(None, &["libcuda.so.1: cannot open".to_owned()]);
+        let message = format_disconnected(None, &["libcuda.so.1: cannot open".to_owned()], None);
         assert!(
             message.contains("worker closed stdout unexpectedly"),
             "{message}"
@@ -786,16 +945,112 @@ mod tests {
     }
 
     #[test]
-    fn windows_dll_not_found_exit_explains_missing_cuda_loader() {
+    fn format_disconnected_includes_spawned_path() {
+        let path = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-llm.exe");
+        let message = format_disconnected(None, &[], Some(path));
+        assert!(message.contains("aifs-worker-llm.exe"), "{message}");
+    }
+
+    #[test]
+    fn windows_dll_not_found_exit_names_payload_dir_and_missing_libs() {
         let code = WINDOWS_STATUS_DLL_NOT_FOUND as i32;
         assert_eq!(code, -1_073_741_515);
         let meaning = explain_worker_exit_code(code)
             .unwrap_or_else(|| panic!("expected STATUS_DLL_NOT_FOUND"));
         assert!(meaning.contains("STATUS_DLL_NOT_FOUND"), "{meaning}");
-        assert!(meaning.contains("nvcuda.dll"), "{meaning}");
+        assert!(meaning.contains("payload directory"), "{meaning}");
+        assert!(
+            !meaning.contains("target/debug"),
+            "Cargo target is the wrong default cause: {meaning}"
+        );
+        assert!(
+            !meaning.contains("sidecar"),
+            "LLM is not a flat sidecar: {meaning}"
+        );
+        assert!(
+            !meaning.contains("nvcuda.dll"),
+            "driver DLL is the wrong default cause: {meaning}"
+        );
         let message = format_exit_code(code);
         assert!(message.contains("0xC0000135"), "{message}");
         assert!(message.contains("STATUS_DLL_NOT_FOUND"), "{message}");
+
+        let root = std::env::temp_dir().join(format!(
+            "aifs-dll-hint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let dir = aifs_protocol::llm_payload_dir(&root, aifs_protocol::LlmAccel::Cuda);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("aifs-worker-llm.exe"), b"worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("llama.dll"), b"llama").unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+        let spawned = dir.join("aifs-worker-llm.exe");
+        let hint = dll_search_hint(code, &spawned).unwrap_or_else(|| panic!("hint"));
+        assert!(hint.contains(dir.to_string_lossy().as_ref()), "{hint}");
+        assert!(
+            hint.contains("missing required libraries") && hint.contains("ggml-cuda"),
+            "{hint}"
+        );
+        assert!(!hint.contains("nvcuda"), "{hint}");
+        assert!(!hint.contains("target/debug"), "{hint}");
+        let disconnected = format_disconnected(None, &[], Some(&spawned));
+        assert!(
+            disconnected.contains("aifs-worker-llm.exe"),
+            "{disconnected}"
+        );
+        assert!(
+            disconnected.contains("missing required libraries")
+                && disconnected.contains("ggml-cuda"),
+            "{disconnected}"
+        );
+        let media = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-media.exe");
+        let media_hint = dll_search_hint(code, media).unwrap_or_else(|| panic!("media hint"));
+        assert!(media_hint.contains("STATUS_DLL_NOT_FOUND"), "{media_hint}");
+        assert!(!media_hint.contains("llama"), "{media_hint}");
+        std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn worker_library_dirs_are_only_the_payload_folder() {
+        let binary = Path::new("repo/target/debug/llm-runtime/cuda/aifs-worker-llm");
+        let dirs = worker_library_dirs(binary);
+        assert_eq!(
+            dirs,
+            vec![PathBuf::from("repo/target/debug/llm-runtime/cuda")]
+        );
+        assert!(
+            !dirs.iter().any(|dir| dir == Path::new("repo/target/debug")),
+            "must not search Cargo target or CUDA_PATH: {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn merge_search_path_prepends_existing_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "aifs-worker-libpath-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+        let merged =
+            merge_search_path(Some(OsString::from("keep-me")), std::slice::from_ref(&root));
+        let merged = merged.to_string_lossy();
+        assert!(merged.contains(&root.display().to_string()), "{merged}");
+        assert!(merged.contains("keep-me"), "{merged}");
+        let root_pos = merged
+            .find(&root.display().to_string())
+            .unwrap_or(usize::MAX);
+        let keep_pos = merged.find("keep-me").unwrap_or(0);
+        assert!(root_pos < keep_pos, "{merged}");
+        std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[cfg(unix)]

@@ -10,3 +10,7 @@
 /binaries/*
 !/binaries/.gitkeep
 
+# Copied llama/CUDA payload snapshots under llm-runtime/<accel>/ (keep .gitkeep)
+/resources/llm-runtime/*
+!/resources/llm-runtime/.gitkeep
+

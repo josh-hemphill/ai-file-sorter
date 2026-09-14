@@ -59,8 +59,10 @@
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
 - Windows loader deaths such as exit `-1073741515` (`STATUS_DLL_NOT_FOUND`)
-  are decoded in that message. CUDA workers often fail here with no stderr
-  because `nvcuda.dll` or a CUDA/ggml DLL is missing.
+  are decoded in that message. This is the loader failing before stderr
+  exists, usually because ggml/llama/CUDA *runtime* DLLs are not next to the
+  spawned worker (a working NVIDIA driver in other apps is not enough).
+  Spawn sets the library search path to that payload directory only.
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
   Unprobed catalog/local files that look present are `pending` until scan
   hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing
@@ -69,6 +71,30 @@
 - Both workspace Cancel buttons show Cancelling…, disable, and replace the
   Working… status line as soon as cancel is requested, while the engine stops
   at the next cooperative check.
+- LLM accelerator payloads are a directory contract (`llm-runtime/<accel>/`):
+  a non-empty worker plus llama/core ggml libs; CUDA also needs `ggml-cuda`.
+  Host `nvcuda.dll` does not complete a CUDA payload. Tauri stages each
+  accelerator into that nested folder and bundles the `llm-runtime`
+  directory (not a glob) so sibling accelerators are not flattened.
+- The engine autoselects a complete `llm-runtime/<accel>/` payload (CUDA →
+  Vulkan → Metal → CPU) using host driver probes, not `CUDA_PATH`.
+  `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. Spawn sets the
+  library search path to that payload directory only. `get_models` still
+  does not hello the worker.
+- `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into
+  `llm-runtime/<accel>/` without deleting sibling accelerators. Combining
+  `cuda` and `vulkan` in one `AIFS_LLM_FEATURES` cargo build is refused.
+- `get_models` lists complete `llm-runtime/<accel>/` payloads (`llm_payloads`)
+  without spawning hello. Host-ready is a driver/OS probe, not `CUDA_PATH`.
+- Packaged apps keep the nested `llm-runtime/<accel>/` resource tree and do
+  **not** install `aifs-worker-llm` as a Tauri `externalBin` sidecar (a flat
+  copy would collide with CUDA vs CPU `ggml`). Discovery walks
+  `resources/` and macOS `Contents/Resources`. The staged payload worker is
+  marked executable on Unix so resource copies that drop `+x` still spawn.
+- LLM worker hello/spawn failures name the payload directory and missing
+  required library prefixes (`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`).
+  Windows `STATUS_DLL_NOT_FOUND` no longer blames `target/debug` or a flat
+  sidecar; `nvcuda.dll` is not treated as a payload library.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

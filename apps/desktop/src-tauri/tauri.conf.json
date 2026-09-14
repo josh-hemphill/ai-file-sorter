@@ -41,8 +41,10 @@
       "binaries/aifs-engine",
       "binaries/aifs-worker-media",
       "binaries/aifs-worker-document",
-      "binaries/aifs-worker-vision",
-      "binaries/aifs-worker-llm"
-    ]
+      "binaries/aifs-worker-vision"
+    ],
+    "resources": {
+      "resources/llm-runtime": "llm-runtime"
+    }
   }
 }

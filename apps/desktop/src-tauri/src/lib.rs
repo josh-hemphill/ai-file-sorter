@@ -606,7 +606,6 @@ mod tests {
             "binaries/aifs-worker-media",
             "binaries/aifs-worker-document",
             "binaries/aifs-worker-vision",
-            "binaries/aifs-worker-llm",
         ];
         assert_eq!(bins.len(), expected.len(), "{bins:?}");
         for name in expected {
@@ -615,6 +614,27 @@ mod tests {
                 "missing {name} in {bins:?}"
             );
         }
+        assert!(
+            bins.iter()
+                .all(|value| value.as_str() != Some("binaries/aifs-worker-llm")),
+            "LLM worker must not be a flat externalBin sidecar: {bins:?}"
+        );
+        let resources = conf["bundle"]["resources"]
+            .as_object()
+            .unwrap_or_else(|| panic!("resources"));
+        assert_eq!(
+            resources
+                .get("resources/llm-runtime")
+                .and_then(|value| value.as_str()),
+            Some("llm-runtime"),
+            "Tauri glob maps flatten to dest.join(file_name); walk the directory so <accel>/ is kept: {resources:?}"
+        );
+        assert!(
+            resources
+                .keys()
+                .all(|key| !key.contains("llm-runtime") || !key.contains('*')),
+            "llm-runtime glob resources flatten sibling accelerators: {resources:?}"
+        );
     }
 
     #[test]
@@ -703,13 +723,18 @@ mod tests {
             "watching the whole target profile directory retriggers tauri dev: {build}"
         );
         assert!(
-            build.contains("copy_if_changed") && build.contains("write_if_changed"),
-            "sidecar copies must skip identical destinations: {build}"
+            build.contains("copy_if_changed")
+                && build.contains("write_if_changed")
+                && build.contains("stage_llm_payload")
+                && !build.contains("copy_worker_runtime_libs"),
+            "sidecar copies must skip identical destinations and stage llm-runtime/<accel>/ without a flat LLM sidecar: {build}"
         );
         let ignore = include_str!("../.taurignore");
         assert!(
-            ignore.contains("binaries/") && ignore.contains("gen/"),
-            "tauri dev must ignore sidecar copies and generated schemas: {ignore}"
+            ignore.contains("binaries/")
+                && ignore.contains("gen/")
+                && ignore.contains("resources/llm-runtime/"),
+            "tauri dev must ignore sidecar copies, runtime libs, and generated schemas: {ignore}"
         );
     }
 

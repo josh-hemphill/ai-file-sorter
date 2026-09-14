@@ -29,8 +29,10 @@ Rules:
   stdin write on the UI thread so it is not queued behind a download.
 - The Tauri shell launches a fixed engine binary with scoped capabilities. Release builds
   fail loudly if the engine is missing; there is no in-process fallback. Packaged apps
-  embed `aifs-engine` and the four workers as Tauri `externalBin` sidecars (named
-  `{stem}-{target-triple}` next to the app). The WebView CSP is a non-null allow-list
+  embed `aifs-engine` and the extract workers (`media`, `document`, `vision`) as Tauri
+  `externalBin` sidecars (named `{stem}-{target-triple}` next to the app). The LLM
+  worker ships as nested `llm-runtime/<accel>/` resources, not a flat sidecar. The
+  WebView CSP is a non-null allow-list
   (`default-src 'self'` plus Tauri IPC); the UI does not spawn binaries.
 - Only the engine writes the store. Workers return evidence/artefacts and never mutate
   files or the database.

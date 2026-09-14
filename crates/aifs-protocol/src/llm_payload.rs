@@ -1,0 +1,545 @@
+//! Layout and completeness for a process-isolated llama.cpp payload directory.
+//!
+//! Each accelerator lives in `llm-runtime/<accel>/` with `aifs-worker-llm` and the
+//! native libraries it loads from that folder. Host driver files such as `nvcuda.dll`
+//! are not payload files.
+
+use crate::worker::{WorkerKind, first_process_binary, is_usable_process_binary};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Directory name under a Cargo target or Tauri resource root.
+pub const LLM_RUNTIME_DIR: &str = "llm-runtime";
+
+/// Every packaged accelerator, including ones not in auto-select first.
+pub const LLM_ACCELS: &[LlmAccel] = &[
+    LlmAccel::Cpu,
+    LlmAccel::Cuda,
+    LlmAccel::Vulkan,
+    LlmAccel::Metal,
+];
+
+/// Auto-select order when `gpu_preference` is `auto` (host probes applied later).
+pub const LLM_ACCEL_AUTO_ORDER: &[LlmAccel] = &[
+    LlmAccel::Cuda,
+    LlmAccel::Vulkan,
+    LlmAccel::Metal,
+    LlmAccel::Cpu,
+];
+
+/// Compiled llama.cpp accelerator packaged as its own worker + runtime libs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmAccel {
+    /// CPU / ggml-cpu payload.
+    Cpu,
+    /// NVIDIA CUDA payload (`ggml-cuda` plus CUDA runtime libs).
+    Cuda,
+    /// Vulkan payload (`ggml-vulkan`).
+    Vulkan,
+    /// Apple Metal payload.
+    Metal,
+}
+
+impl LlmAccel {
+    /// Wire / directory name (`cpu`, `cuda`, `vulkan`, `metal`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
+        }
+    }
+
+    /// Parses `cpu` / `cuda` / `vulkan` / `metal` (`mtl` accepted).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Some(Self::Cpu),
+            "cuda" => Some(Self::Cuda),
+            "vulkan" | "vulcan" => Some(Self::Vulkan),
+            "metal" | "mtl" => Some(Self::Metal),
+            _ => None,
+        }
+    }
+
+    /// Native-library stems that must exist beside the worker for this accelerator.
+    pub fn required_lib_prefixes(self) -> &'static [&'static str] {
+        match self {
+            Self::Cpu | Self::Metal => &["llama", "ggml"],
+            Self::Cuda => &["llama", "ggml", "ggml-cuda"],
+            Self::Vulkan => &["llama", "ggml", "ggml-vulkan"],
+        }
+    }
+}
+
+/// A complete `llm-runtime/<accel>/` tree the engine can spawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LlmPayload {
+    /// Accelerator this directory was checked as.
+    pub accel: LlmAccel,
+    /// Folder containing the worker and its native libs.
+    pub dir: PathBuf,
+    /// Usable `aifs-worker-llm` path inside [`Self::dir`].
+    pub binary: PathBuf,
+}
+
+/// Wire view of a discovered payload (no worker hello).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmPayloadStatus {
+    /// `cpu` / `cuda` / `vulkan` / `metal`.
+    pub accel: LlmAccel,
+    /// Payload directory.
+    pub dir: String,
+    /// Worker binary inside [`Self::dir`].
+    pub binary: String,
+    /// True when the host driver/OS can run this accelerator.
+    pub host_available: bool,
+}
+
+impl LlmPayloadStatus {
+    /// Copies paths from a complete payload and a host probe.
+    pub fn from_payload(payload: &LlmPayload, host_available: bool) -> Self {
+        Self {
+            accel: payload.accel,
+            dir: payload.dir.display().to_string(),
+            binary: payload.binary.display().to_string(),
+            host_available,
+        }
+    }
+}
+
+/// `root/llm-runtime/<accel>`.
+pub fn llm_payload_dir(root: impl AsRef<Path>, accel: LlmAccel) -> PathBuf {
+    root.as_ref().join(LLM_RUNTIME_DIR).join(accel.as_str())
+}
+
+/// True when `dir` has a non-empty LLM worker and every required native lib for `accel`.
+///
+/// `nvcuda.dll` / `libcuda.so` never satisfy CUDA completeness.
+pub fn payload_complete(dir: &Path, accel: LlmAccel) -> bool {
+    inspect_payload(dir, accel).is_some()
+}
+
+/// Returns a payload when [`payload_complete`] is true.
+pub fn inspect_payload(dir: &Path, accel: LlmAccel) -> Option<LlmPayload> {
+    let binary = first_process_binary(dir, WorkerKind::Llm.binary_stem())
+        .filter(|path| is_usable_process_binary(path))?;
+    if !accel
+        .required_lib_prefixes()
+        .iter()
+        .all(|prefix| dir_has_runtime_lib(dir, prefix))
+    {
+        return None;
+    }
+    Some(LlmPayload {
+        accel,
+        dir: dir.to_path_buf(),
+        binary,
+    })
+}
+
+/// Infers accelerator from libraries present (CUDA, then Vulkan, else CPU).
+///
+/// Metal is not distinguishable from CPU by library prefix alone.
+pub fn infer_accel_from_libs(dir: &Path) -> Option<LlmAccel> {
+    if payload_complete(dir, LlmAccel::Cuda) {
+        return Some(LlmAccel::Cuda);
+    }
+    if payload_complete(dir, LlmAccel::Vulkan) {
+        return Some(LlmAccel::Vulkan);
+    }
+    if payload_complete(dir, LlmAccel::Cpu) {
+        return Some(LlmAccel::Cpu);
+    }
+    None
+}
+
+/// Accelerator implied by `…/llm-runtime/<accel>` or libraries in `dir`.
+pub fn accel_from_payload_dir(dir: &Path) -> LlmAccel {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(LlmAccel::parse)
+        .or_else(|| infer_accel_from_libs(dir))
+        .unwrap_or(LlmAccel::Cpu)
+}
+
+/// Required native-lib prefixes for `accel` that are not present in `dir`.
+pub fn missing_required_lib_prefixes(dir: &Path, accel: LlmAccel) -> Vec<&'static str> {
+    accel
+        .required_lib_prefixes()
+        .iter()
+        .copied()
+        .filter(|prefix| !dir_has_runtime_lib(dir, prefix))
+        .collect()
+}
+
+/// Complete payloads under `root/llm-runtime/<accel>/` (incomplete dirs are skipped).
+pub fn list_payloads_under(root: impl AsRef<Path>) -> Vec<LlmPayload> {
+    LLM_ACCELS
+        .iter()
+        .copied()
+        .filter_map(|accel| inspect_payload(&llm_payload_dir(root.as_ref(), accel), accel))
+        .collect()
+}
+
+/// True when the host looks like it can run `accel` (driver / OS, not payload files).
+///
+/// CPU is always available. CUDA looks for NVIDIA driver files; Vulkan for a
+/// loader or DRM node; Metal only on macOS. `CUDA_PATH` is not proof of CUDA.
+pub fn host_accel_available(accel: LlmAccel) -> bool {
+    match accel {
+        LlmAccel::Cpu => true,
+        LlmAccel::Cuda => nvidia_driver_present(),
+        LlmAccel::Vulkan => vulkan_loader_present(),
+        LlmAccel::Metal => cfg!(target_os = "macos"),
+    }
+}
+
+fn nvidia_driver_present() -> bool {
+    Path::new("/proc/driver/nvidia/version").is_file()
+        || Path::new("/dev/nvidia0").exists()
+        || Path::new(r"C:\Windows\System32\nvcuda.dll").is_file()
+        || Path::new(r"C:\Windows\System32\nvml.dll").is_file()
+}
+
+fn vulkan_loader_present() -> bool {
+    if cfg!(target_os = "linux") {
+        return Path::new("/dev/dri").exists();
+    }
+    if cfg!(target_os = "windows") {
+        return Path::new(r"C:\Windows\System32\vulkan-1.dll").is_file();
+    }
+    false
+}
+
+/// Picks a complete payload using `preference` (`auto` / `cpu` / `cuda` / …).
+///
+/// An explicit accelerator is tried first when the host can run it and a payload
+/// exists; otherwise auto-order is used. Missing host support skips that accel
+/// (a CUDA payload is not spawned when `nvcuda.dll` is absent).
+pub fn select_llm_payload<'a>(
+    payloads: &'a [LlmPayload],
+    preference: &str,
+    host_available: impl Fn(LlmAccel) -> bool,
+) -> Option<&'a LlmPayload> {
+    let mut order = Vec::with_capacity(LLM_ACCEL_AUTO_ORDER.len() + 1);
+    if let Some(accel) = LlmAccel::parse(preference) {
+        order.push(accel);
+        for &next in LLM_ACCEL_AUTO_ORDER {
+            if next != accel {
+                order.push(next);
+            }
+        }
+    } else {
+        order.extend(LLM_ACCEL_AUTO_ORDER.iter().copied());
+    }
+    for accel in order {
+        if !host_available(accel) {
+            continue;
+        }
+        if let Some(payload) = payloads.iter().find(|payload| payload.accel == accel) {
+            return Some(payload);
+        }
+    }
+    None
+}
+
+fn dir_has_runtime_lib(dir: &Path, prefix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| runtime_lib_matches_prefix(name, prefix))
+    })
+}
+
+fn is_native_lib_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".dll")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
+}
+
+fn runtime_lib_stem(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let file = lower.rsplit(['/', '\\']).next().unwrap_or(lower.as_str());
+    let file = file.strip_prefix("lib").unwrap_or(file);
+    let mut stem = if let Some(stem) = file.strip_suffix(".dll") {
+        stem.to_owned()
+    } else if let Some(stem) = file.strip_suffix(".dylib") {
+        stem.to_owned()
+    } else if let Some(idx) = file.find(".so") {
+        file[..idx].to_owned()
+    } else {
+        file.to_owned()
+    };
+    while let Some((head, tail)) = stem.rsplit_once('.')
+        && !tail.is_empty()
+        && tail.bytes().all(|b| b.is_ascii_digit())
+    {
+        stem = head.to_owned();
+    }
+    stem
+}
+
+/// Core ggml loader stems; accelerator plugins (`ggml-cuda`, `ggml-vulkan`) are separate.
+const GGML_CORE_STEMS: &[&str] = &["ggml", "ggml-base", "ggml-cpu"];
+
+/// True when `name` is a native lib whose stem is `prefix` or `prefix-*` / `prefix_*`.
+///
+/// The `ggml` prefix matches only core libs (`ggml`, `ggml-base`, `ggml-cpu`), not
+/// `ggml-cuda` / `ggml-vulkan`.
+pub fn runtime_lib_matches_prefix(name: &str, prefix: &str) -> bool {
+    if !is_native_lib_name(name) {
+        return false;
+    }
+    let stem = runtime_lib_stem(name);
+    let prefix = prefix.to_ascii_lowercase();
+    if prefix == "ggml" {
+        return GGML_CORE_STEMS.iter().any(|core| stem == *core);
+    }
+    stem == prefix
+        || stem.starts_with(&format!("{prefix}-"))
+        || stem.starts_with(&format!("{prefix}_"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_worker(dir: &Path) {
+        fs::create_dir_all(dir).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.join("aifs-worker-llm"), b"worker").unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    fn write_lib(dir: &Path, name: &str) {
+        fs::write(dir.join(name), b"lib").unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn parse_accel_aliases() {
+        assert_eq!(LlmAccel::parse("CUDA"), Some(LlmAccel::Cuda));
+        assert_eq!(LlmAccel::parse("vulcan"), Some(LlmAccel::Vulkan));
+        assert_eq!(LlmAccel::parse("mtl"), Some(LlmAccel::Metal));
+        assert_eq!(LlmAccel::parse("auto"), None);
+    }
+
+    #[test]
+    fn llm_payload_dir_nests_under_runtime() {
+        assert_eq!(
+            llm_payload_dir("/app", LlmAccel::Cuda),
+            PathBuf::from("/app/llm-runtime/cuda")
+        );
+    }
+
+    #[test]
+    fn runtime_lib_prefix_matches_ggml_cuda_not_nvcuda() {
+        assert!(runtime_lib_matches_prefix("ggml-cuda.dll", "ggml-cuda"));
+        assert!(runtime_lib_matches_prefix("libggml-cuda.so.0", "ggml-cuda"));
+        assert!(runtime_lib_matches_prefix("llama.dll", "llama"));
+        assert!(runtime_lib_matches_prefix("libllama.so", "llama"));
+        assert!(runtime_lib_matches_prefix("ggml-base.dll", "ggml"));
+        assert!(runtime_lib_matches_prefix("libllama.0.dylib", "llama"));
+        assert!(runtime_lib_matches_prefix("ggml-cpu.dll", "ggml"));
+        assert!(!runtime_lib_matches_prefix("ggml-cuda.dll", "ggml"));
+        assert!(!runtime_lib_matches_prefix("nvcuda.dll", "ggml-cuda"));
+        assert!(!runtime_lib_matches_prefix("nvcuda.dll", "ggml"));
+        assert!(!runtime_lib_matches_prefix("libcuda.so.1", "ggml-cuda"));
+        assert!(!runtime_lib_matches_prefix("aifs-worker-llm.exe", "llama"));
+    }
+
+    #[test]
+    fn payload_complete_requires_worker_and_libs() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path().join("cuda");
+        write_worker(&dir);
+        assert!(!payload_complete(&dir, LlmAccel::Cpu));
+        write_lib(&dir, "llama.dll");
+        write_lib(&dir, "ggml.dll");
+        assert!(payload_complete(&dir, LlmAccel::Cpu));
+        assert!(!payload_complete(&dir, LlmAccel::Cuda));
+        write_lib(&dir, "nvcuda.dll");
+        assert!(
+            !payload_complete(&dir, LlmAccel::Cuda),
+            "driver DLL must not complete a CUDA payload"
+        );
+        write_lib(&dir, "ggml-cuda.dll");
+        assert!(payload_complete(&dir, LlmAccel::Cuda));
+        let payload = inspect_payload(&dir, LlmAccel::Cuda).unwrap_or_else(|| panic!("cuda"));
+        assert_eq!(payload.accel, LlmAccel::Cuda);
+        assert_eq!(payload.dir, dir);
+        assert!(payload.binary.ends_with("aifs-worker-llm"));
+    }
+
+    #[test]
+    fn missing_required_libs_use_folder_name_not_driver_dlls() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        write_worker(&dir);
+        write_lib(&dir, "llama.dll");
+        write_lib(&dir, "ggml.dll");
+        write_lib(&dir, "nvcuda.dll");
+        assert_eq!(accel_from_payload_dir(&dir), LlmAccel::Cuda);
+        assert_eq!(
+            missing_required_lib_prefixes(&dir, LlmAccel::Cuda),
+            vec!["ggml-cuda"]
+        );
+        write_lib(&dir, "ggml-cuda.dll");
+        assert!(missing_required_lib_prefixes(&dir, LlmAccel::Cuda).is_empty());
+    }
+
+    #[test]
+    fn empty_worker_placeholder_is_incomplete() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path();
+        fs::write(dir.join("aifs-worker-llm"), b"").unwrap_or_else(|error| panic!("{error}"));
+        write_lib(dir, "llama.dll");
+        write_lib(dir, "ggml.dll");
+        assert!(!payload_complete(dir, LlmAccel::Cpu));
+    }
+
+    #[test]
+    fn cuda_payload_needs_core_ggml_not_only_plugin() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path();
+        write_worker(dir);
+        write_lib(dir, "llama.dll");
+        write_lib(dir, "ggml-cuda.dll");
+        assert!(!payload_complete(dir, LlmAccel::Cuda));
+        write_lib(dir, "ggml.dll");
+        assert!(payload_complete(dir, LlmAccel::Cuda));
+    }
+
+    #[test]
+    fn vulkan_payload_needs_ggml_vulkan() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path();
+        write_worker(dir);
+        write_lib(dir, "libllama.so");
+        write_lib(dir, "libggml.so");
+        assert!(!payload_complete(dir, LlmAccel::Vulkan));
+        write_lib(dir, "libggml-vulkan.so.0");
+        assert!(payload_complete(dir, LlmAccel::Vulkan));
+    }
+
+    #[test]
+    fn infer_accel_prefers_cuda_then_vulkan_then_cpu() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path();
+        write_worker(dir);
+        write_lib(dir, "llama.dll");
+        write_lib(dir, "ggml.dll");
+        assert_eq!(infer_accel_from_libs(dir), Some(LlmAccel::Cpu));
+        write_lib(dir, "ggml-vulkan.dll");
+        assert_eq!(infer_accel_from_libs(dir), Some(LlmAccel::Vulkan));
+        write_lib(dir, "ggml-cuda.dll");
+        assert_eq!(infer_accel_from_libs(dir), Some(LlmAccel::Cuda));
+    }
+
+    #[test]
+    fn auto_order_is_cuda_vulkan_metal_cpu() {
+        assert_eq!(
+            LLM_ACCEL_AUTO_ORDER,
+            &[
+                LlmAccel::Cuda,
+                LlmAccel::Vulkan,
+                LlmAccel::Metal,
+                LlmAccel::Cpu
+            ]
+        );
+    }
+
+    fn write_complete_cpu(dir: &Path) {
+        write_worker(dir);
+        write_lib(dir, "llama.dll");
+        write_lib(dir, "ggml.dll");
+    }
+
+    #[test]
+    fn list_payloads_under_skips_incomplete_and_keeps_siblings() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_worker(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "llama.dll");
+        write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "ggml.dll");
+        let listed = list_payloads_under(root.path());
+        let accels: Vec<_> = listed.iter().map(|payload| payload.accel).collect();
+        assert!(accels.contains(&LlmAccel::Cpu), "{accels:?}");
+        assert!(
+            !accels.contains(&LlmAccel::Cuda),
+            "CUDA without ggml-cuda must be skipped: {accels:?}"
+        );
+    }
+
+    #[test]
+    fn select_auto_prefers_cuda_when_host_and_payload_exist() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(
+            &llm_payload_dir(root.path(), LlmAccel::Cuda),
+            "ggml-cuda.dll",
+        );
+        let payloads = list_payloads_under(root.path());
+        let selected = select_llm_payload(&payloads, "auto", |_| true)
+            .unwrap_or_else(|| panic!("expected a payload"));
+        assert_eq!(selected.accel, LlmAccel::Cuda);
+    }
+
+    #[test]
+    fn select_skips_cuda_when_host_has_no_driver() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(
+            &llm_payload_dir(root.path(), LlmAccel::Cuda),
+            "ggml-cuda.dll",
+        );
+        let payloads = list_payloads_under(root.path());
+        let host_ok = |accel: LlmAccel| accel != LlmAccel::Cuda;
+        let selected = select_llm_payload(&payloads, "auto", host_ok)
+            .unwrap_or_else(|| panic!("expected fallback"));
+        assert_eq!(selected.accel, LlmAccel::Cpu);
+        let still_cpu = select_llm_payload(&payloads, "cuda", host_ok)
+            .unwrap_or_else(|| panic!("explicit cuda should fall back"));
+        assert_eq!(still_cpu.accel, LlmAccel::Cpu);
+    }
+
+    #[test]
+    fn host_cpu_is_always_available_and_metal_follows_os() {
+        assert!(host_accel_available(LlmAccel::Cpu));
+        assert_eq!(
+            host_accel_available(LlmAccel::Metal),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn payload_status_serializes_accel_and_host_flag() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cpu);
+        write_complete_cpu(&dir);
+        let payload = inspect_payload(&dir, LlmAccel::Cpu).unwrap_or_else(|| panic!("cpu"));
+        let status = LlmPayloadStatus::from_payload(&payload, true);
+        let json = serde_json::to_value(&status).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(json["accel"], "cpu");
+        assert_eq!(json["host_available"], true);
+        assert_eq!(status.host_available, host_accel_available(LlmAccel::Cpu));
+        assert!(json["dir"].as_str().unwrap_or("").contains("cpu"));
+        assert!(
+            json["binary"]
+                .as_str()
+                .unwrap_or("")
+                .contains("aifs-worker-llm"),
+            "{json}"
+        );
+    }
+}

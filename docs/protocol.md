@@ -28,8 +28,8 @@ diagnostic only.
 | `shutdown` | — | `shutdown` |
 | `get_settings` | — | `settings { settings }` |
 | `put_settings` | `settings: AppSettings` | `settings { settings }` or `failed { invalid_request }` |
-| `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` listed from disk without hashing multi-GB GGUFs; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`, or `pending`. Worker hello is deferred to scan.) |
-| `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime` is not stored) |
+| `get_models` | — | `models { inventory }` (API keys omitted; `artifacts` listed from disk without hashing multi-GB GGUFs; `llm_payloads` lists complete `llm-runtime/<accel>/` folders without spawning hello; each slot includes `runtime`: `off`, `stub`, `hosted`, `llama`, `missing_worker`, `missing_files`, or `pending`. Worker hello is deferred to scan.) |
+| `put_models` | `inventory: ModelInventory` | `models { inventory }` (same redaction and `runtime` as `get_models`; `runtime`, `artifacts`, and `llm_payloads` are not stored) |
 | `download_model` | `catalog_id` | `models { inventory }` (progress `stage=download`; SHA-256 verified; matching files skipped; mismatch deletes the junk file; `runtime` recomputed; `cancel` stops between chunks and **keeps** the `.part` file so a later fetch can HTTP `Range` resume; ignored-Range `200` and `416` restart from byte 0; transport / 5xx / 429 errors keep `.part`; checksum mismatch still deletes `.part`) |
 | `probe_endpoint` | flattened `ModelBackend`, optional `api_key` | `endpoint_probed { ok, message }` |
 
@@ -113,10 +113,23 @@ line). Workers never open SQLite and never mutate user files.
 Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 `aifs-worker-llm`. Discovery uses `$AIFS_WORKER_MEDIA` (and siblings), then a
 non-empty binary next to the engine or in ancestor `target/{debug,release}/`
-(empty Tauri debug sidecar placeholders are skipped). Spawn/hello failures
+(empty Tauri debug sidecar placeholders are skipped). The LLM worker is chosen
+from complete `llm-runtime/<accel>/` payloads (CUDA → Vulkan → Metal → CPU when
+the host driver is present). Unpackaged discovery can still fall back to a
+Cargo `aifs-worker-llm` next to the engine; packaged apps do not install that
+binary as a Tauri `externalBin` sidecar. `$AIFS_LLM_BACKEND`
+overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
+the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
-`0xC0000135`) is named in that text (loader failure, no stderr). Scan prefers a live
+`0xC0000135`) is named in that text (loader failure, no stderr). That exit
+names the spawned payload directory and any missing required library prefixes
+(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`) — not `target/debug`, a flat
+sidecar, or a host driver such as `nvcuda.dll`. An `llm-runtime/<accel>/` folder is a complete
+payload only when it has a non-empty `aifs-worker-llm` plus `llama` and core `ggml`
+libs (`ggml` / `ggml-base` / `ggml-cpu`); CUDA also needs `ggml-cuda`, Vulkan
+`ggml-vulkan`. `nvcuda.dll` does not complete a CUDA payload. Layout and
+helpers: [`llm-runtime-payloads.md`](llm-runtime-payloads.md). Scan prefers a live
 media worker and falls back to in-process Rust tag readers when that binary is
 missing. The document worker extracts PDF/Office/text (with an in-process
 fallback). The vision worker reads EXIF (`image.captured_on`, `image.camera`,

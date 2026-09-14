@@ -1,7 +1,27 @@
 // Copy sidecar binaries only when contents change so `tauri dev` does not loop.
 
+use aifs_protocol::worker::WorkerKind;
+use aifs_protocol::{
+    LlmAccel, ensure_process_binary_executable, first_process_binary, infer_accel_from_libs,
+    llm_payload_dir, runtime_lib_matches_prefix,
+};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Native library filename prefixes that `aifs-worker-llm` loads at process start.
+const WORKER_RUNTIME_LIB_PREFIXES: &[&str] = &[
+    "ggml",
+    "llama",
+    "mtmd",
+    "cudart",
+    "cublas",
+    "nvrtc",
+    "nvjitlink",
+    "vulkan",
+];
+
 /// Copies `src` to `dest` when the destination is missing or differs. Returns true if written.
-fn copy_if_changed(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<bool> {
+fn copy_if_changed(src: &Path, dest: &Path) -> std::io::Result<bool> {
     if dest.is_file() && files_have_same_contents(src, dest) {
         return Ok(false);
     }
@@ -10,7 +30,7 @@ fn copy_if_changed(src: &std::path::Path, dest: &std::path::Path) -> std::io::Re
 }
 
 /// Writes `contents` when the destination is missing or differs. Returns true if written.
-fn write_if_changed(dest: &std::path::Path, contents: &[u8]) -> std::io::Result<bool> {
+fn write_if_changed(dest: &Path, contents: &[u8]) -> std::io::Result<bool> {
     if dest.is_file()
         && let Ok(existing) = std::fs::read(dest)
         && existing == contents
@@ -21,7 +41,7 @@ fn write_if_changed(dest: &std::path::Path, contents: &[u8]) -> std::io::Result<
     Ok(true)
 }
 
-fn files_have_same_contents(src: &std::path::Path, dest: &std::path::Path) -> bool {
+fn files_have_same_contents(src: &Path, dest: &Path) -> bool {
     let Ok(src_meta) = std::fs::metadata(src) else {
         return false;
     };
@@ -55,11 +75,197 @@ fn files_have_same_contents(src: &std::path::Path, dest: &std::path::Path) -> bo
     }
 }
 
+fn is_native_lib_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".dll")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
+}
+
+fn runtime_lib_stem(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    let file = lower.rsplit(['/', '\\']).next().unwrap_or(lower.as_str());
+    let file = file.strip_prefix("lib").unwrap_or(file);
+    if let Some(stem) = file.strip_suffix(".dll") {
+        return stem.to_owned();
+    }
+    if let Some(stem) = file.strip_suffix(".dylib") {
+        return stem.to_owned();
+    }
+    if let Some(idx) = file.find(".so") {
+        return file[..idx].to_owned();
+    }
+    file.to_owned()
+}
+
+/// True when `name` is a ggml/llama/CUDA runtime library the LLM sidecar needs beside itself.
+fn is_worker_runtime_lib(name: &str) -> bool {
+    if !is_native_lib_name(name) {
+        return false;
+    }
+    let stem = runtime_lib_stem(name);
+    WORKER_RUNTIME_LIB_PREFIXES
+        .iter()
+        .any(|prefix| stem.starts_with(prefix))
+}
+
+fn collect_runtime_libs_from(
+    dir: &Path,
+    files: &mut HashMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !is_worker_runtime_lib(name) {
+            continue;
+        }
+        let src = entry.path();
+        if src.is_file() {
+            files.insert(name.to_owned(), src);
+        }
+    }
+    Ok(())
+}
+
+fn collect_src_runtime_libs(
+    src_dir: &Path,
+    cuda_root: Option<&Path>,
+    allow_cuda_toolkit: bool,
+) -> std::io::Result<HashMap<String, PathBuf>> {
+    let mut files = HashMap::new();
+    collect_runtime_libs_from(src_dir, &mut files)?;
+    collect_runtime_libs_from(&src_dir.join("deps"), &mut files)?;
+    if allow_cuda_toolkit
+        && files
+            .keys()
+            .any(|name| runtime_lib_matches_prefix(name, "ggml-cuda"))
+        && let Some(cuda_root) = cuda_root
+    {
+        collect_runtime_libs_from(&cuda_root.join("bin"), &mut files)?;
+    }
+    Ok(files)
+}
+
+fn remove_stale_runtime_libs(
+    dest_dir: &Path,
+    keep: &HashMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    if !dest_dir.is_dir() {
+        return Ok(());
+    }
+    let mut stale = Vec::new();
+    for entry in std::fs::read_dir(dest_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if is_worker_runtime_lib(name) && !keep.contains_key(name) && entry.path().is_file() {
+            stale.push(entry.path());
+        }
+    }
+    for path in stale {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn write_runtime_libs(dest_dir: &Path, files: &HashMap<String, PathBuf>) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
+    for (name, src) in files {
+        copy_if_changed(src, &dest_dir.join(name))?;
+    }
+    remove_stale_runtime_libs(dest_dir, files)?;
+    Ok(())
+}
+
+/// Copies llama.cpp / CUDA runtime libs from `src_dir` (and `deps`) next to a dest dir.
+#[cfg_attr(not(test), allow(dead_code))]
+fn copy_worker_runtime_libs_from(
+    src_dir: &Path,
+    dest_dir: &Path,
+    cuda_root: Option<&Path>,
+) -> std::io::Result<()> {
+    let files = collect_src_runtime_libs(src_dir, cuda_root, true)?;
+    write_runtime_libs(dest_dir, &files)
+}
+
+/// Snapshots worker + runtime libs into `runtime_root/llm-runtime/<accel>/`.
+#[cfg_attr(test, allow(dead_code))]
+fn stage_llm_payload(src_dir: &Path, runtime_root: &Path) -> std::io::Result<LlmAccel> {
+    let cuda_root = std::env::var_os("CUDA_PATH").map(PathBuf::from);
+    stage_llm_payload_from(src_dir, runtime_root, cuda_root.as_deref())
+}
+
+/// Infers `<accel>` from `src_dir` (and `deps`) and writes that payload only.
+fn stage_llm_payload_from(
+    src_dir: &Path,
+    runtime_root: &Path,
+    cuda_root: Option<&Path>,
+) -> std::io::Result<LlmAccel> {
+    let accel = infer_staging_accel(src_dir);
+    let dest_dir = llm_payload_dir(runtime_root, accel);
+    let files = collect_src_runtime_libs(src_dir, cuda_root, accel == LlmAccel::Cuda)?;
+    if let Some(src_bin) = first_process_binary(src_dir, WorkerKind::Llm.binary_stem()) {
+        std::fs::create_dir_all(&dest_dir)?;
+        let dest_bin = dest_dir.join(
+            src_bin
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(WorkerKind::Llm.binary_stem())),
+        );
+        copy_if_changed(&src_bin, &dest_bin)?;
+        ensure_process_binary_executable(&dest_bin)?;
+    }
+    write_runtime_libs(&dest_dir, &files)?;
+    Ok(accel)
+}
+
+/// CUDA / Vulkan plugins in `src_dir` or `deps` win over a CPU-only `infer_accel_from_libs`.
+fn infer_staging_accel(src_dir: &Path) -> LlmAccel {
+    if infer_accel_from_libs(src_dir) == Some(LlmAccel::Cuda)
+        || dir_has_plugin(src_dir, "ggml-cuda")
+        || dir_has_plugin(&src_dir.join("deps"), "ggml-cuda")
+    {
+        return LlmAccel::Cuda;
+    }
+    if infer_accel_from_libs(src_dir) == Some(LlmAccel::Vulkan)
+        || dir_has_plugin(src_dir, "ggml-vulkan")
+        || dir_has_plugin(&src_dir.join("deps"), "ggml-vulkan")
+    {
+        return LlmAccel::Vulkan;
+    }
+    infer_accel_from_libs(src_dir).unwrap_or(LlmAccel::Cpu)
+}
+
+fn dir_has_plugin(dir: &Path, prefix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.path().is_file()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| runtime_lib_matches_prefix(name, prefix))
+    })
+}
+
 #[cfg(test)]
 mod sidecar_copy_tests {
-    use super::{copy_if_changed, files_have_same_contents, write_if_changed};
+    use super::{
+        copy_if_changed, copy_worker_runtime_libs_from, files_have_same_contents,
+        is_worker_runtime_lib, stage_llm_payload_from, write_if_changed,
+    };
+    use aifs_protocol::LlmAccel;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -115,5 +321,291 @@ mod sidecar_copy_tests {
         assert!(!write_if_changed(&dest, &[]).unwrap_or_else(|error| panic!("{error}")));
         assert!(files_have_same_contents(&dest, &dest));
         fs::remove_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn worker_runtime_lib_names_match_ggml_llama_cuda() {
+        for name in [
+            "ggml.dll",
+            "ggml-cuda.dll",
+            "ggml-vulkan.dll",
+            "ggml-metal.dylib",
+            "llama.dll",
+            "mtmd.dll",
+            "libmtmd.so",
+            "libggml.so",
+            "libggml.so.0",
+            "libllama.dylib",
+            "cudart64_12.dll",
+            "cublasLt64_12.dll",
+            "nvrtc64_120_0.dll",
+            "nvJitLink_120_0.dll",
+            "libcudart.so.12",
+            "vulkan-1.dll",
+            "libvulkan.so.1",
+        ] {
+            assert!(is_worker_runtime_lib(name), "{name}");
+        }
+        for name in [
+            "nvcuda.dll",
+            "aifs-worker-llm.exe",
+            "aifs-worker-llm",
+            "readme.txt",
+            "msvcp140.dll",
+            "libcuda.so.1",
+        ] {
+            assert!(!is_worker_runtime_lib(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn copy_worker_runtime_libs_copies_ggml_from_src_and_deps() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let deps = src.join("deps");
+        let dest = root.join("dest");
+        fs::create_dir_all(&deps).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("readme.txt"), b"skip").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("aifs-worker-llm.exe"), b"exe")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(deps.join("ggml-cpu.dll"), b"cpu").unwrap_or_else(|error| panic!("{error}"));
+        copy_worker_runtime_libs_from(&src, &dest, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            fs::read(dest.join("ggml.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"ggml"
+        );
+        assert_eq!(
+            fs::read(dest.join("ggml-cpu.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cpu"
+        );
+        assert!(!dest.join("readme.txt").exists());
+        assert!(!dest.join("aifs-worker-llm.exe").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn copy_worker_runtime_libs_skips_cuda_toolkit_without_ggml_cuda() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let dest = root.join("dest");
+        let cuda = root.join("cuda");
+        fs::create_dir_all(&src).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml.dll"), b"cpu").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        copy_worker_runtime_libs_from(&src, &dest, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(dest.join("ggml.dll").is_file());
+        assert!(!dest.join("cudart64_12.dll").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn copy_worker_runtime_libs_pulls_cudart_when_ggml_cuda_is_present() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let dest = root.join("dest");
+        let cuda = root.join("cuda");
+        fs::create_dir_all(&src).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml-cuda.dll"), b"cuda").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("nvcuda.dll"), b"driver")
+            .unwrap_or_else(|error| panic!("{error}"));
+        copy_worker_runtime_libs_from(&src, &dest, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            fs::read(dest.join("cudart64_12.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cudart"
+        );
+        assert!(!dest.join("nvcuda.dll").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn copy_worker_runtime_libs_removes_stale_cuda_backend_after_cpu_rebuild() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let dest = root.join("dest");
+        let cuda = root.join("cuda");
+        fs::create_dir_all(&src).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(&dest).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml.dll"), b"cpu").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("ggml-cuda.dll"), b"stale").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("cudart64_12.dll"), b"stale-rt")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("aifs-worker-llm.exe"), b"sidecar")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        copy_worker_runtime_libs_from(&src, &dest, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            fs::read(dest.join("ggml.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cpu"
+        );
+        assert!(!dest.join("ggml-cuda.dll").exists());
+        assert!(!dest.join("cudart64_12.dll").exists());
+        assert_eq!(
+            fs::read(dest.join("aifs-worker-llm.exe")).unwrap_or_else(|error| panic!("{error}")),
+            b"sidecar"
+        );
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    fn write_cpu_payload_src(src: &Path) {
+        fs::create_dir_all(src).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("aifs-worker-llm"), b"worker").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("llama.dll"), b"llama").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cpu_payload_leaves_sibling_cuda_dir() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        let cuda_dest = runtime.join("llm-runtime").join("cuda");
+        write_cpu_payload_src(&src);
+        fs::create_dir_all(&cuda_dest).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda_dest.join("ggml-cuda.dll"), b"keep")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda_dest.join("aifs-worker-llm"), b"cuda-worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cpu);
+        let cpu_dest = runtime.join("llm-runtime").join("cpu");
+        assert_eq!(
+            fs::read(cpu_dest.join("aifs-worker-llm")).unwrap_or_else(|error| panic!("{error}")),
+            b"worker"
+        );
+        assert_eq!(
+            fs::read(cpu_dest.join("llama.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"llama"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(cpu_dest.join("aifs-worker-llm"))
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions()
+                .mode();
+            assert_ne!(
+                mode & 0o111,
+                0,
+                "staged payload worker must be executable: {mode:#o}"
+            );
+        }
+        assert!(!cpu_dest.join("ggml-cuda.dll").exists());
+        assert_eq!(
+            fs::read(cuda_dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"keep"
+        );
+        assert_eq!(
+            fs::read(cuda_dest.join("aifs-worker-llm")).unwrap_or_else(|error| panic!("{error}")),
+            b"cuda-worker"
+        );
+        assert!(!runtime.join("llm-runtime").join("llama.dll").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cuda_payload_lands_under_cuda_and_pulls_cudart() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        let cuda = root.join("toolkit");
+        write_cpu_payload_src(&src);
+        fs::write(src.join("ggml-cuda.dll"), b"cuda").unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("nvcuda.dll"), b"driver")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel = stage_llm_payload_from(&src, &runtime, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cuda);
+        let dest = runtime.join("llm-runtime").join("cuda");
+        assert_eq!(
+            fs::read(dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cuda"
+        );
+        assert_eq!(
+            fs::read(dest.join("cudart64_12.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cudart"
+        );
+        assert_eq!(
+            fs::read(dest.join("aifs-worker-llm")).unwrap_or_else(|error| panic!("{error}")),
+            b"worker"
+        );
+        assert!(!dest.join("nvcuda.dll").exists());
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cuda_plugin_in_deps_still_lands_under_cuda() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        write_cpu_payload_src(&src);
+        fs::create_dir_all(src.join("deps")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("deps").join("ggml-cuda.dll"), b"cuda")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cuda);
+        let dest = runtime.join("llm-runtime").join("cuda");
+        assert_eq!(
+            fs::read(dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cuda"
+        );
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cpu_does_not_copy_cuda_toolkit_into_cpu_payload() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        let cuda = root.join("toolkit");
+        write_cpu_payload_src(&src);
+        fs::create_dir_all(cuda.join("bin")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cuda.join("bin").join("cudart64_12.dll"), b"cudart")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel = stage_llm_payload_from(&src, &runtime, Some(&cuda))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cpu);
+        let dest = runtime.join("llm-runtime").join("cpu");
+        assert!(dest.join("ggml.dll").is_file());
+        assert!(!dest.join("cudart64_12.dll").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_vulkan_payload_lands_under_vulkan() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        write_cpu_payload_src(&src);
+        fs::write(src.join("ggml-vulkan.dll"), b"vk").unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Vulkan);
+        assert!(
+            runtime
+                .join("llm-runtime")
+                .join("vulkan")
+                .join("ggml-vulkan.dll")
+                .is_file()
+        );
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 }
