@@ -106,6 +106,29 @@ pub fn is_usable_process_binary(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
+/// Sets owner/group/other execute bits on Unix when the file is not executable.
+///
+/// Tauri resource copies can drop `+x`; spawn then fails with permission denied.
+/// Windows is a no-op.
+pub fn ensure_process_binary_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(path)?;
+        let mode = meta.permissions().mode();
+        if mode & 0o111 == 0 {
+            let mut perms = meta.permissions();
+            perms.set_mode(mode | 0o111);
+            std::fs::set_permissions(path, perms)?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 /// First usable process binary for `stem` in `dir` (plain name, then sidecar suffix).
 pub fn first_process_binary(dir: &Path, stem: &str) -> Option<PathBuf> {
     process_binary_names(stem, target_triple())
@@ -474,6 +497,32 @@ mod tests {
             first_process_binary(dir.path(), "aifs-worker-llm").as_deref(),
             Some(real.as_path())
         );
+    }
+
+    #[test]
+    fn ensure_process_binary_executable_sets_unix_execute_bits() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = dir.path().join("aifs-worker-llm");
+        std::fs::write(&path, b"worker").unwrap_or_else(|error| panic!("{error}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions();
+            perms.set_mode(0o644);
+            std::fs::set_permissions(&path, perms).unwrap_or_else(|error| panic!("{error}"));
+            ensure_process_binary_executable(&path).unwrap_or_else(|error| panic!("{error}"));
+            let mode = std::fs::metadata(&path)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o111, 0, "expected execute bits, got {mode:#o}");
+        }
+        #[cfg(not(unix))]
+        {
+            ensure_process_binary_executable(&path).unwrap_or_else(|error| panic!("{error}"));
+        }
     }
 
     #[test]

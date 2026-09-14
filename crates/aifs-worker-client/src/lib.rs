@@ -6,7 +6,7 @@ use aifs_protocol::worker::{
 };
 use aifs_protocol::{
     ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, discover_process_binary,
-    encode_line, is_usable_process_binary,
+    encode_line, ensure_process_binary_executable, is_usable_process_binary,
 };
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -125,6 +125,7 @@ impl WorkerClient {
         if !binary.exists() {
             return Err(WorkerClientError::NotFound(binary.display().to_string()));
         }
+        ensure_process_binary_executable(binary)?;
         let mut command = Command::new(binary);
         command
             .stdin(Stdio::piped())

@@ -606,7 +606,6 @@ mod tests {
             "binaries/aifs-worker-media",
             "binaries/aifs-worker-document",
             "binaries/aifs-worker-vision",
-            "binaries/aifs-worker-llm",
         ];
         assert_eq!(bins.len(), expected.len(), "{bins:?}");
         for name in expected {
@@ -615,6 +614,11 @@ mod tests {
                 "missing {name} in {bins:?}"
             );
         }
+        assert!(
+            bins.iter()
+                .all(|value| value.as_str() != Some("binaries/aifs-worker-llm")),
+            "LLM worker must not be a flat externalBin sidecar: {bins:?}"
+        );
         let resources = conf["bundle"]["resources"]
             .as_object()
             .unwrap_or_else(|| panic!("resources"));
@@ -721,9 +725,9 @@ mod tests {
         assert!(
             build.contains("copy_if_changed")
                 && build.contains("write_if_changed")
-                && build.contains("copy_worker_runtime_libs")
-                && build.contains("stage_llm_payload"),
-            "sidecar copies must skip identical destinations, copy llama/CUDA runtime libs, and stage llm-runtime/<accel>/: {build}"
+                && build.contains("stage_llm_payload")
+                && !build.contains("copy_worker_runtime_libs"),
+            "sidecar copies must skip identical destinations and stage llm-runtime/<accel>/ without a flat LLM sidecar: {build}"
         );
         let ignore = include_str!("../.taurignore");
         assert!(

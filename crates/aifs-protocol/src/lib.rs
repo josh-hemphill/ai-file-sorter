@@ -17,8 +17,8 @@ pub mod options;
 pub mod worker;
 
 pub use worker::{
-    ENGINE_PROCESS_STEM, discover_process_binary, first_process_binary, is_usable_process_binary,
-    process_binary_names, target_triple,
+    ENGINE_PROCESS_STEM, discover_process_binary, ensure_process_binary_executable,
+    first_process_binary, is_usable_process_binary, process_binary_names, target_triple,
 };
 
 pub use catalog::{

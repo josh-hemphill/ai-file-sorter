@@ -148,8 +148,7 @@ fn runtime_search_roots_from(starts: &[PathBuf]) -> Vec<PathBuf> {
     for start in starts {
         let mut dir = start.clone();
         for _ in 0..8 {
-            push_unique(&mut roots, dir.clone());
-            push_unique(&mut roots, dir.join("resources"));
+            push_resource_roots(&mut roots, &dir);
             for profile in ["debug", "release"] {
                 push_unique(&mut roots, dir.join("target").join(profile));
             }
@@ -159,6 +158,18 @@ fn runtime_search_roots_from(starts: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// `dir`, `dir/resources`, `dir/Resources`, and macOS `Contents/Resources` beside `MacOS`.
+fn push_resource_roots(roots: &mut Vec<PathBuf>, dir: &Path) {
+    push_unique(roots, dir.to_path_buf());
+    push_unique(roots, dir.join("resources"));
+    push_unique(roots, dir.join("Resources"));
+    if dir.file_name().is_some_and(|name| name == "MacOS")
+        && let Some(parent) = dir.parent()
+    {
+        push_unique(roots, parent.join("Resources"));
+    }
 }
 
 fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
@@ -242,6 +253,24 @@ mod tests {
         );
         drop(guard);
         fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn runtime_roots_include_macos_contents_resources() {
+        let start = PathBuf::from("App.app/Contents/MacOS");
+        let roots = runtime_search_roots_from(&[start]);
+        assert!(
+            roots
+                .iter()
+                .any(|dir| dir == Path::new("App.app/Contents/Resources")),
+            "packaged macOS resources live beside MacOS, not inside it: {roots:?}"
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|dir| dir == Path::new("App.app/Contents/MacOS")),
+            "{roots:?}"
+        );
     }
 
     #[test]

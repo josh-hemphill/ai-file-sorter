@@ -115,7 +115,9 @@ Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 non-empty binary next to the engine or in ancestor `target/{debug,release}/`
 (empty Tauri debug sidecar placeholders are skipped). The LLM worker is chosen
 from complete `llm-runtime/<accel>/` payloads (CUDA → Vulkan → Metal → CPU when
-the host driver is present), then the sidecar fallback. `$AIFS_LLM_BACKEND`
+the host driver is present). Unpackaged discovery can still fall back to a
+Cargo `aifs-worker-llm` next to the engine; packaged apps do not install that
+binary as a Tauri `externalBin` sidecar. `$AIFS_LLM_BACKEND`
 overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
 the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
