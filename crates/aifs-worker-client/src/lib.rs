@@ -828,12 +828,24 @@ fn dll_search_hint(code: i32, spawned: &Path) -> Option<String> {
     if code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND {
         return None;
     }
-    Some(payload_runtime_hint(spawned, true))
+    if is_llm_worker_path(spawned) {
+        return Some(payload_runtime_hint(spawned, true));
+    }
+    let dir = spawned.parent().unwrap_or(spawned);
+    Some(format!(
+        "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+        dir = dir.display()
+    ))
+}
+
+fn is_llm_worker_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("aifs-worker-llm"))
 }
 
 fn llm_missing_lib_hint(spawned: &Path) -> Option<String> {
-    let name = spawned.file_name()?.to_str()?;
-    if !name.contains("aifs-worker-llm") {
+    if !is_llm_worker_path(spawned) {
         return None;
     }
     let dir = spawned.parent().unwrap_or(spawned);
@@ -863,7 +875,7 @@ fn payload_runtime_hint(spawned: &Path, dll_not_found: bool) -> String {
     };
     if missing.is_empty() {
         text.push_str(&format!(
-            " Required {accel} libraries ({required}) must sit in that folder; a working NVIDIA driver is not a payload library.",
+            " Required {accel} libraries ({required}) are present in that folder; a working NVIDIA driver is not a payload library.",
             accel = accel.as_str(),
         ));
     } else {
@@ -980,7 +992,10 @@ mod tests {
         let spawned = dir.join("aifs-worker-llm.exe");
         let hint = dll_search_hint(code, &spawned).unwrap_or_else(|| panic!("hint"));
         assert!(hint.contains(dir.to_string_lossy().as_ref()), "{hint}");
-        assert!(hint.contains("ggml-cuda"), "{hint}");
+        assert!(
+            hint.contains("missing required libraries") && hint.contains("ggml-cuda"),
+            "{hint}"
+        );
         assert!(!hint.contains("nvcuda"), "{hint}");
         assert!(!hint.contains("target/debug"), "{hint}");
         let disconnected = format_disconnected(None, &[], Some(&spawned));
@@ -988,7 +1003,15 @@ mod tests {
             disconnected.contains("aifs-worker-llm.exe"),
             "{disconnected}"
         );
-        assert!(disconnected.contains("ggml-cuda"), "{disconnected}");
+        assert!(
+            disconnected.contains("missing required libraries")
+                && disconnected.contains("ggml-cuda"),
+            "{disconnected}"
+        );
+        let media = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-media.exe");
+        let media_hint = dll_search_hint(code, media).unwrap_or_else(|| panic!("media hint"));
+        assert!(media_hint.contains("STATUS_DLL_NOT_FOUND"), "{media_hint}");
+        assert!(!media_hint.contains("llama"), "{media_hint}");
         std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
