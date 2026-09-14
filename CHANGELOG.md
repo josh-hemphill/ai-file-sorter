@@ -99,8 +99,10 @@
   Windows `STATUS_DLL_NOT_FOUND` copy stays short. A Cargo `target/debug`
   folder is not called a CPU payload. When CUDA is not selected, the error
   says whether `llm-runtime/cuda` is missing/`ggml-cuda` is incomplete or the
-  NVIDIA probe failed (`%SystemRoot%\System32\nvcuda.dll`). Scan logs a shared
-  worker-start failure once for Categorize/Vision/Document.
+  NVIDIA probe failed (`%SystemRoot%\System32\nvcuda.dll`). A llama-linked cargo
+  exe is not spawned as a stub; a complete CUDA payload is used even when that
+  probe is a false negative. Scan logs a shared worker-start failure once for
+  Categorize/Vision/Document.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
