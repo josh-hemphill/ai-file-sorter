@@ -155,13 +155,32 @@ pub fn infer_accel_from_libs(dir: &Path) -> Option<LlmAccel> {
     None
 }
 
-/// Accelerator implied by `…/llm-runtime/<accel>` or libraries in `dir`.
-pub fn accel_from_payload_dir(dir: &Path) -> LlmAccel {
-    dir.file_name()
+/// True when `dir` is `…/llm-runtime/<accel>` (folder name is a known accelerator).
+pub fn is_staged_payload_dir(dir: &Path) -> bool {
+    dir.parent()
+        .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .and_then(LlmAccel::parse)
-        .or_else(|| infer_accel_from_libs(dir))
-        .unwrap_or(LlmAccel::Cpu)
+        == Some(LLM_RUNTIME_DIR)
+        && dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(LlmAccel::parse)
+            .is_some()
+}
+
+/// Accelerator implied by `…/llm-runtime/<accel>` or complete libraries in `dir`.
+///
+/// A Cargo `target/debug` folder is not treated as CPU just because inference failed.
+pub fn accel_from_payload_dir(dir: &Path) -> Option<LlmAccel> {
+    if is_staged_payload_dir(dir)
+        && let Some(accel) = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(LlmAccel::parse)
+    {
+        return Some(accel);
+    }
+    infer_accel_from_libs(dir)
 }
 
 /// Required native-lib prefixes for `accel` that are not present in `dir`.
@@ -199,8 +218,35 @@ pub fn host_accel_available(accel: LlmAccel) -> bool {
 fn nvidia_driver_present() -> bool {
     Path::new("/proc/driver/nvidia/version").is_file()
         || Path::new("/dev/nvidia0").exists()
-        || Path::new(r"C:\Windows\System32\nvcuda.dll").is_file()
-        || Path::new(r"C:\Windows\System32\nvml.dll").is_file()
+        || windows_nvidia_driver_dlls()
+            .iter()
+            .any(|path| path.is_file())
+}
+
+/// NVIDIA user-mode driver DLLs Windows searches (`nvcuda` / `nvml`, not `CUDA_PATH`).
+pub fn windows_nvidia_driver_dlls() -> Vec<PathBuf> {
+    windows_nvidia_driver_dlls_from(&windows_system_root())
+}
+
+/// Resolves `%SystemRoot%` so a non-`C:\Windows` install still finds `nvcuda.dll`.
+fn windows_system_root() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("SYSTEMROOT"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+}
+
+/// `System32` and `Sysnative` copies of `nvcuda.dll` / `nvml.dll` under `system_root`.
+pub fn windows_nvidia_driver_dlls_from(system_root: &Path) -> Vec<PathBuf> {
+    ["nvcuda.dll", "nvml.dll"]
+        .into_iter()
+        .flat_map(|name| {
+            [
+                system_root.join("System32").join(name),
+                system_root.join("Sysnative").join(name),
+            ]
+        })
+        .collect()
 }
 
 fn vulkan_loader_present() -> bool {
@@ -208,23 +254,54 @@ fn vulkan_loader_present() -> bool {
         return Path::new("/dev/dri").exists();
     }
     if cfg!(target_os = "windows") {
-        return Path::new(r"C:\Windows\System32\vulkan-1.dll").is_file();
+        return Path::new(r"C:\Windows\System32\vulkan-1.dll").is_file()
+            || windows_system_root()
+                .join("System32")
+                .join("vulkan-1.dll")
+                .is_file();
     }
     false
 }
 
+/// Short copy when CUDA/Vulkan/Metal was skipped because the host probe failed.
+pub fn host_accel_unavailable_reason(accel: LlmAccel) -> Option<String> {
+    if host_accel_available(accel) {
+        return None;
+    }
+    Some(match accel {
+        LlmAccel::Cpu => return None,
+        LlmAccel::Cuda => nvidia_driver_lookup_copy(),
+        LlmAccel::Vulkan => {
+            "Vulkan loader not found (System32\\vulkan-1.dll or /dev/dri)".to_owned()
+        }
+        LlmAccel::Metal => "Metal is only available on macOS".to_owned(),
+    })
+}
+
+fn nvidia_driver_lookup_copy() -> String {
+    format!(
+        "NVIDIA driver probe failed (looked for {primary} and /dev/nvidia0; CUDA_PATH is not a driver probe)",
+        primary = windows_nvidia_driver_dlls()
+            .into_iter()
+            .next()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| r"C:\Windows\System32\nvcuda.dll".to_owned()),
+    )
+}
+
 /// Picks a complete payload using `preference` (`auto` / `cpu` / `cuda` / …).
 ///
-/// An explicit accelerator is tried first when the host can run it and a payload
-/// exists; otherwise auto-order is used. Missing host support skips that accel
-/// (a CUDA payload is not spawned when `nvcuda.dll` is absent).
+/// `auto` skips accelerators the host probe rejects. An explicit accelerator
+/// (`cuda`, `cpu`, …) is tried first even when that probe fails, so a complete
+/// CUDA payload still spawns when the user asked for CUDA.
 pub fn select_llm_payload<'a>(
     payloads: &'a [LlmPayload],
     preference: &str,
     host_available: impl Fn(LlmAccel) -> bool,
 ) -> Option<&'a LlmPayload> {
+    let explicit = LlmAccel::parse(preference);
     let mut order = Vec::with_capacity(LLM_ACCEL_AUTO_ORDER.len() + 1);
-    if let Some(accel) = LlmAccel::parse(preference) {
+    if let Some(accel) = explicit {
         order.push(accel);
         for &next in LLM_ACCEL_AUTO_ORDER {
             if next != accel {
@@ -235,7 +312,7 @@ pub fn select_llm_payload<'a>(
         order.extend(LLM_ACCEL_AUTO_ORDER.iter().copied());
     }
     for accel in order {
-        if !host_available(accel) {
+        if !host_available(accel) && explicit != Some(accel) {
             continue;
         }
         if let Some(payload) = payloads.iter().find(|payload| payload.accel == accel) {
@@ -243,6 +320,139 @@ pub fn select_llm_payload<'a>(
         }
     }
     None
+}
+
+/// Why autoselect found nothing spawnable (incomplete CUDA snapshot vs host skip).
+///
+/// `sidecar` is a Cargo `aifs-worker-llm` that was not used because it is not a
+/// complete payload. `host_available` is the same probe `select_llm_payload` used.
+pub fn explain_llm_payload_selection_failure(
+    roots: &[PathBuf],
+    preference: &str,
+    host_available: impl Fn(LlmAccel) -> bool,
+    sidecar: Option<&Path>,
+) -> String {
+    let preference = preference.trim();
+    let preference = if preference.is_empty() {
+        "auto"
+    } else {
+        preference
+    };
+    let mut parts = vec![format!("No usable LLM payload (preference: {preference}).")];
+    let cuda = snapshot_gap(roots, LlmAccel::Cuda);
+    let cuda_host = host_available(LlmAccel::Cuda);
+    if cuda.complete && !cuda_host {
+        parts.push(format!(
+            "{note} but was skipped ({reason}). Set gpu_preference to cuda to spawn it anyway.",
+            note = format_snapshot_gap(LlmAccel::Cuda, &cuda),
+            reason = nvidia_driver_lookup_copy(),
+        ));
+    } else {
+        parts.push(format!("{}.", format_snapshot_gap(LlmAccel::Cuda, &cuda)));
+    }
+    let cpu = snapshot_gap(roots, LlmAccel::Cpu);
+    if !cpu.complete {
+        parts.push(format!("{}.", format_snapshot_gap(LlmAccel::Cpu, &cpu)));
+    }
+    if let Some(sidecar) = sidecar {
+        let dir = sidecar.parent().unwrap_or(sidecar);
+        if infer_accel_from_libs(dir).is_none() {
+            let missing = missing_required_lib_prefixes(dir, LlmAccel::Cpu);
+            if missing.is_empty() {
+                parts.push(format!(
+                    "Did not spawn incomplete cargo sidecar {}.",
+                    sidecar.display()
+                ));
+            } else {
+                parts.push(format!(
+                    "Did not spawn incomplete cargo sidecar {sidecar} (missing {names}).",
+                    sidecar = sidecar.display(),
+                    names = missing.join(", "),
+                ));
+            }
+        }
+    }
+    parts.push(
+        "Rebuild with `pnpm llama:cuda` so llm-runtime/cuda contains the worker, llama, ggml, and ggml-cuda."
+            .to_owned(),
+    );
+    parts.join(" ")
+}
+
+struct SnapshotGap {
+    dir: PathBuf,
+    complete: bool,
+    has_worker: bool,
+    missing: Vec<&'static str>,
+}
+
+fn snapshot_gap(roots: &[PathBuf], accel: LlmAccel) -> SnapshotGap {
+    let dir = expected_payload_dir(roots, accel);
+    let has_worker = first_process_binary(&dir, WorkerKind::Llm.binary_stem())
+        .is_some_and(|path| is_usable_process_binary(&path));
+    let missing = missing_required_lib_prefixes(&dir, accel);
+    SnapshotGap {
+        complete: inspect_payload(&dir, accel).is_some(),
+        dir,
+        has_worker,
+        missing,
+    }
+}
+
+fn expected_payload_dir(roots: &[PathBuf], accel: LlmAccel) -> PathBuf {
+    if let Some(dir) = roots
+        .iter()
+        .map(|root| llm_payload_dir(root, accel))
+        .find(|dir| dir.is_dir())
+    {
+        return dir;
+    }
+    let root = roots.iter().find(|root| {
+        root.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "debug" || name == "release")
+            || root.join("aifs-worker-llm").is_file()
+            || root.join("aifs-worker-llm.exe").is_file()
+    });
+    match root.or_else(|| roots.first()) {
+        Some(root) => llm_payload_dir(root, accel),
+        None => PathBuf::from(LLM_RUNTIME_DIR).join(accel.as_str()),
+    }
+}
+
+fn format_snapshot_gap(accel: LlmAccel, gap: &SnapshotGap) -> String {
+    if !gap.dir.is_dir() {
+        return format!(
+            "no {accel} snapshot at {dir}",
+            accel = accel.as_str(),
+            dir = gap.dir.display()
+        );
+    }
+    if gap.complete {
+        return format!(
+            "{accel} snapshot at {dir} is complete",
+            accel = accel.as_str(),
+            dir = gap.dir.display()
+        );
+    }
+    let mut gaps = Vec::new();
+    if !gap.has_worker {
+        gaps.push("worker");
+    }
+    gaps.extend(gap.missing.iter().copied());
+    if gaps.is_empty() {
+        return format!(
+            "{accel} snapshot at {dir} is incomplete",
+            accel = accel.as_str(),
+            dir = gap.dir.display()
+        );
+    }
+    format!(
+        "{accel} snapshot at {dir} is missing {names}",
+        accel = accel.as_str(),
+        dir = gap.dir.display(),
+        names = gaps.join(", ")
+    )
 }
 
 fn dir_has_runtime_lib(dir: &Path, prefix: &str) -> bool {
@@ -257,6 +467,11 @@ fn dir_has_runtime_lib(dir: &Path, prefix: &str) -> bool {
                 .to_str()
                 .is_some_and(|name| runtime_lib_matches_prefix(name, prefix))
     })
+}
+
+/// True when `dir` contains a native lib matching `prefix` (`llama`, `ggml-cuda`, …).
+pub fn payload_dir_has_lib_prefix(dir: &Path, prefix: &str) -> bool {
+    dir_has_runtime_lib(dir, prefix)
 }
 
 fn is_native_lib_name(name: &str) -> bool {
@@ -387,7 +602,7 @@ mod tests {
         write_lib(&dir, "llama.dll");
         write_lib(&dir, "ggml.dll");
         write_lib(&dir, "nvcuda.dll");
-        assert_eq!(accel_from_payload_dir(&dir), LlmAccel::Cuda);
+        assert_eq!(accel_from_payload_dir(&dir), Some(LlmAccel::Cuda));
         assert_eq!(
             missing_required_lib_prefixes(&dir, LlmAccel::Cuda),
             vec!["ggml-cuda"]
@@ -508,9 +723,91 @@ mod tests {
         let selected = select_llm_payload(&payloads, "auto", host_ok)
             .unwrap_or_else(|| panic!("expected fallback"));
         assert_eq!(selected.accel, LlmAccel::Cpu);
-        let still_cpu = select_llm_payload(&payloads, "cuda", host_ok)
-            .unwrap_or_else(|| panic!("explicit cuda should fall back"));
-        assert_eq!(still_cpu.accel, LlmAccel::Cpu);
+        let explicit = select_llm_payload(&payloads, "cuda", host_ok)
+            .unwrap_or_else(|| panic!("explicit cuda should spawn the CUDA payload"));
+        assert_eq!(explicit.accel, LlmAccel::Cuda);
+    }
+
+    #[test]
+    fn windows_nvidia_probe_uses_system_root_and_sysnative() {
+        let paths = windows_nvidia_driver_dlls_from(Path::new("/win"));
+        assert!(
+            paths
+                .iter()
+                .any(|path| path == Path::new("/win/System32/nvcuda.dll")),
+            "{paths:?}"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|path| path == Path::new("/win/Sysnative/nvcuda.dll")),
+            "{paths:?}"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|path| path == Path::new("/win/System32/nvml.dll")),
+            "{paths:?}"
+        );
+    }
+
+    #[test]
+    fn cargo_target_dir_is_not_inferred_as_cpu_payload() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = root.path().join("debug");
+        write_worker(&dir);
+        assert!(!is_staged_payload_dir(&dir));
+        assert_eq!(accel_from_payload_dir(&dir), None);
+    }
+
+    #[test]
+    fn explain_incomplete_cuda_names_missing_plugin_not_cargo_cpu() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let cuda_dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        write_worker(&cuda_dir);
+        write_lib(&cuda_dir, "llama.dll");
+        write_lib(&cuda_dir, "ggml.dll");
+        let sidecar = root.path().join("debug").join("aifs-worker-llm.exe");
+        fs::create_dir_all(sidecar.parent().unwrap_or_else(|| panic!("parent")))
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(&sidecar, b"worker").unwrap_or_else(|error| panic!("{error}"));
+        let message = explain_llm_payload_selection_failure(
+            &[root.path().to_path_buf()],
+            "auto",
+            |_| true,
+            Some(&sidecar),
+        );
+        assert!(message.contains("preference: auto"), "{message}");
+        assert!(message.contains("ggml-cuda"), "{message}");
+        assert!(
+            message.contains("Did not spawn incomplete cargo sidecar"),
+            "{message}"
+        );
+        assert!(message.contains("missing llama, ggml"), "{message}");
+        assert!(message.contains("pnpm llama:cuda"), "{message}");
+        assert!(!message.contains("cpu payload is missing"), "{message}");
+    }
+
+    #[test]
+    fn explain_complete_cuda_skipped_by_host_probe() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let cuda_dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        write_complete_cpu(&cuda_dir);
+        write_lib(&cuda_dir, "ggml-cuda.dll");
+        let host_ok = |accel: LlmAccel| accel != LlmAccel::Cuda;
+        let message = explain_llm_payload_selection_failure(
+            &[root.path().to_path_buf()],
+            "auto",
+            host_ok,
+            None,
+        );
+        assert!(message.contains("is complete but was skipped"), "{message}");
+        assert!(message.contains("NVIDIA driver probe failed"), "{message}");
+        assert!(message.contains("gpu_preference to cuda"), "{message}");
+        assert!(
+            message.contains("nvcuda.dll") || message.contains("nvidia0"),
+            "{message}"
+        );
     }
 
     #[test]

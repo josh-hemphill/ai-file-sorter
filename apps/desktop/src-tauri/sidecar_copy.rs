@@ -134,6 +134,35 @@ fn collect_runtime_libs_from(
     Ok(())
 }
 
+/// llama-cpp-sys-2 often leaves ggml-cuda in `build/llama-cpp-*/out`, not `deps/`.
+fn collect_runtime_libs_from_llama_build_out(
+    target_dir: &Path,
+    files: &mut HashMap<String, PathBuf>,
+) -> std::io::Result<()> {
+    for dir in llama_build_out_dirs(target_dir) {
+        collect_runtime_libs_from(&dir, files)?;
+    }
+    Ok(())
+}
+
+fn llama_build_out_dirs(target_dir: &Path) -> Vec<PathBuf> {
+    let build = target_dir.join("build");
+    let Ok(entries) = std::fs::read_dir(&build) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("llama-cpp"))
+                && entry.path().is_dir()
+        })
+        .map(|entry| entry.path().join("out"))
+        .collect()
+}
+
 fn collect_src_runtime_libs(
     src_dir: &Path,
     cuda_root: Option<&Path>,
@@ -142,6 +171,7 @@ fn collect_src_runtime_libs(
     let mut files = HashMap::new();
     collect_runtime_libs_from(src_dir, &mut files)?;
     collect_runtime_libs_from(&src_dir.join("deps"), &mut files)?;
+    collect_runtime_libs_from_llama_build_out(src_dir, &mut files)?;
     if allow_cuda_toolkit
         && files
             .keys()
@@ -232,12 +262,18 @@ fn infer_staging_accel(src_dir: &Path) -> LlmAccel {
     if infer_accel_from_libs(src_dir) == Some(LlmAccel::Cuda)
         || dir_has_plugin(src_dir, "ggml-cuda")
         || dir_has_plugin(&src_dir.join("deps"), "ggml-cuda")
+        || llama_build_out_dirs(src_dir)
+            .iter()
+            .any(|dir| dir_has_plugin(dir, "ggml-cuda"))
     {
         return LlmAccel::Cuda;
     }
     if infer_accel_from_libs(src_dir) == Some(LlmAccel::Vulkan)
         || dir_has_plugin(src_dir, "ggml-vulkan")
         || dir_has_plugin(&src_dir.join("deps"), "ggml-vulkan")
+        || llama_build_out_dirs(src_dir)
+            .iter()
+            .any(|dir| dir_has_plugin(dir, "ggml-vulkan"))
     {
         return LlmAccel::Vulkan;
     }
@@ -557,6 +593,30 @@ mod sidecar_copy_tests {
         fs::create_dir_all(src.join("deps")).unwrap_or_else(|error| panic!("{error}"));
         fs::write(src.join("deps").join("ggml-cuda.dll"), b"cuda")
             .unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cuda);
+        let dest = runtime.join("llm-runtime").join("cuda");
+        assert_eq!(
+            fs::read(dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"cuda"
+        );
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cuda_plugin_in_llama_cpp_out_still_lands_under_cuda() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        write_cpu_payload_src(&src);
+        let out = src
+            .join("build")
+            .join("llama-cpp-sys-2-deadbeef")
+            .join("out");
+        fs::create_dir_all(&out).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(out.join("ggml-cuda.dll"), b"cuda").unwrap_or_else(|error| panic!("{error}"));
         let accel =
             stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(accel, LlmAccel::Cuda);
