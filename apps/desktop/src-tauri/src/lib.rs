@@ -620,10 +620,16 @@ mod tests {
             .unwrap_or_else(|| panic!("resources"));
         assert_eq!(
             resources
-                .get("resources/llm-runtime/*")
+                .get("resources/llm-runtime")
                 .and_then(|value| value.as_str()),
-            Some("./"),
-            "llama/CUDA runtime libs must bundle from resources/llm-runtime: {resources:?}"
+            Some("llm-runtime"),
+            "Tauri glob maps flatten to dest.join(file_name); walk the directory so <accel>/ is kept: {resources:?}"
+        );
+        assert!(
+            resources
+                .keys()
+                .all(|key| !key.contains("llm-runtime") || !key.contains('*')),
+            "llm-runtime glob resources flatten sibling accelerators: {resources:?}"
         );
     }
 
@@ -715,8 +721,9 @@ mod tests {
         assert!(
             build.contains("copy_if_changed")
                 && build.contains("write_if_changed")
-                && build.contains("copy_worker_runtime_libs"),
-            "sidecar copies must skip identical destinations and copy llama/CUDA runtime libs: {build}"
+                && build.contains("copy_worker_runtime_libs")
+                && build.contains("stage_llm_payload"),
+            "sidecar copies must skip identical destinations, copy llama/CUDA runtime libs, and stage llm-runtime/<accel>/: {build}"
         );
         let ignore = include_str!("../.taurignore");
         assert!(

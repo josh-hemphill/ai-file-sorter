@@ -24,6 +24,8 @@ fn main() {
 /// After a real `aifs-worker-llm` copy, ggml/llama/CUDA runtime libraries from
 /// that profile (and `CUDA_PATH/bin` when `ggml-cuda` is present) are copied
 /// beside the sidecar so Windows can resolve PE imports from the exe folder.
+/// The same worker + libs are snapshotted into `llm-runtime/<accel>/` under
+/// the Cargo profile and `resources/` without deleting sibling accelerators.
 /// Debug builds write empty placeholders when the real binaries are missing so
 /// `tauri_build` can compile `aifs-desktop` during clippy/test. Release panics.
 /// Copies are skipped when the destination already matches so `tauri dev` does
@@ -57,12 +59,17 @@ fn copy_sidecars() {
                 panic!("copy {} → {}: {error}", src.display(), dest.display());
             }
             if *stem == "aifs-worker-llm" {
-                let resource_dir = manifest.join("resources/llm-runtime");
-                for dir in [&dest_dir, &resource_dir] {
-                    if let Err(error) = copy_worker_runtime_libs(&src_dir, dir) {
+                if let Err(error) = copy_worker_runtime_libs(&src_dir, &dest_dir) {
+                    panic!(
+                        "copy llama/CUDA runtime libs into {}: {error}",
+                        dest_dir.display()
+                    );
+                }
+                for runtime_root in [&src_dir, &manifest.join("resources")] {
+                    if let Err(error) = stage_llm_payload(&src_dir, runtime_root) {
                         panic!(
-                            "copy llama/CUDA runtime libs into {}: {error}",
-                            dir.display()
+                            "stage llm-runtime payload under {}: {error}",
+                            runtime_root.display()
                         );
                     }
                 }

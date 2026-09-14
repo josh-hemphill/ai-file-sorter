@@ -45,7 +45,7 @@
       "binaries/aifs-worker-llm"
     ],
     "resources": {
-      "resources/llm-runtime/*": "./"
+      "resources/llm-runtime": "llm-runtime"
     }
   }
 }

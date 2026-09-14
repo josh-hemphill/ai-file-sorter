@@ -29,7 +29,11 @@ pnpm --filter desktop tauri dev
 Packaged
 builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
 embed them as `externalBin` sidecars, along with ggml/llama/CUDA runtime
-libraries the Windows loader must find next to `aifs-worker-llm`. Release packaging passes `--packaged` to
+libraries the Windows loader must find next to `aifs-worker-llm`. The same
+worker + libs are also snapshotted into `resources/llm-runtime/<accel>/`
+(cpu, cuda, or vulkan; Metal is not inferred from library names) so CUDA
+and CPU payloads can coexist. Tauri bundles that directory (not a glob) so
+nested accelerator folders are not flattened. Release packaging passes `--packaged` to
 the llama build (Windows/Linux SSE4.2 + `GGML_AVX2=OFF`; macOS `CMAKE_*` rpath, no
 Homebrew ggml). `src-tauri/.taurignore` excludes `binaries/`,
 `resources/llm-runtime/`, and `gen/` so sidecar copies, runtime libs, and generated ACL schemas do not restart `tauri dev`. If the engine binary is not next to the
