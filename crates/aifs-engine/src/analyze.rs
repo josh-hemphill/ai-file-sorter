@@ -6,7 +6,6 @@ use aifs_domain::{
     EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
     looks_like_screenshot,
 };
-use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
     AppSettings, FolderStyle, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text,
 };
@@ -50,7 +49,7 @@ pub fn analyze_into_supervised(
         return WorkStatus::Completed;
     }
 
-    let mut llm = match WorkerClient::connect_default(WorkerKind::Llm) {
+    let mut llm = match WorkerClient::connect_llm(&models.gpu_preference) {
         Ok(client) => client,
         Err(WorkerClientError::NotFound(_)) => {
             on_notice(AnalyzeNotice::Log(

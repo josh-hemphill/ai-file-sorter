@@ -23,7 +23,6 @@ use aifs_domain::{
     WorkspaceSnapshot,
 };
 use aifs_planner::{propose, validate};
-use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
     AppSettings, Command, Envelope, ErrorCode, Event, LlmWorkerStatus, LogLevel, ModelBackend,
     ModelInventory, PROTOCOL_VERSION, ProposalPolicy, Request, RequestId, ScanOptions, SlotRuntime,
@@ -1117,12 +1116,13 @@ fn chat_via_worker(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<String, String> {
-    let mut llm = WorkerClient::connect_default(WorkerKind::Llm).map_err(|error| match error {
-        aifs_worker_client::WorkerClientError::NotFound(_) => {
-            "LLM worker is not installed".to_owned()
-        }
-        other => format!("LLM worker failed to start: {other}"),
-    })?;
+    let mut llm =
+        WorkerClient::connect_llm(&inventory.gpu_preference).map_err(|error| match error {
+            aifs_worker_client::WorkerClientError::NotFound(_) => {
+                "LLM worker is not installed".to_owned()
+            }
+            other => format!("LLM worker failed to start: {other}"),
+        })?;
     let context = chat::chat_context(snapshot, revision);
     let storage_dir = resolved_models_dir(&inventory.storage_dir)
         .display()
@@ -1257,8 +1257,8 @@ fn present_models_with(inventory: ModelInventory, worker: LlmWorkerStatus) -> Mo
     next.with_disk_status(&dir).with_slot_runtime(&worker, &dir)
 }
 
-fn probe_llm_worker() -> LlmWorkerStatus {
-    match WorkerClient::connect_default(WorkerKind::Llm) {
+fn probe_llm_worker(gpu_preference: &str) -> LlmWorkerStatus {
+    match WorkerClient::connect_llm(gpu_preference) {
         Ok(mut client) => {
             let capabilities = client.capabilities().to_vec();
             let _ = client.shutdown();
@@ -1296,7 +1296,8 @@ fn emit_model_runtime_notices(
     id: &RequestId,
     emit: &mut impl FnMut(Envelope),
 ) -> Result<(), aifs_store::StoreError> {
-    emit_model_runtime_notices_with(store, id, emit, probe_llm_worker())
+    let models = load_models(store)?;
+    emit_model_runtime_notices_with(store, id, emit, probe_llm_worker(&models.gpu_preference))
 }
 
 fn emit_model_runtime_notices_with(

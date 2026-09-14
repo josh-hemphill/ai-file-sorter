@@ -11,6 +11,14 @@ use std::path::{Path, PathBuf};
 /// Directory name under a Cargo target or Tauri resource root.
 pub const LLM_RUNTIME_DIR: &str = "llm-runtime";
 
+/// Every packaged accelerator, including ones not in auto-select first.
+pub const LLM_ACCELS: &[LlmAccel] = &[
+    LlmAccel::Cpu,
+    LlmAccel::Cuda,
+    LlmAccel::Vulkan,
+    LlmAccel::Metal,
+];
+
 /// Auto-select order when `gpu_preference` is `auto` (host probes applied later).
 pub const LLM_ACCEL_AUTO_ORDER: &[LlmAccel] = &[
     LlmAccel::Cuda,
@@ -118,6 +126,77 @@ pub fn infer_accel_from_libs(dir: &Path) -> Option<LlmAccel> {
     }
     if payload_complete(dir, LlmAccel::Cpu) {
         return Some(LlmAccel::Cpu);
+    }
+    None
+}
+
+/// Complete payloads under `root/llm-runtime/<accel>/` (incomplete dirs are skipped).
+pub fn list_payloads_under(root: impl AsRef<Path>) -> Vec<LlmPayload> {
+    LLM_ACCELS
+        .iter()
+        .copied()
+        .filter_map(|accel| inspect_payload(&llm_payload_dir(root.as_ref(), accel), accel))
+        .collect()
+}
+
+/// True when the host looks like it can run `accel` (driver / OS, not payload files).
+///
+/// CPU is always available. CUDA looks for NVIDIA driver files; Vulkan for a
+/// loader or DRM node; Metal only on macOS. `CUDA_PATH` is not proof of CUDA.
+pub fn host_accel_available(accel: LlmAccel) -> bool {
+    match accel {
+        LlmAccel::Cpu => true,
+        LlmAccel::Cuda => nvidia_driver_present(),
+        LlmAccel::Vulkan => vulkan_loader_present(),
+        LlmAccel::Metal => cfg!(target_os = "macos"),
+    }
+}
+
+fn nvidia_driver_present() -> bool {
+    Path::new("/proc/driver/nvidia/version").is_file()
+        || Path::new("/dev/nvidia0").exists()
+        || Path::new(r"C:\Windows\System32\nvcuda.dll").is_file()
+        || Path::new(r"C:\Windows\System32\nvml.dll").is_file()
+}
+
+fn vulkan_loader_present() -> bool {
+    if cfg!(target_os = "linux") {
+        return Path::new("/dev/dri").exists();
+    }
+    if cfg!(target_os = "windows") {
+        return Path::new(r"C:\Windows\System32\vulkan-1.dll").is_file();
+    }
+    false
+}
+
+/// Picks a complete payload using `preference` (`auto` / `cpu` / `cuda` / …).
+///
+/// An explicit accelerator is tried first when the host can run it and a payload
+/// exists; otherwise auto-order is used. Missing host support skips that accel
+/// (a CUDA payload is not spawned when `nvcuda.dll` is absent).
+pub fn select_llm_payload<'a>(
+    payloads: &'a [LlmPayload],
+    preference: &str,
+    host_available: impl Fn(LlmAccel) -> bool,
+) -> Option<&'a LlmPayload> {
+    let mut order = Vec::with_capacity(LLM_ACCEL_AUTO_ORDER.len() + 1);
+    if let Some(accel) = LlmAccel::parse(preference) {
+        order.push(accel);
+        for &next in LLM_ACCEL_AUTO_ORDER {
+            if next != accel {
+                order.push(next);
+            }
+        }
+    } else {
+        order.extend(LLM_ACCEL_AUTO_ORDER.iter().copied());
+    }
+    for accel in order {
+        if !host_available(accel) {
+            continue;
+        }
+        if let Some(payload) = payloads.iter().find(|payload| payload.accel == accel) {
+            return Some(payload);
+        }
     }
     None
 }
@@ -314,6 +393,71 @@ mod tests {
                 LlmAccel::Metal,
                 LlmAccel::Cpu
             ]
+        );
+    }
+
+    fn write_complete_cpu(dir: &Path) {
+        write_worker(dir);
+        write_lib(dir, "llama.dll");
+        write_lib(dir, "ggml.dll");
+    }
+
+    #[test]
+    fn list_payloads_under_skips_incomplete_and_keeps_siblings() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_worker(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "llama.dll");
+        write_lib(&llm_payload_dir(root.path(), LlmAccel::Cuda), "ggml.dll");
+        let listed = list_payloads_under(root.path());
+        let accels: Vec<_> = listed.iter().map(|payload| payload.accel).collect();
+        assert!(accels.contains(&LlmAccel::Cpu), "{accels:?}");
+        assert!(
+            !accels.contains(&LlmAccel::Cuda),
+            "CUDA without ggml-cuda must be skipped: {accels:?}"
+        );
+    }
+
+    #[test]
+    fn select_auto_prefers_cuda_when_host_and_payload_exist() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(
+            &llm_payload_dir(root.path(), LlmAccel::Cuda),
+            "ggml-cuda.dll",
+        );
+        let payloads = list_payloads_under(root.path());
+        let selected = select_llm_payload(&payloads, "auto", |_| true)
+            .unwrap_or_else(|| panic!("expected a payload"));
+        assert_eq!(selected.accel, LlmAccel::Cuda);
+    }
+
+    #[test]
+    fn select_skips_cuda_when_host_has_no_driver() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cpu));
+        write_complete_cpu(&llm_payload_dir(root.path(), LlmAccel::Cuda));
+        write_lib(
+            &llm_payload_dir(root.path(), LlmAccel::Cuda),
+            "ggml-cuda.dll",
+        );
+        let payloads = list_payloads_under(root.path());
+        let host_ok = |accel: LlmAccel| accel != LlmAccel::Cuda;
+        let selected = select_llm_payload(&payloads, "auto", host_ok)
+            .unwrap_or_else(|| panic!("expected fallback"));
+        assert_eq!(selected.accel, LlmAccel::Cpu);
+        let still_cpu = select_llm_payload(&payloads, "cuda", host_ok)
+            .unwrap_or_else(|| panic!("explicit cuda should fall back"));
+        assert_eq!(still_cpu.accel, LlmAccel::Cpu);
+    }
+
+    #[test]
+    fn host_cpu_is_always_available_and_metal_follows_os() {
+        assert!(host_accel_available(LlmAccel::Cpu));
+        assert_eq!(
+            host_accel_available(LlmAccel::Metal),
+            cfg!(target_os = "macos")
         );
     }
 }

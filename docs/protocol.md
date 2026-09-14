@@ -113,7 +113,11 @@ line). Workers never open SQLite and never mutate user files.
 Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 `aifs-worker-llm`. Discovery uses `$AIFS_WORKER_MEDIA` (and siblings), then a
 non-empty binary next to the engine or in ancestor `target/{debug,release}/`
-(empty Tauri debug sidecar placeholders are skipped). Spawn/hello failures
+(empty Tauri debug sidecar placeholders are skipped). The LLM worker is chosen
+from complete `llm-runtime/<accel>/` payloads (CUDA → Vulkan → Metal → CPU when
+the host driver is present), then the sidecar fallback. `$AIFS_LLM_BACKEND`
+overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
+the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
 `0xC0000135`) is named in that text (loader failure, no stderr). That exit

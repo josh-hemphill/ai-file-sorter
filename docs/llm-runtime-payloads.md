@@ -2,8 +2,8 @@
 
 Each llama.cpp accelerator is a **directory**, not a feature flag on a shared
 `aifs-worker-llm` sidecar. The UI never loads llama.cpp; the engine will spawn
-the worker that lives inside the chosen folder (autoselect is later work).
-Completeness is defined here so packaging and discovery cannot drift.
+the worker that lives inside the chosen folder. Completeness is defined here so
+packaging and discovery cannot drift.
 
 ## Layout
 
@@ -51,10 +51,24 @@ runtime libs into:
 including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
 complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
 into a CUDA payload. Staging one accelerator does not delete sibling folders
-(`cpu` must not wipe `cuda`). Sidecar copies into `binaries/` stay flat until
-spawn uses the payload directory. Tauri bundles `resources/llm-runtime` as
+(`cpu` must not wipe `cuda`). Sidecar copies into `binaries/` stay flat as a
+fallback when no payload directory is complete. Tauri bundles `resources/llm-runtime` as
 the directory `llm-runtime` (a glob map would flatten `cuda/ggml.dll` and
 `cpu/ggml.dll` onto the same filename).
 
+## Discovery and spawn
+
+`list_payloads_under(root)` returns complete `llm-runtime/<accel>/` folders.
+The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
+(`resources/`, `target/{debug,release}`). `select_llm_payload` uses
+`AIFS_LLM_BACKEND` when set, else inventory `gpu_preference`, else `auto`
+(`LLM_ACCEL_AUTO_ORDER`). CUDA/Vulkan/Metal are skipped when
+`host_accel_available` is false (`CUDA_PATH` is not a host probe). `AIFS_WORKER_LLM`
+still overrides discovery; library search is that file's directory.
+
+Spawn prepends **only** the payload directory to `PATH` /
+`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `get_models` lists files without
+spawning hello.
+
 See `crates/aifs-protocol/src/llm_payload.rs` and
-`apps/desktop/src-tauri/sidecar_copy.rs`.
+`crates/aifs-worker-client/src/payload.rs`.
