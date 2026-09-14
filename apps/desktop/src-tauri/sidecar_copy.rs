@@ -2,8 +2,8 @@
 
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
-    LlmAccel, first_process_binary, infer_accel_from_libs, llm_payload_dir,
-    runtime_lib_matches_prefix,
+    LlmAccel, ensure_process_binary_executable, first_process_binary, infer_accel_from_libs,
+    llm_payload_dir, runtime_lib_matches_prefix,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -186,13 +186,8 @@ fn write_runtime_libs(dest_dir: &Path, files: &HashMap<String, PathBuf>) -> std:
     Ok(())
 }
 
-/// Copies llama.cpp / CUDA runtime libs from `src_dir` (and `deps`) next to the sidecar.
-#[cfg_attr(test, allow(dead_code))]
-fn copy_worker_runtime_libs(src_dir: &Path, dest_dir: &Path) -> std::io::Result<()> {
-    let cuda_root = std::env::var_os("CUDA_PATH").map(PathBuf::from);
-    copy_worker_runtime_libs_from(src_dir, dest_dir, cuda_root.as_deref())
-}
-
+/// Copies llama.cpp / CUDA runtime libs from `src_dir` (and `deps`) next to a dest dir.
+#[cfg_attr(not(test), allow(dead_code))]
 fn copy_worker_runtime_libs_from(
     src_dir: &Path,
     dest_dir: &Path,
@@ -226,6 +221,7 @@ fn stage_llm_payload_from(
                 .unwrap_or_else(|| std::ffi::OsStr::new(WorkerKind::Llm.binary_stem())),
         );
         copy_if_changed(&src_bin, &dest_bin)?;
+        ensure_process_binary_executable(&dest_bin)?;
     }
     write_runtime_libs(&dest_dir, &files)?;
     Ok(accel)
@@ -492,6 +488,19 @@ mod sidecar_copy_tests {
             fs::read(cpu_dest.join("llama.dll")).unwrap_or_else(|error| panic!("{error}")),
             b"llama"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(cpu_dest.join("aifs-worker-llm"))
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions()
+                .mode();
+            assert_ne!(
+                mode & 0o111,
+                0,
+                "staged payload worker must be executable: {mode:#o}"
+            );
+        }
         assert!(!cpu_dest.join("ggml-cuda.dll").exists());
         assert_eq!(
             fs::read(cuda_dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),

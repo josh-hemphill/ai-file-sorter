@@ -51,16 +51,20 @@ runtime libs into:
 including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
 complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
 into a CUDA payload. Staging one accelerator does not delete sibling folders
-(`cpu` must not wipe `cuda`). Sidecar copies into `binaries/` stay flat as a
-fallback when no payload directory is complete. Tauri bundles `resources/llm-runtime` as
+(`cpu` must not wipe `cuda`). Extract workers still copy into `binaries/` as
+`externalBin` sidecars. The LLM worker is **not** listed in `externalBin` and
+is not copied into `binaries/`; a packaged flat sidecar would collide with
+nested payloads. Tauri bundles `resources/llm-runtime` as
 the directory `llm-runtime` (a glob map would flatten `cuda/ggml.dll` and
 `cpu/ggml.dll` onto the same filename).
+Staging sets Unix execute bits on the payload worker (resource copies can drop `+x`).
 
 ## Discovery and spawn
 
 `list_payloads_under(root)` returns complete `llm-runtime/<accel>/` folders.
 The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
-(`resources/`, `target/{debug,release}`). `select_llm_payload` uses
+(`resources/`, `target/{debug,release}`). Packaged macOS also walks
+`Contents/Resources` beside `Contents/MacOS`. `select_llm_payload` uses
 `AIFS_LLM_BACKEND` when set, else inventory `gpu_preference`, else `auto`
 (`LLM_ACCEL_AUTO_ORDER`). CUDA/Vulkan/Metal are skipped when
 `host_accel_available` is false (`CUDA_PATH` is not a host probe). `AIFS_WORKER_LLM`

@@ -26,14 +26,16 @@ pnpm --filter desktop tauri dev
 `tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
 `beforeDevCommand`. CUDA/Vulkan/Metal are opt-in: `pnpm desktop:cuda` sets
 `AIFS_LLM_FEATURES` so that rebuild stays on GPU llama (plain `pnpm desktop` is CPU).
-Packaged
-builds copy those binaries into `src-tauri/binaries/{stem}-{target-triple}` and
-embed them as `externalBin` sidecars, along with ggml/llama/CUDA runtime
-libraries the Windows loader must find next to `aifs-worker-llm`. The same
-worker + libs are also snapshotted into `resources/llm-runtime/<accel>/`
-(cpu, cuda, or vulkan; Metal is not inferred from library names) so CUDA
-and CPU payloads can coexist. Tauri bundles that directory (not a glob) so
-nested accelerator folders are not flattened. Release packaging passes `--packaged` to
+Packaged builds copy the engine and extract workers into
+`src-tauri/binaries/{stem}-{target-triple}` and embed them as `externalBin`
+sidecars. The LLM worker is **not** an `externalBin` sidecar (a flat copy would
+collide with CUDA vs CPU `ggml` in the same folder). After a real
+`aifs-worker-llm` build, worker + ggml/llama/CUDA runtime libraries are
+snapshotted into `resources/llm-runtime/<accel>/` (cpu, cuda, or vulkan; Metal
+is not inferred from library names) so CUDA and CPU payloads can coexist. Tauri
+bundles that directory (not a glob) so nested accelerator folders are not
+flattened. Discovery walks `resources/` and macOS `Contents/Resources`. Release
+packaging passes `--packaged` to
 the llama build (Windows/Linux SSE4.2 + `GGML_AVX2=OFF`; macOS `CMAKE_*` rpath, no
 Homebrew ggml). `src-tauri/.taurignore` excludes `binaries/`,
 `resources/llm-runtime/`, and `gen/` so sidecar copies, runtime libs, and generated ACL schemas do not restart `tauri dev`. If the engine binary is not next to the

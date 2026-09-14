@@ -61,13 +61,8 @@
 - Windows loader deaths such as exit `-1073741515` (`STATUS_DLL_NOT_FOUND`)
   are decoded in that message. This is the loader failing before stderr
   exists, usually because ggml/llama/CUDA *runtime* DLLs are not next to the
-  spawned sidecar (a working NVIDIA driver in other apps is not enough).
-  `tauri` build copies those libs into `src-tauri/binaries/` beside
-  `aifs-worker-llm` and snapshots worker + libs into
-  `llm-runtime/<accel>/` under the Cargo profile and `resources/`
-  (sibling accelerators are not deleted). Worker spawn still prepends the
-  sidecar folder, Cargo `target/{debug,release}`, and `CUDA_PATH/bin` to
-  the library search path.
+  spawned worker (a working NVIDIA driver in other apps is not enough).
+  Spawn sets the library search path to that payload directory only.
 - `get_models` no longer spawns `aifs-worker-llm` or SHA-256s multi-GB GGUFs.
   Unprobed catalog/local files that look present are `pending` until scan
   hello; hosted stays `hosted`; missing weights stay `missing_files`. Listing
@@ -91,6 +86,11 @@
   `cuda` and `vulkan` in one `AIFS_LLM_FEATURES` cargo build is refused.
 - `get_models` lists complete `llm-runtime/<accel>/` payloads (`llm_payloads`)
   without spawning hello. Host-ready is a driver/OS probe, not `CUDA_PATH`.
+- Packaged apps keep the nested `llm-runtime/<accel>/` resource tree and do
+  **not** install `aifs-worker-llm` as a Tauri `externalBin` sidecar (a flat
+  copy would collide with CUDA vs CPU `ggml`). Discovery walks
+  `resources/` and macOS `Contents/Resources`. The staged payload worker is
+  marked executable on Unix so resource copies that drop `+x` still spawn.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 
