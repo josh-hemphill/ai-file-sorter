@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  defaultStagePlan,
+  expectedAccelFromEnv,
+  formatStagedPayloadLog,
   inferAccelFromLibNames,
   isWorkerRuntimeLib,
   llmPayloadDir,
@@ -42,7 +45,7 @@ test('cpu stage leaves an existing cuda payload in place', () => {
   mkdirSync(cudaDest, { recursive: true });
   writeFileSync(join(cudaDest, 'ggml-cuda.dll'), 'keep');
   writeFileSync(join(cudaDest, 'aifs-worker-llm'), 'cuda-worker');
-  const accel = stageLlmPayloadFromDir({
+  const { accel } = stageLlmPayloadFromDir({
     srcDir: src,
     runtimeRoots: [resources],
   });
@@ -66,12 +69,14 @@ test('cuda stage lands under cuda and does not flatten', () => {
   writeFileSync(join(src, 'ggml-cuda.dll'), 'cuda');
   writeFileSync(join(toolkit, 'bin', 'cudart64_12.dll'), 'cudart');
   writeFileSync(join(toolkit, 'bin', 'nvcuda.dll'), 'driver');
-  const accel = stageLlmPayloadFromDir({
+  const { accel, copiedLibNames } = stageLlmPayloadFromDir({
     srcDir: src,
     runtimeRoots: [resources],
     cudaRoot: toolkit,
   });
   assert.equal(accel, 'cuda');
+  assert.ok(copiedLibNames.includes('ggml-cuda.dll'));
+  assert.ok(copiedLibNames.includes('cudart64_12.dll'));
   const dest = llmPayloadDir(resources, 'cuda');
   assert.equal(readFileSync(join(dest, 'ggml-cuda.dll'), 'utf8'), 'cuda');
   assert.equal(readFileSync(join(dest, 'cudart64_12.dll'), 'utf8'), 'cudart');
@@ -92,13 +97,99 @@ test('cuda plugin only in llama-cpp out still stages under cuda', () => {
     join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out', 'ggml-cuda.dll'),
     'cuda',
   );
-  const accel = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
+  const { accel } = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
   assert.equal(accel, 'cuda');
   assert.equal(
     readFileSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-cuda.dll'), 'utf8'),
     'cuda',
   );
   rmSync(root, { recursive: true, force: true });
+});
+
+test('cuda plugin only in nested MSVC llama-cpp out still stages under cuda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-stage-llm-nested-out-'));
+  const src = join(root, 'src');
+  const resources = join(root, 'resources');
+  const release = join(
+    src,
+    'build',
+    'llama-cpp-sys-2-deadbeef',
+    'out',
+    'build',
+    'bin',
+    'Release',
+  );
+  mkdirSync(release, { recursive: true });
+  mkdirSync(join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out', 'CMakeFiles'), {
+    recursive: true,
+  });
+  writeFileSync(join(src, 'aifs-worker-llm'), 'worker');
+  writeFileSync(join(release, 'llama.dll'), 'llama');
+  writeFileSync(join(release, 'ggml.dll'), 'ggml');
+  writeFileSync(join(release, 'ggml-cuda.dll'), 'cuda');
+  writeFileSync(
+    join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out', 'CMakeFiles', 'ggml-vulkan.dll'),
+    'skip',
+  );
+  const { accel, copiedLibNames } = stageLlmPayloadFromDir({
+    srcDir: src,
+    runtimeRoots: [resources],
+  });
+  assert.equal(accel, 'cuda');
+  assert.deepEqual(copiedLibNames, ['ggml-cuda.dll', 'ggml.dll', 'llama.dll']);
+  assert.equal(
+    readFileSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-cuda.dll'), 'utf8'),
+    'cuda',
+  );
+  assert.equal(existsSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-vulkan.dll')), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('expected cuda without plugin does not stage cpu', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-stage-llm-expected-cuda-'));
+  const src = join(root, 'src');
+  const resources = join(root, 'resources');
+  mkdirSync(src);
+  writeFileSync(join(src, 'aifs-worker-llm'), 'worker');
+  writeFileSync(join(src, 'llama.dll'), 'llama');
+  writeFileSync(join(src, 'ggml.dll'), 'ggml');
+  assert.throws(
+    () =>
+      stageLlmPayloadFromDir({
+        srcDir: src,
+        runtimeRoots: [resources],
+        expectedAccel: 'cuda',
+      }),
+    /missing ggml-cuda/,
+  );
+  assert.equal(existsSync(llmPayloadDir(resources, 'cpu')), false);
+  assert.equal(existsSync(llmPayloadDir(resources, 'cuda')), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('expectedAccelFromEnv reads AIFS_LLM_FEATURES', () => {
+  assert.equal(expectedAccelFromEnv({ AIFS_LLM_FEATURES: 'cuda' }), 'cuda');
+  assert.equal(expectedAccelFromEnv({ AIFS_LLM_FEATURES: 'vulcan' }), 'vulkan');
+  assert.equal(expectedAccelFromEnv({}), undefined);
+  assert.equal(
+    defaultStagePlan({
+      argv: ['engine-llm'],
+      cwd: '/tmp/repo',
+      env: { AIFS_LLM_FEATURES: 'cuda' },
+    }).expectedAccel,
+    'cuda',
+  );
+});
+
+test('formatStagedPayloadLog names copied CUDA libs', () => {
+  assert.equal(
+    formatStagedPayloadLog('cuda', ['llama.dll', 'ggml-cuda.dll']),
+    'aifs: staged llm-runtime/cuda with ggml-cuda.dll, llama.dll (siblings left in place)',
+  );
+  assert.equal(
+    formatStagedPayloadLog('cpu', []),
+    'aifs: staged llm-runtime/cpu (worker only) (siblings left in place)',
+  );
 });
 
 test('cuda plugin only in deps still stages under cuda', () => {
@@ -110,7 +201,7 @@ test('cuda plugin only in deps still stages under cuda', () => {
   writeFileSync(join(src, 'llama.dll'), 'llama');
   writeFileSync(join(src, 'ggml.dll'), 'ggml');
   writeFileSync(join(src, 'deps', 'ggml-cuda.dll'), 'cuda');
-  const accel = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
+  const { accel } = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
   assert.equal(accel, 'cuda');
   assert.equal(
     readFileSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-cuda.dll'), 'utf8'),
@@ -131,7 +222,7 @@ test('cpu stage does not copy CUDA toolkit libs', () => {
   writeFileSync(join(src, 'llama.dll'), 'llama');
   writeFileSync(join(src, 'ggml.dll'), 'ggml');
   writeFileSync(join(toolkit, 'bin', 'cudart64_12.dll'), 'cudart');
-  const accel = stageLlmPayloadFromDir({
+  const { accel } = stageLlmPayloadFromDir({
     srcDir: src,
     runtimeRoots: [resources],
     cudaRoot: toolkit,
@@ -170,7 +261,7 @@ test('symlink runtime libs are staged', () => {
   writeFileSync(join(src, 'libllama.so.0'), 'llama');
   writeFileSync(join(src, 'libggml.so.0'), 'ggml');
   symlinkSync('libllama.so.0', join(src, 'libllama.so'));
-  const accel = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
+  const { accel } = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
   assert.equal(accel, 'cpu');
   assert.equal(existsSync(join(llmPayloadDir(resources, 'cpu'), 'libllama.so')), true);
   rmSync(root, { recursive: true, force: true });

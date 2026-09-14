@@ -44,6 +44,10 @@
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.
+- LLM payload staging walks nested `build/llama-cpp-*/out` trees so Windows
+  MSVC cmake `out/bin/Release` copies of `llama` / `ggml` / `ggml-cuda` land in
+  `llm-runtime/cuda`. `pnpm llama:cuda` fails if `ggml-cuda` is still missing
+  instead of silently staging a worker-only `llm-runtime/cpu`.
 - Activity scan paths stay on one ellipsis line (Current column and footer Working
   line) so long titles no longer resize the layout. Song-title punctuation (`?`,
   `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when

@@ -694,8 +694,14 @@ mod tests {
         );
         let cmake_wrap = include_str!("../../../../scripts/with-cmake-generator.mjs");
         assert!(
-            cmake_wrap.contains("appendEngineLlmFeatures"),
-            "Tauri cargo engine-llm must inherit AIFS_LLM_FEATURES: {cmake_wrap}"
+            cmake_wrap.contains("appendEngineLlmFeatures")
+                && cmake_wrap.contains("formatStagedPayloadLog"),
+            "Tauri cargo engine-llm must inherit AIFS_LLM_FEATURES and log staged libs: {cmake_wrap}"
+        );
+        let stage = include_str!("../../../../scripts/stage-llm-payload.mjs");
+        assert!(
+            stage.contains("collectRuntimeLibsNested") && stage.contains("expectedAccel"),
+            "CUDA staging must harvest nested llama-cpp out dirs and fail closed: {stage}"
         );
         let tauri = include_str!("../tauri.conf.json");
         for hook in ["beforeDevCommand", "beforeBuildCommand"] {

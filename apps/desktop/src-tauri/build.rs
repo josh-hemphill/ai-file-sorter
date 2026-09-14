@@ -47,6 +47,7 @@ fn copy_sidecars() {
     };
     let release = profile == "release";
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=AIFS_LLM_FEATURES");
     let _ = fs::create_dir_all(&dest_dir);
     if triple.is_empty() {
         panic!("TARGET is unset; cannot name sidecar files");

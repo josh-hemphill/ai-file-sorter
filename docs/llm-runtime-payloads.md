@@ -47,11 +47,15 @@ runtime libs into:
 - `target/{profile}/llm-runtime/<accel>/`
 - `apps/desktop/src-tauri/resources/llm-runtime/<accel>/`
 
-`<accel>` is inferred from libraries next to the Cargo binary (and `deps/` /
-`build/llama-cpp-*/out`),
-including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
-complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
-into a CUDA payload. Staging one accelerator does not delete sibling folders
+`<accel>` is inferred from libraries next to the Cargo binary, in `deps/`, and
+nested under `build/llama-cpp-*/out` (MSVC cmake-rs often leaves
+`ggml-cuda.dll` in `out/bin/Release` or `out/build/bin/Release`, not the `out`
+root). Staging walks those trees and skips `CMakeFiles`. `ggml-cuda` /
+`ggml-vulkan` still count even when those plugins are not yet a complete
+payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
+into a CUDA payload. `pnpm llama:cuda` (`AIFS_LLM_FEATURES=cuda`) fails
+closed if `ggml-cuda` was not harvested, instead of writing a worker-only
+`llm-runtime/cpu`. Staging one accelerator does not delete sibling folders
 (`cpu` must not wipe `cuda`). Extract workers still copy into `binaries/` as
 `externalBin` sidecars. The LLM worker is **not** listed in `externalBin` and
 is not copied into `binaries/`; a packaged flat sidecar would collide with

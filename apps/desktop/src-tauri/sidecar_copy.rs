@@ -2,8 +2,8 @@
 
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
-    LlmAccel, ensure_process_binary_executable, first_process_binary, infer_accel_from_libs,
-    llm_payload_dir, runtime_lib_matches_prefix,
+    LlmAccel, ensure_process_binary_executable, first_process_binary, llm_payload_dir,
+    runtime_lib_matches_prefix,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -134,13 +134,53 @@ fn collect_runtime_libs_from(
     Ok(())
 }
 
+/// MSVC cmake-rs nests `ggml-cuda.dll` under `out/bin/Release` (and similar).
+const LLAMA_OUT_MAX_DEPTH: usize = 6;
+
 /// llama-cpp-sys-2 often leaves ggml-cuda in `build/llama-cpp-*/out`, not `deps/`.
 fn collect_runtime_libs_from_llama_build_out(
     target_dir: &Path,
     files: &mut HashMap<String, PathBuf>,
 ) -> std::io::Result<()> {
     for dir in llama_build_out_dirs(target_dir) {
-        collect_runtime_libs_from(&dir, files)?;
+        collect_runtime_libs_nested(&dir, files, 0)?;
+    }
+    Ok(())
+}
+
+fn skip_llama_out_dir(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "cmakefiles" | "cmaketmp" | ".git" | "compileridcuda" | "compileridcxx" | "compileridc"
+    )
+}
+
+fn collect_runtime_libs_nested(
+    dir: &Path,
+    files: &mut HashMap<String, PathBuf>,
+    depth: usize,
+) -> std::io::Result<()> {
+    if depth > LLAMA_OUT_MAX_DEPTH || !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let src = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if skip_llama_out_dir(name) {
+                continue;
+            }
+            collect_runtime_libs_nested(&src, files, depth + 1)?;
+            continue;
+        }
+        if src.is_file() && is_worker_runtime_lib(name) {
+            files.insert(name.to_owned(), src);
+        }
     }
     Ok(())
 }
@@ -231,18 +271,42 @@ fn copy_worker_runtime_libs_from(
 #[cfg_attr(test, allow(dead_code))]
 fn stage_llm_payload(src_dir: &Path, runtime_root: &Path) -> std::io::Result<LlmAccel> {
     let cuda_root = std::env::var_os("CUDA_PATH").map(PathBuf::from);
-    stage_llm_payload_from(src_dir, runtime_root, cuda_root.as_deref())
+    stage_llm_payload_from_expected(
+        src_dir,
+        runtime_root,
+        cuda_root.as_deref(),
+        expected_accel_from_env(),
+    )
 }
 
 /// Infers `<accel>` from `src_dir` (and `deps`) and writes that payload only.
+#[cfg_attr(not(test), allow(dead_code))]
 fn stage_llm_payload_from(
     src_dir: &Path,
     runtime_root: &Path,
     cuda_root: Option<&Path>,
 ) -> std::io::Result<LlmAccel> {
-    let accel = infer_staging_accel(src_dir);
+    stage_llm_payload_from_expected(src_dir, runtime_root, cuda_root, None)
+}
+
+fn stage_llm_payload_from_expected(
+    src_dir: &Path,
+    runtime_root: &Path,
+    cuda_root: Option<&Path>,
+    expected: Option<LlmAccel>,
+) -> std::io::Result<LlmAccel> {
+    let mut files = HashMap::new();
+    collect_runtime_libs_from(src_dir, &mut files)?;
+    collect_runtime_libs_from(&src_dir.join("deps"), &mut files)?;
+    collect_runtime_libs_from_llama_build_out(src_dir, &mut files)?;
+    let accel = infer_staging_accel_from_lib_names(files.keys().map(String::as_str));
+    assert_expected_staging_accel(expected, accel, &files, src_dir)?;
+    if accel == LlmAccel::Cuda
+        && let Some(cuda_root) = cuda_root
+    {
+        collect_runtime_libs_from(&cuda_root.join("bin"), &mut files)?;
+    }
     let dest_dir = llm_payload_dir(runtime_root, accel);
-    let files = collect_src_runtime_libs(src_dir, cuda_root, accel == LlmAccel::Cuda)?;
     if let Some(src_bin) = first_process_binary(src_dir, WorkerKind::Llm.binary_stem()) {
         std::fs::create_dir_all(&dest_dir)?;
         let dest_bin = dest_dir.join(
@@ -257,47 +321,87 @@ fn stage_llm_payload_from(
     Ok(accel)
 }
 
-/// CUDA / Vulkan plugins in `src_dir` or `deps` win over a CPU-only `infer_accel_from_libs`.
-fn infer_staging_accel(src_dir: &Path) -> LlmAccel {
-    if infer_accel_from_libs(src_dir) == Some(LlmAccel::Cuda)
-        || dir_has_plugin(src_dir, "ggml-cuda")
-        || dir_has_plugin(&src_dir.join("deps"), "ggml-cuda")
-        || llama_build_out_dirs(src_dir)
-            .iter()
-            .any(|dir| dir_has_plugin(dir, "ggml-cuda"))
+/// CUDA / Vulkan plugins in collected filenames win over a CPU-only payload dir.
+fn infer_staging_accel_from_lib_names<'a>(names: impl IntoIterator<Item = &'a str>) -> LlmAccel {
+    let names: Vec<&str> = names.into_iter().collect();
+    if names
+        .iter()
+        .any(|name| runtime_lib_matches_prefix(name, "ggml-cuda"))
     {
         return LlmAccel::Cuda;
     }
-    if infer_accel_from_libs(src_dir) == Some(LlmAccel::Vulkan)
-        || dir_has_plugin(src_dir, "ggml-vulkan")
-        || dir_has_plugin(&src_dir.join("deps"), "ggml-vulkan")
-        || llama_build_out_dirs(src_dir)
-            .iter()
-            .any(|dir| dir_has_plugin(dir, "ggml-vulkan"))
+    if names
+        .iter()
+        .any(|name| runtime_lib_matches_prefix(name, "ggml-vulkan"))
     {
         return LlmAccel::Vulkan;
     }
-    infer_accel_from_libs(src_dir).unwrap_or(LlmAccel::Cpu)
+    LlmAccel::Cpu
 }
 
-fn dir_has_plugin(dir: &Path, prefix: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
+#[cfg_attr(test, allow(dead_code))]
+fn expected_accel_from_env() -> Option<LlmAccel> {
+    parse_expected_accel(&std::env::var("AIFS_LLM_FEATURES").ok()?)
+}
+
+fn parse_expected_accel(raw: &str) -> Option<LlmAccel> {
+    let mut cuda = false;
+    let mut vulkan = false;
+    for token in raw.split(|c: char| c == ',' || c.is_whitespace()) {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "cuda" => cuda = true,
+            "vulkan" | "vulcan" => vulkan = true,
+            _ => {}
+        }
+    }
+    match (cuda, vulkan) {
+        (true, false) => Some(LlmAccel::Cuda),
+        (false, true) => Some(LlmAccel::Vulkan),
+        _ => None,
+    }
+}
+
+fn assert_expected_staging_accel(
+    expected: Option<LlmAccel>,
+    actual: LlmAccel,
+    files: &HashMap<String, PathBuf>,
+    src_dir: &Path,
+) -> std::io::Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
     };
-    entries.flatten().any(|entry| {
-        entry.path().is_file()
-            && entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| runtime_lib_matches_prefix(name, prefix))
-    })
+    let plugin = match expected {
+        LlmAccel::Cuda => "ggml-cuda",
+        LlmAccel::Vulkan => "ggml-vulkan",
+        LlmAccel::Cpu | LlmAccel::Metal => return Ok(()),
+    };
+    if expected == actual {
+        return Ok(());
+    }
+    let mut names: Vec<&str> = files.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    let found = if names.is_empty() {
+        "(none)".to_owned()
+    } else {
+        names.join(", ")
+    };
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "aifs: AIFS_LLM_FEATURES={} but inferred {} (missing {plugin}). Found: {found}. Searched {}, deps/, and nested build/llama-cpp-*/out (MSVC cmake uses out/bin/Release or out/build/bin/Release). If llama-cpp-sys-2 was cached without CUDA, run cargo clean -p llama-cpp-sys-2 and rebuild with pnpm llama:cuda.",
+            expected.as_str(),
+            actual.as_str(),
+            src_dir.display()
+        ),
+    ))
 }
 
 #[cfg(test)]
 mod sidecar_copy_tests {
     use super::{
         copy_if_changed, copy_worker_runtime_libs_from, files_have_same_contents,
-        is_worker_runtime_lib, stage_llm_payload_from, write_if_changed,
+        is_worker_runtime_lib, parse_expected_accel, stage_llm_payload_from,
+        stage_llm_payload_from_expected, write_if_changed,
     };
     use aifs_protocol::LlmAccel;
     use std::fs;
@@ -627,6 +731,70 @@ mod sidecar_copy_tests {
         );
         assert!(!runtime.join("llm-runtime").join("cpu").exists());
         fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stage_cuda_plugin_in_nested_msvc_out_still_lands_under_cuda() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        write_cpu_payload_src(&src);
+        let release = src
+            .join("build")
+            .join("llama-cpp-sys-2-deadbeef")
+            .join("out")
+            .join("build")
+            .join("bin")
+            .join("Release");
+        fs::create_dir_all(&release).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(release.join("llama.dll"), b"nested-llama")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(release.join("ggml.dll"), b"nested-ggml")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(release.join("ggml-cuda.dll"), b"nested-cuda")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let cmake_files = src
+            .join("build")
+            .join("llama-cpp-sys-2-deadbeef")
+            .join("out")
+            .join("CMakeFiles");
+        fs::create_dir_all(&cmake_files).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(cmake_files.join("ggml-vulkan.dll"), b"skip")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cuda);
+        let dest = runtime.join("llm-runtime").join("cuda");
+        assert_eq!(
+            fs::read(dest.join("ggml-cuda.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"nested-cuda"
+        );
+        assert!(!dest.join("ggml-vulkan.dll").exists());
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn expected_cuda_without_plugin_does_not_stage_cpu() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        write_cpu_payload_src(&src);
+        let error = stage_llm_payload_from_expected(&src, &runtime, None, Some(LlmAccel::Cuda))
+            .expect_err("cuda was requested");
+        assert!(error.to_string().contains("missing ggml-cuda"), "{error}");
+        assert!(!runtime.join("llm-runtime").join("cpu").exists());
+        assert!(!runtime.join("llm-runtime").join("cuda").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn parse_expected_accel_reads_aifs_llm_features() {
+        assert_eq!(parse_expected_accel("cuda"), Some(LlmAccel::Cuda));
+        assert_eq!(parse_expected_accel("vulcan"), Some(LlmAccel::Vulkan));
+        assert_eq!(parse_expected_accel("cuda,vulkan"), None);
+        assert_eq!(parse_expected_accel("llama"), None);
+        assert_eq!(parse_expected_accel(""), None);
     }
 
     #[test]
