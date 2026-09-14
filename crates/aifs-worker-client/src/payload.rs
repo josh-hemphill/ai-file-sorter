@@ -6,8 +6,13 @@ use aifs_protocol::{
     LlmAccel, LlmPayload, host_accel_available, infer_accel_from_libs, inspect_payload,
     is_usable_process_binary, list_payloads_under, select_llm_payload,
 };
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+thread_local! {
+    static LIST_ROOTS_OVERRIDE: RefCell<Option<Vec<PathBuf>>> = const { RefCell::new(None) };
+}
 
 /// Overrides `gpu_preference` when selecting which payload directory to spawn.
 pub const LLM_BACKEND_ENV: &str = "AIFS_LLM_BACKEND";
@@ -30,7 +35,33 @@ fn spawn_llm_preference_from(gpu_preference: &str, backend_env: Option<&str>) ->
 
 /// Complete payloads under Cargo/Tauri search roots (no worker hello).
 pub fn list_llm_payloads() -> Vec<LlmPayload> {
-    list_llm_payloads_from(&runtime_search_roots())
+    LIST_ROOTS_OVERRIDE.with(|slot| match slot.borrow().as_ref() {
+        Some(roots) => list_llm_payloads_from(roots),
+        None => list_llm_payloads_from(&runtime_search_roots()),
+    })
+}
+
+/// Limits [`list_llm_payloads`] on this thread to `roots` until the guard drops.
+///
+/// Engine tests use this so a fake payload is not planted under `CARGO_MANIFEST_DIR`,
+/// which parallel `connect_llm` tests also search.
+pub fn override_llm_list_roots(roots: Vec<PathBuf>) -> LlmListRootsGuard {
+    LlmListRootsGuard {
+        previous: LIST_ROOTS_OVERRIDE.with(|slot| slot.replace(Some(roots))),
+    }
+}
+
+/// Restores the previous listing-root override when dropped.
+pub struct LlmListRootsGuard {
+    previous: Option<Vec<PathBuf>>,
+}
+
+impl Drop for LlmListRootsGuard {
+    fn drop(&mut self) {
+        LIST_ROOTS_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = self.previous.take();
+        });
+    }
 }
 
 /// Lists complete payloads under each runtime root (`root/llm-runtime/<accel>/`).
@@ -139,8 +170,8 @@ fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_llm_payloads_from, payload_from_explicit_binary, runtime_search_roots_from,
-        spawn_llm_preference_from,
+        list_llm_payloads, list_llm_payloads_from, override_llm_list_roots,
+        payload_from_explicit_binary, runtime_search_roots_from, spawn_llm_preference_from,
     };
     use aifs_protocol::{LlmAccel, llm_payload_dir, select_llm_payload};
     use std::fs;
@@ -188,6 +219,29 @@ mod tests {
                 .any(|dir| dir == Path::new("repo/apps/desktop/src-tauri/binaries")),
             "{roots:?}"
         );
+    }
+
+    #[test]
+    fn list_llm_payloads_honors_thread_local_root_override() {
+        let root = temp_dir();
+        write_cpu_payload(&llm_payload_dir(&root, LlmAccel::Cpu));
+        {
+            let _empty = override_llm_list_roots(Vec::new());
+            assert!(
+                list_llm_payloads().is_empty(),
+                "empty override must hide Cargo/Tauri search roots"
+            );
+        }
+        let guard = override_llm_list_roots(vec![root.clone()]);
+        let listed = list_llm_payloads();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert!(
+            listed[0].dir.starts_with(&root),
+            "listed {:?} must be the staged root {root:?}",
+            listed[0].dir
+        );
+        drop(guard);
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[test]

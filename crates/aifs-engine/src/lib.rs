@@ -3893,42 +3893,106 @@ mod tests {
 
     #[test]
     fn get_models_lists_payloads_without_hello_and_does_not_persist_them() {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let payload_dir = aifs_protocol::llm_payload_dir(&manifest, aifs_protocol::LlmAccel::Cpu);
-        fs::create_dir_all(&payload_dir).unwrap_or_else(|error| panic!("{error}"));
-        fs::write(payload_dir.join("aifs-worker-llm"), b"worker")
-            .unwrap_or_else(|error| panic!("{error}"));
-        fs::write(payload_dir.join("llama.dll"), b"llama")
-            .unwrap_or_else(|error| panic!("{error}"));
-        fs::write(payload_dir.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
-        let listed = present_models(ModelInventory::default());
-        let cpu = listed
-            .llm_payloads
-            .iter()
-            .find(|payload| payload.accel == aifs_protocol::LlmAccel::Cpu)
-            .unwrap_or_else(|| panic!("expected cpu payload in {:?}", listed.llm_payloads));
-        assert_eq!(
-            cpu.host_available,
-            aifs_protocol::host_accel_available(aifs_protocol::LlmAccel::Cpu)
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let marker = root.path().display().to_string();
+        write_complete_payload(
+            &aifs_protocol::llm_payload_dir(root.path(), aifs_protocol::LlmAccel::Cpu),
+            None,
         );
-        assert!(cpu.binary.contains("aifs-worker-llm"), "{}", cpu.binary);
+        write_complete_payload(
+            &aifs_protocol::llm_payload_dir(root.path(), aifs_protocol::LlmAccel::Cuda),
+            Some("ggml-cuda.dll"),
+        );
+        write_complete_payload(
+            &aifs_protocol::llm_payload_dir(root.path(), aifs_protocol::LlmAccel::Metal),
+            None,
+        );
+        let _roots = aifs_worker_client::override_llm_list_roots(vec![root.path().to_path_buf()]);
+
         let db = tempfile::NamedTempFile::new().unwrap_or_else(|error| panic!("{error}"));
         let mut engine =
             Engine::with_store_path(db.path()).unwrap_or_else(|error| panic!("{error}"));
         hello_ok(&mut engine);
-        let mut inventory = ModelInventory::default();
-        inventory
-            .llm_payloads
-            .push(aifs_protocol::LlmPayloadStatus {
-                accel: aifs_protocol::LlmAccel::Cuda,
-                dir: "/tmp/client-should-not-persist-cuda".into(),
-                binary: "/tmp/fake-worker".into(),
-                host_available: true,
-            });
-        terminal(engine.handle(Request {
+
+        let models = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let body = b"get-models-payloads-skip-worker-hello";
+        let _pin = aifs_protocol::ArtifactSha256Guard::pin(&[(
+            aifs_protocol::GEMMA_TEXT_FILENAME,
+            body.as_slice(),
+        )]);
+        fs::write(
+            aifs_protocol::artifact_path(models.path(), aifs_protocol::GEMMA_TEXT_FILENAME),
+            body,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+
+        let mut inventory = ModelInventory {
+            storage_dir: models.path().display().to_string(),
+            ..ModelInventory::default()
+        };
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.llm_payloads = vec![aifs_protocol::LlmPayloadStatus {
+            accel: aifs_protocol::LlmAccel::Cuda,
+            dir: "/tmp/client-should-not-persist-cuda".into(),
+            binary: "/tmp/fake-worker".into(),
+            host_available: true,
+        }];
+
+        let presented = match terminal(engine.handle(Request {
             id: "put".into(),
             command: Command::PutModels { inventory },
-        }));
+        })) {
+            Event::Models { inventory } => inventory,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(
+            presented.slots[0]
+                .runtime
+                .as_ref()
+                .map(SlotRuntime::kind_id),
+            Some("pending"),
+            "get/put_models must not spawn worker hello: {:?}",
+            presented.slots[0].runtime
+        );
+        assert_payload_from_root(
+            &presented.llm_payloads,
+            aifs_protocol::LlmAccel::Cpu,
+            &marker,
+        );
+        assert_payload_from_root(
+            &presented.llm_payloads,
+            aifs_protocol::LlmAccel::Cuda,
+            &marker,
+        );
+        assert_payload_from_root(
+            &presented.llm_payloads,
+            aifs_protocol::LlmAccel::Metal,
+            &marker,
+        );
+        assert!(
+            presented
+                .llm_payloads
+                .iter()
+                .all(|payload| !payload.dir.contains("client-should-not-persist-cuda")),
+            "wire inventory must be the disk listing, not the client row: {:?}",
+            presented.llm_payloads
+        );
+
+        let listed = match terminal(engine.handle(Request {
+            id: "get".into(),
+            command: Command::GetModels,
+        })) {
+            Event::Models { inventory } => inventory,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_payload_from_root(&listed.llm_payloads, aifs_protocol::LlmAccel::Cpu, &marker);
+        assert_eq!(
+            listed.slots[0].runtime.as_ref().map(SlotRuntime::kind_id),
+            Some("pending")
+        );
+
         drop(engine);
         let stored = aifs_store::WorkspaceStore::open(db.path())
             .unwrap_or_else(|error| panic!("{error}"))
@@ -3939,7 +4003,49 @@ mod tests {
             !stored.contains("client-should-not-persist-cuda"),
             "persisted inventory must not keep computed llm_payloads: {stored}"
         );
-        let _ = fs::remove_dir_all(manifest.join(aifs_protocol::LLM_RUNTIME_DIR));
+        assert!(
+            !stored.contains(&marker),
+            "persisted inventory must not keep listed payload paths: {stored}"
+        );
+    }
+
+    fn write_complete_payload(dir: &Path, extra_lib: Option<&str>) {
+        fs::create_dir_all(dir).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.join("aifs-worker-llm"), b"worker").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.join("llama.dll"), b"llama").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+        if let Some(name) = extra_lib {
+            fs::write(dir.join(name), b"plugin").unwrap_or_else(|error| panic!("{error}"));
+        }
+    }
+
+    fn assert_payload_from_root(
+        payloads: &[aifs_protocol::LlmPayloadStatus],
+        accel: aifs_protocol::LlmAccel,
+        marker: &str,
+    ) {
+        let payload = payloads
+            .iter()
+            .find(|item| item.accel == accel)
+            .unwrap_or_else(|| panic!("expected {accel:?} in {payloads:?}"));
+        assert!(
+            payload.dir.contains(marker),
+            "must discover the staged {accel:?} dir, got {}",
+            payload.dir
+        );
+        assert_eq!(
+            payload.host_available,
+            aifs_protocol::host_accel_available(accel),
+            "{accel:?} host_available"
+        );
+        if accel == aifs_protocol::LlmAccel::Metal {
+            assert_eq!(payload.host_available, cfg!(target_os = "macos"));
+        }
+        assert!(
+            payload.binary.contains("aifs-worker-llm"),
+            "{}",
+            payload.binary
+        );
     }
 
     #[test]
