@@ -39,8 +39,9 @@ pub use hosted::{
 };
 pub use llm_payload::{
     LLM_ACCEL_AUTO_ORDER, LLM_ACCELS, LLM_RUNTIME_DIR, LlmAccel, LlmPayload, LlmPayloadStatus,
-    host_accel_available, infer_accel_from_libs, inspect_payload, list_payloads_under,
-    llm_payload_dir, payload_complete, runtime_lib_matches_prefix, select_llm_payload,
+    accel_from_payload_dir, host_accel_available, infer_accel_from_libs, inspect_payload,
+    list_payloads_under, llm_payload_dir, missing_required_lib_prefixes, payload_complete,
+    runtime_lib_matches_prefix, select_llm_payload,
 };
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, LlmWorkerStatus, MODEL_SLOT_IDS, ModelArtifactStatus,

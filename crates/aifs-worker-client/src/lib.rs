@@ -5,8 +5,9 @@ use aifs_protocol::worker::{
     WORKER_PROTOCOL_VERSION, WorkerCommand, WorkerEnvelope, WorkerEvent, WorkerKind, WorkerRequest,
 };
 use aifs_protocol::{
-    ErrorCode, FolderStyle, ModelBackend, RequestId, decode_line, discover_process_binary,
-    encode_line, ensure_process_binary_executable, is_usable_process_binary,
+    ErrorCode, FolderStyle, ModelBackend, RequestId, accel_from_payload_dir, decode_line,
+    discover_process_binary, encode_line, ensure_process_binary_executable,
+    is_usable_process_binary, missing_required_lib_prefixes,
 };
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -745,6 +746,15 @@ fn format_disconnected(
             message.push_str(&format!(" ({status})"));
         }
     }
+    if let Some(path) = spawned
+        && status
+            .and_then(|value| value.code())
+            .is_none_or(|code| code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND)
+        && let Some(hint) = llm_missing_lib_hint(path)
+    {
+        message.push(' ');
+        message.push_str(&hint);
+    }
     if !diagnostics.is_empty() {
         message.push_str(": ");
         message.push_str(&diagnostics.join(" | "));
@@ -818,17 +828,70 @@ fn dll_search_hint(code: i32, spawned: &Path) -> Option<String> {
     if code as u32 != WINDOWS_STATUS_DLL_NOT_FOUND {
         return None;
     }
-    let folder = spawned.parent().unwrap_or(spawned);
+    if is_llm_worker_path(spawned) {
+        return Some(payload_runtime_hint(spawned, true));
+    }
+    let dir = spawned.parent().unwrap_or(spawned);
     Some(format!(
-        "Windows searched {folder} first for PE imports; ggml/llama/CUDA runtime DLLs must sit in that folder (other CUDA apps working does not put those sidecar DLLs beside this worker)",
-        folder = folder.display()
+        "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+        dir = dir.display()
     ))
+}
+
+fn is_llm_worker_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("aifs-worker-llm"))
+}
+
+fn llm_missing_lib_hint(spawned: &Path) -> Option<String> {
+    if !is_llm_worker_path(spawned) {
+        return None;
+    }
+    let dir = spawned.parent().unwrap_or(spawned);
+    let accel = accel_from_payload_dir(dir);
+    if missing_required_lib_prefixes(dir, accel).is_empty() {
+        return None;
+    }
+    Some(payload_runtime_hint(spawned, false))
+}
+
+fn payload_runtime_hint(spawned: &Path, dll_not_found: bool) -> String {
+    let dir = spawned.parent().unwrap_or(spawned);
+    let accel = accel_from_payload_dir(dir);
+    let missing = missing_required_lib_prefixes(dir, accel);
+    let required = accel.required_lib_prefixes().join(", ");
+    let mut text = if dll_not_found {
+        format!(
+            "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+            dir = dir.display()
+        )
+    } else {
+        format!(
+            "payload directory {dir} ({accel})",
+            dir = dir.display(),
+            accel = accel.as_str()
+        )
+    };
+    if missing.is_empty() {
+        text.push_str(&format!(
+            " Required {accel} libraries ({required}) are present in that folder; a working NVIDIA driver is not a payload library.",
+            accel = accel.as_str(),
+        ));
+    } else {
+        text.push_str(&format!(
+            " {accel} payload is missing required libraries: {names}.",
+            accel = accel.as_str(),
+            names = missing.join(", "),
+        ));
+    }
+    text
 }
 
 fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
     match code as u32 {
         WINDOWS_STATUS_DLL_NOT_FOUND => Some(
-            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The loader exits before stderr exists. Windows looks in the worker exe folder first — ggml/llama/CUDA runtime DLLs must sit beside that sidecar; a working NVIDIA driver is not enough if those DLLs were left in target/debug",
+            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The loader exits before stderr exists. Windows looks in the payload directory first for llama/ggml (and ggml-cuda or ggml-vulkan when that accelerator applies); a working NVIDIA driver is not enough",
         ),
         WINDOWS_STATUS_DLL_INIT_FAILED => {
             Some("a DLL failed to initialize (Windows STATUS_DLL_INIT_FAILED)")
@@ -889,13 +952,21 @@ mod tests {
     }
 
     #[test]
-    fn windows_dll_not_found_exit_explains_sidecar_runtime_libs() {
+    fn windows_dll_not_found_exit_names_payload_dir_and_missing_libs() {
         let code = WINDOWS_STATUS_DLL_NOT_FOUND as i32;
         assert_eq!(code, -1_073_741_515);
         let meaning = explain_worker_exit_code(code)
             .unwrap_or_else(|| panic!("expected STATUS_DLL_NOT_FOUND"));
         assert!(meaning.contains("STATUS_DLL_NOT_FOUND"), "{meaning}");
-        assert!(meaning.contains("target/debug"), "{meaning}");
+        assert!(meaning.contains("payload directory"), "{meaning}");
+        assert!(
+            !meaning.contains("target/debug"),
+            "Cargo target is the wrong default cause: {meaning}"
+        );
+        assert!(
+            !meaning.contains("sidecar"),
+            "LLM is not a flat sidecar: {meaning}"
+        );
         assert!(
             !meaning.contains("nvcuda.dll"),
             "driver DLL is the wrong default cause: {meaning}"
@@ -903,10 +974,45 @@ mod tests {
         let message = format_exit_code(code);
         assert!(message.contains("0xC0000135"), "{message}");
         assert!(message.contains("STATUS_DLL_NOT_FOUND"), "{message}");
-        let spawned = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-llm.exe");
-        let hint = dll_search_hint(code, spawned).unwrap_or_else(|| panic!("hint"));
-        assert!(hint.contains("binaries"), "{hint}");
-        assert!(hint.contains("other CUDA apps"), "{hint}");
+
+        let root = std::env::temp_dir().join(format!(
+            "aifs-dll-hint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let dir = aifs_protocol::llm_payload_dir(&root, aifs_protocol::LlmAccel::Cuda);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("aifs-worker-llm.exe"), b"worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("llama.dll"), b"llama").unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(dir.join("ggml.dll"), b"ggml").unwrap_or_else(|error| panic!("{error}"));
+        let spawned = dir.join("aifs-worker-llm.exe");
+        let hint = dll_search_hint(code, &spawned).unwrap_or_else(|| panic!("hint"));
+        assert!(hint.contains(dir.to_string_lossy().as_ref()), "{hint}");
+        assert!(
+            hint.contains("missing required libraries") && hint.contains("ggml-cuda"),
+            "{hint}"
+        );
+        assert!(!hint.contains("nvcuda"), "{hint}");
+        assert!(!hint.contains("target/debug"), "{hint}");
+        let disconnected = format_disconnected(None, &[], Some(&spawned));
+        assert!(
+            disconnected.contains("aifs-worker-llm.exe"),
+            "{disconnected}"
+        );
+        assert!(
+            disconnected.contains("missing required libraries")
+                && disconnected.contains("ggml-cuda"),
+            "{disconnected}"
+        );
+        let media = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-media.exe");
+        let media_hint = dll_search_hint(code, media).unwrap_or_else(|| panic!("media hint"));
+        assert!(media_hint.contains("STATUS_DLL_NOT_FOUND"), "{media_hint}");
+        assert!(!media_hint.contains("llama"), "{media_hint}");
+        std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[test]

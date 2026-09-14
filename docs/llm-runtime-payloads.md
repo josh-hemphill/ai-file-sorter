@@ -71,7 +71,9 @@ The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 still overrides discovery; library search is that file's directory.
 
 Spawn prepends **only** the payload directory to `PATH` /
-`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `get_models` lists complete payloads
+`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. Hello/spawn failures that look like a
+missing native library name the payload directory and missing required prefixes
+(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`). `get_models` lists complete payloads
 as `llm_payloads` without spawning hello.
 
 `pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator

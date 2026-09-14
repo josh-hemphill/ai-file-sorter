@@ -123,9 +123,9 @@ the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
 `0xC0000135`) is named in that text (loader failure, no stderr). That exit
-means a DLL was missing from the worker exe folder — typically ggml/llama/CUDA
-runtime libraries left in `target/debug` after Tauri copied only the sidecar
-exe, not a missing NVIDIA driver. An `llm-runtime/<accel>/` folder is a complete
+names the spawned payload directory and any missing required library prefixes
+(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`) — not `target/debug`, a flat
+sidecar, or a host driver such as `nvcuda.dll`. An `llm-runtime/<accel>/` folder is a complete
 payload only when it has a non-empty `aifs-worker-llm` plus `llama` and core `ggml`
 libs (`ggml` / `ggml-base` / `ggml-cpu`); CUDA also needs `ggml-cuda`, Vulkan
 `ggml-vulkan`. `nvcuda.dll` does not complete a CUDA payload. Layout and
