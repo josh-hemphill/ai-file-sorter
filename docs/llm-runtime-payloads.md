@@ -47,7 +47,8 @@ runtime libs into:
 - `target/{profile}/llm-runtime/<accel>/`
 - `apps/desktop/src-tauri/resources/llm-runtime/<accel>/`
 
-`<accel>` is inferred from libraries next to the Cargo binary (and `deps/`),
+`<accel>` is inferred from libraries next to the Cargo binary (and `deps/` /
+`build/llama-cpp-*/out`),
 including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
 complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
 into a CUDA payload. Staging one accelerator does not delete sibling folders
@@ -66,15 +67,21 @@ The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 (`resources/`, `target/{debug,release}`). Packaged macOS also walks
 `Contents/Resources` beside `Contents/MacOS`. `select_llm_payload` uses
 `AIFS_LLM_BACKEND` when set, else inventory `gpu_preference`, else `auto`
-(`LLM_ACCEL_AUTO_ORDER`). CUDA/Vulkan/Metal are skipped when
-`host_accel_available` is false (`CUDA_PATH` is not a host probe). `AIFS_WORKER_LLM`
-still overrides discovery; library search is that file's directory.
+(`LLM_ACCEL_AUTO_ORDER`). `auto` skips CUDA/Vulkan/Metal when
+`host_accel_available` is false (`CUDA_PATH` is not a host probe). An explicit
+`gpu_preference` of `cuda` still spawns a complete CUDA payload if the probe
+fails. Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned.
+Discovery then names why CUDA was not used (no `llm-runtime/cuda`, missing
+`ggml-cuda`, or NVIDIA probe failed at `%SystemRoot%\System32\nvcuda.dll`).
+`AIFS_WORKER_LLM` still overrides discovery; library search is that file's
+directory.
 
 Spawn prepends **only** the payload directory to `PATH` /
 `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. Hello/spawn failures that look like a
 missing native library name the payload directory and missing required prefixes
-(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`). `get_models` lists complete payloads
-as `llm_payloads` without spawning hello.
+(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`) without repeating the NTSTATUS
+essay. `get_models` lists complete payloads as `llm_payloads` without spawning
+hello.
 
 `pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator
 and stage that payload. `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two

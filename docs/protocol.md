@@ -115,17 +115,21 @@ Binaries: `aifs-worker-media`, `aifs-worker-document`, `aifs-worker-vision`,
 non-empty binary next to the engine or in ancestor `target/{debug,release}/`
 (empty Tauri debug sidecar placeholders are skipped). The LLM worker is chosen
 from complete `llm-runtime/<accel>/` payloads (CUDA → Vulkan → Metal → CPU when
-the host driver is present). Unpackaged discovery can still fall back to a
-Cargo `aifs-worker-llm` next to the engine; packaged apps do not install that
-binary as a Tauri `externalBin` sidecar. `$AIFS_LLM_BACKEND`
+the host driver is present; explicit `gpu_preference=cuda` still uses a complete
+CUDA payload if that probe fails). Unpackaged discovery does **not** fall back to
+an incomplete Cargo `aifs-worker-llm` next to the engine; packaged apps do not
+install that binary as a Tauri `externalBin` sidecar. `$AIFS_LLM_BACKEND`
 overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
 the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /
 `0xC0000135`) is named in that text (loader failure, no stderr). That exit
 names the spawned payload directory and any missing required library prefixes
-(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`) — not `target/debug`, a flat
-sidecar, or a host driver such as `nvcuda.dll`. An `llm-runtime/<accel>/` folder is a complete
+(`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`) — a Cargo `target/debug` folder is
+not called a CPU payload. When no complete payload exists, the error says why
+CUDA was not selected (missing `llm-runtime/cuda` / `ggml-cuda`, or NVIDIA
+probe failed at `nvcuda.dll`) instead of spawning the cargo sidecar. An
+`llm-runtime/<accel>/` folder is a complete
 payload only when it has a non-empty `aifs-worker-llm` plus `llama` and core `ggml`
 libs (`ggml` / `ggml-base` / `ggml-cpu`); CUDA also needs `ggml-cuda`, Vulkan
 `ggml-vulkan`. `nvcuda.dll` does not complete a CUDA payload. Layout and

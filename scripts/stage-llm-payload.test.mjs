@@ -80,6 +80,27 @@ test('cuda stage lands under cuda and does not flatten', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('cuda plugin only in llama-cpp out still stages under cuda', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-stage-llm-out-'));
+  const src = join(root, 'src');
+  const resources = join(root, 'resources');
+  mkdirSync(join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out'), { recursive: true });
+  writeFileSync(join(src, 'aifs-worker-llm'), 'worker');
+  writeFileSync(join(src, 'llama.dll'), 'llama');
+  writeFileSync(join(src, 'ggml.dll'), 'ggml');
+  writeFileSync(
+    join(src, 'build', 'llama-cpp-sys-2-deadbeef', 'out', 'ggml-cuda.dll'),
+    'cuda',
+  );
+  const accel = stageLlmPayloadFromDir({ srcDir: src, runtimeRoots: [resources] });
+  assert.equal(accel, 'cuda');
+  assert.equal(
+    readFileSync(join(llmPayloadDir(resources, 'cuda'), 'ggml-cuda.dll'), 'utf8'),
+    'cuda',
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('cuda plugin only in deps still stages under cuda', () => {
   const root = mkdtempSync(join(tmpdir(), 'aifs-stage-llm-deps-'));
   const src = join(root, 'src');

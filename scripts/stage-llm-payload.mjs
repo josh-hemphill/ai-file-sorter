@@ -72,7 +72,22 @@ function collectRuntimeLibs(srcDir) {
   const files = new Map();
   collectRuntimeLibsFrom(srcDir, files);
   collectRuntimeLibsFrom(join(srcDir, 'deps'), files);
+  collectRuntimeLibsFromLlamaBuildOut(srcDir, files);
   return files;
+}
+
+function collectRuntimeLibsFromLlamaBuildOut(targetDir, files) {
+  let entries;
+  try {
+    entries = readdirSync(join(targetDir, 'build'), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!String(entry.name).toLowerCase().startsWith('llama-cpp')) continue;
+    collectRuntimeLibsFrom(join(targetDir, 'build', entry.name, 'out'), files);
+  }
 }
 
 function collectRuntimeLibsFrom(dir, files) {

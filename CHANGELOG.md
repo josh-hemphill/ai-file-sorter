@@ -78,11 +78,14 @@
   directory (not a glob) so sibling accelerators are not flattened.
 - The engine autoselects a complete `llm-runtime/<accel>/` payload (CUDA →
   Vulkan → Metal → CPU) using host driver probes, not `CUDA_PATH`.
-  `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. Spawn sets the
+  `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. An explicit CUDA
+  preference still spawns a complete CUDA payload if the NVIDIA probe fails.
+  Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned. Spawn sets the
   library search path to that payload directory only. `get_models` still
   does not hello the worker.
 - `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into
-  `llm-runtime/<accel>/` without deleting sibling accelerators. Combining
+  `llm-runtime/<accel>/` without deleting sibling accelerators (including
+  `ggml-cuda` left under `build/llama-cpp-*/out`). Combining
   `cuda` and `vulkan` in one `AIFS_LLM_FEATURES` cargo build is refused.
 - `get_models` lists complete `llm-runtime/<accel>/` payloads (`llm_payloads`)
   without spawning hello. Host-ready is a driver/OS probe, not `CUDA_PATH`.
@@ -93,8 +96,11 @@
   marked executable on Unix so resource copies that drop `+x` still spawn.
 - LLM worker hello/spawn failures name the payload directory and missing
   required library prefixes (`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`).
-  Windows `STATUS_DLL_NOT_FOUND` no longer blames `target/debug` or a flat
-  sidecar; `nvcuda.dll` is not treated as a payload library.
+  Windows `STATUS_DLL_NOT_FOUND` copy stays short. A Cargo `target/debug`
+  folder is not called a CPU payload. When CUDA is not selected, the error
+  says whether `llm-runtime/cuda` is missing/`ggml-cuda` is incomplete or the
+  NVIDIA probe failed (`%SystemRoot%\System32\nvcuda.dll`). Scan logs a shared
+  worker-start failure once for Categorize/Vision/Document.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

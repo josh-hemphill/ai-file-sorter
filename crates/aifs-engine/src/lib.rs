@@ -1332,27 +1332,55 @@ fn emit_model_runtime_notices_with(
             .map(|slot| slot_runtime(&slot.backend, &worker, Some(dir.as_path())))
             .unwrap_or_else(|| slot_runtime(&ModelBackend::Off, &worker, Some(dir.as_path())))
     };
-    emit_slot_runtime_notice(emit, id, "Categorize", &runtime_for("categorize"), false);
+    let mut slots = vec![("Categorize", runtime_for("categorize"), false)];
     if settings.analyze_images {
-        emit_slot_runtime_notice(emit, id, "Vision", &runtime_for("vision"), true);
+        slots.push(("Vision", runtime_for("vision"), true));
     }
     if settings.analyze_documents {
-        emit_slot_runtime_notice(emit, id, "Document", &runtime_for("document"), true);
+        slots.push(("Document", runtime_for("document"), true));
     }
+    emit_slot_runtime_notices(emit, id, &slots);
     Ok(())
 }
 
-fn emit_slot_runtime_notice(
+fn emit_slot_runtime_notices(
     emit: &mut impl FnMut(Envelope),
     id: &RequestId,
-    label: &str,
-    runtime: &SlotRuntime,
-    warn_when_off: bool,
+    slots: &[(&str, SlotRuntime, bool)],
 ) {
-    let Some((level, message)) = slot_runtime_notice(label, runtime, warn_when_off) else {
-        return;
-    };
-    emit_log(emit, id, level, message);
+    let mut shared_labels = Vec::new();
+    let mut shared_detail: Option<String> = None;
+    let mut other = Vec::new();
+    for (label, runtime, warn_when_off) in slots {
+        if let SlotRuntime::MissingWorker { detail } = runtime {
+            match &shared_detail {
+                None => {
+                    shared_labels.push(*label);
+                    shared_detail = Some(detail.clone());
+                    continue;
+                }
+                Some(existing) if existing == detail => {
+                    shared_labels.push(*label);
+                    continue;
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some(notice) = slot_runtime_notice(label, runtime, *warn_when_off) {
+            other.push(notice);
+        }
+    }
+    if let Some(detail) = shared_detail {
+        emit_log(
+            emit,
+            id,
+            LogLevel::Warn,
+            format!("{}: {detail}", shared_labels.join(", ")),
+        );
+    }
+    for (level, message) in other {
+        emit_log(emit, id, level, message);
+    }
 }
 
 /// Scan log copy for one slot. `warn_when_off` is for vision/document analysis flags.
@@ -4217,6 +4245,66 @@ mod tests {
                     && !message.contains("will be categorized after extract")),
             "{logs:?}"
         );
+    }
+
+    #[test]
+    fn scan_logs_shared_worker_failure_once() {
+        let mut engine = Engine::new();
+        hello_ok(&mut engine);
+        let settings = AppSettings {
+            analyze_images: true,
+            analyze_documents: true,
+            ..AppSettings::default()
+        };
+        terminal(engine.handle(Request {
+            id: "settings".into(),
+            command: Command::PutSettings { settings },
+        }));
+        let mut inventory = ModelInventory::default();
+        inventory.slots[0].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[1].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        inventory.slots[2].backend = ModelBackend::Catalog {
+            catalog_id: "gemma-3-4b-it".into(),
+        };
+        terminal(engine.handle(Request {
+            id: "models".into(),
+            command: Command::PutModels { inventory },
+        }));
+        let failed = LlmWorkerStatus::Failed {
+            detail: "No usable LLM payload (preference: auto). cuda snapshot is missing ggml-cuda."
+                .into(),
+        };
+        let mut events = Vec::new();
+        emit_model_runtime_notices_with(
+            &engine.store,
+            &"scan".into(),
+            &mut |envelope| events.push(envelope),
+            failed,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let logs: Vec<String> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        let worker_logs: Vec<_> = logs
+            .iter()
+            .filter(|message| {
+                message.contains("failed to start") || message.contains("No usable LLM payload")
+            })
+            .collect();
+        assert_eq!(worker_logs.len(), 1, "{logs:?}");
+        assert!(
+            worker_logs[0].contains("Categorize, Vision, Document"),
+            "{logs:?}"
+        );
+        assert!(worker_logs[0].contains("ggml-cuda"), "{logs:?}");
     }
 
     fn hello_ok(engine: &mut Engine) {

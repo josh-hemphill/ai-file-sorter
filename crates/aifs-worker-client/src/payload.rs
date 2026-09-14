@@ -3,8 +3,9 @@
 use crate::{WorkerClientError, discover_worker_binary};
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
-    LlmAccel, LlmPayload, host_accel_available, infer_accel_from_libs, inspect_payload,
-    is_usable_process_binary, list_payloads_under, select_llm_payload,
+    LlmAccel, LlmPayload, explain_llm_payload_selection_failure, host_accel_available,
+    infer_accel_from_libs, inspect_payload, is_staged_payload_dir, is_usable_process_binary,
+    list_payloads_under, payload_dir_has_lib_prefix, select_llm_payload,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -35,9 +36,13 @@ fn spawn_llm_preference_from(gpu_preference: &str, backend_env: Option<&str>) ->
 
 /// Complete payloads under Cargo/Tauri search roots (no worker hello).
 pub fn list_llm_payloads() -> Vec<LlmPayload> {
+    list_llm_payloads_from(&current_list_roots())
+}
+
+fn current_list_roots() -> Vec<PathBuf> {
     LIST_ROOTS_OVERRIDE.with(|slot| match slot.borrow().as_ref() {
-        Some(roots) => list_llm_payloads_from(roots),
-        None => list_llm_payloads_from(&runtime_search_roots()),
+        Some(roots) => roots.clone(),
+        None => runtime_search_roots(),
     })
 }
 
@@ -81,18 +86,32 @@ pub fn list_llm_payloads_from(roots: &[PathBuf]) -> Vec<LlmPayload> {
 /// Resolves the LLM worker payload to spawn.
 ///
 /// `AIFS_WORKER_LLM` still wins (library search is that file's directory).
-/// Otherwise autoselects a complete payload, then falls back to the sidecar
-/// binary next to the engine.
+/// Otherwise autoselects a complete payload. An incomplete llama/CUDA cargo
+/// sidecar is not spawned; a stub worker with no native libs still is.
 pub fn discover_llm_payload(gpu_preference: &str) -> Result<LlmPayload, WorkerClientError> {
     if let Ok(explicit) = std::env::var(WorkerKind::Llm.env_var()) {
         return payload_from_explicit_binary(Path::new(&explicit));
     }
     let preference = spawn_llm_preference(gpu_preference);
-    let payloads = list_llm_payloads();
+    let roots = current_list_roots();
+    let payloads = list_llm_payloads_from(&roots);
     if let Some(selected) = select_llm_payload(&payloads, &preference, host_accel_available) {
         return Ok(selected.clone());
     }
-    sidecar_fallback_payload()
+    let sidecar = discover_worker_binary(WorkerKind::Llm).ok();
+    if let Some(binary) = &sidecar
+        && let Some(payload) = complete_or_stub_sidecar(binary)
+    {
+        return Ok(payload);
+    }
+    Err(WorkerClientError::NoUsablePayload(
+        explain_llm_payload_selection_failure(
+            &roots,
+            &preference,
+            host_accel_available,
+            sidecar.as_deref(),
+        ),
+    ))
 }
 
 fn payload_from_explicit_binary(path: &Path) -> Result<LlmPayload, WorkerClientError> {
@@ -110,23 +129,76 @@ fn payload_from_explicit_binary(path: &Path) -> Result<LlmPayload, WorkerClientE
         return Ok(payload);
     }
     Ok(LlmPayload {
-        accel: LlmAccel::Cpu,
+        accel: infer_accel_from_libs(&dir).unwrap_or(LlmAccel::Cpu),
         dir,
         binary: path.to_path_buf(),
     })
 }
 
-fn sidecar_fallback_payload() -> Result<LlmPayload, WorkerClientError> {
-    let binary = discover_worker_binary(WorkerKind::Llm)?;
-    let dir = binary
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| binary.clone());
-    Ok(LlmPayload {
-        accel: infer_accel_from_libs(&dir).unwrap_or(LlmAccel::Cpu),
-        dir,
-        binary,
+fn complete_sidecar_payload(binary: &Path) -> Option<LlmPayload> {
+    if !is_usable_process_binary(binary) {
+        return None;
+    }
+    let dir = binary.parent()?;
+    let accel = infer_accel_from_libs(dir)?;
+    let mut payload = inspect_payload(dir, accel)?;
+    payload.binary = binary.to_path_buf();
+    Some(payload)
+}
+
+/// Complete llama payload beside the cargo binary, or a stub worker with no native libs.
+///
+/// A CUDA-linked `target/debug/aifs-worker-llm.exe` that is missing llama/ggml
+/// (or has `ggml-cuda` only in `deps/`) is not spawned.
+fn complete_or_stub_sidecar(binary: &Path) -> Option<LlmPayload> {
+    if let Some(payload) = complete_sidecar_payload(binary) {
+        return Some(payload);
+    }
+    if !is_usable_process_binary(binary) {
+        return None;
+    }
+    let dir = binary.parent()?;
+    if is_staged_payload_dir(dir) || incomplete_native_sidecar(dir) {
+        return None;
+    }
+    Some(LlmPayload {
+        accel: LlmAccel::Cpu,
+        dir: dir.to_path_buf(),
+        binary: binary.to_path_buf(),
     })
+}
+
+fn incomplete_native_sidecar(dir: &Path) -> bool {
+    if infer_accel_from_libs(dir).is_some() {
+        return false;
+    }
+    nearby_lib_dirs(dir)
+        .iter()
+        .any(|candidate| sidecar_lib_prefixes_present(candidate))
+}
+
+fn nearby_lib_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![dir.to_path_buf(), dir.join("deps")];
+    let Ok(entries) = std::fs::read_dir(dir.join("build")) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if entry.path().is_dir()
+            && name
+                .to_str()
+                .is_some_and(|stem| stem.to_ascii_lowercase().starts_with("llama-cpp"))
+        {
+            dirs.push(entry.path().join("out"));
+        }
+    }
+    dirs
+}
+
+fn sidecar_lib_prefixes_present(dir: &Path) -> bool {
+    ["llama", "ggml", "ggml-cuda", "ggml-vulkan"]
+        .iter()
+        .any(|prefix| payload_dir_has_lib_prefix(dir, prefix))
 }
 
 /// Directories that may contain `llm-runtime/<accel>/` (exe ancestors, `resources/`, Cargo target).
@@ -181,8 +253,9 @@ fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_llm_payloads, list_llm_payloads_from, override_llm_list_roots,
-        payload_from_explicit_binary, runtime_search_roots_from, spawn_llm_preference_from,
+        complete_or_stub_sidecar, complete_sidecar_payload, list_llm_payloads,
+        list_llm_payloads_from, override_llm_list_roots, payload_from_explicit_binary,
+        runtime_search_roots_from, spawn_llm_preference_from,
     };
     use aifs_protocol::{LlmAccel, llm_payload_dir, select_llm_payload};
     use std::fs;
@@ -316,5 +389,32 @@ mod tests {
         );
         assert_eq!(spawn_llm_preference_from("cpu", Some("")), "cpu");
         assert_eq!(spawn_llm_preference_from("auto", None), "auto");
+    }
+
+    #[test]
+    fn cargo_sidecar_is_spawnable_only_when_libs_sit_beside_the_worker() {
+        let root = temp_dir();
+        let binary = root.join("aifs-worker-llm");
+        fs::write(&binary, b"worker").unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            complete_sidecar_payload(&binary).is_none(),
+            "worker without llama/ggml is not a complete payload"
+        );
+        let stub = complete_or_stub_sidecar(&binary).unwrap_or_else(|| panic!("stub cargo worker"));
+        assert_eq!(stub.accel, LlmAccel::Cpu);
+        fs::create_dir_all(root.join("deps")).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(root.join("deps").join("ggml-cuda.dll"), b"cuda")
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            complete_or_stub_sidecar(&binary).is_none(),
+            "CUDA plugin in deps means this is an incomplete llama sidecar"
+        );
+        write_cpu_payload(&root);
+        let cpu = complete_sidecar_payload(&binary).unwrap_or_else(|| panic!("cpu sidecar"));
+        assert_eq!(cpu.accel, LlmAccel::Cpu);
+        fs::write(root.join("ggml-cuda.dll"), b"cuda").unwrap_or_else(|error| panic!("{error}"));
+        let cuda = complete_sidecar_payload(&binary).unwrap_or_else(|| panic!("cuda sidecar"));
+        assert_eq!(cuda.accel, LlmAccel::Cuda);
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 }

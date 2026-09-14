@@ -6,7 +6,7 @@ use aifs_protocol::worker::{
 };
 use aifs_protocol::{
     ErrorCode, FolderStyle, ModelBackend, RequestId, accel_from_payload_dir, decode_line,
-    discover_process_binary, encode_line, ensure_process_binary_executable,
+    discover_process_binary, encode_line, ensure_process_binary_executable, is_staged_payload_dir,
     is_usable_process_binary, missing_required_lib_prefixes,
 };
 use std::collections::HashSet;
@@ -74,6 +74,9 @@ pub enum WorkerClientError {
     /// A protocol line could not be parsed.
     #[error("invalid worker output: {0}")]
     Codec(String),
+    /// No complete `llm-runtime/<accel>/` payload (and no complete cargo sidecar).
+    #[error("{0}")]
+    NoUsablePayload(String),
     /// The worker returned a `failed` event.
     #[error("worker error {code:?}: {message}")]
     Worker {
@@ -829,11 +832,11 @@ fn dll_search_hint(code: i32, spawned: &Path) -> Option<String> {
         return None;
     }
     if is_llm_worker_path(spawned) {
-        return Some(payload_runtime_hint(spawned, true));
+        return Some(payload_runtime_hint(spawned));
     }
     let dir = spawned.parent().unwrap_or(spawned);
     Some(format!(
-        "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
+        "Windows searched {dir} first.",
         dir = dir.display()
     ))
 }
@@ -849,50 +852,56 @@ fn llm_missing_lib_hint(spawned: &Path) -> Option<String> {
         return None;
     }
     let dir = spawned.parent().unwrap_or(spawned);
-    let accel = accel_from_payload_dir(dir);
-    if missing_required_lib_prefixes(dir, accel).is_empty() {
+    let accel = accel_from_payload_dir(dir).unwrap_or(aifs_protocol::LlmAccel::Cpu);
+    if is_staged_payload_dir(dir) && missing_required_lib_prefixes(dir, accel).is_empty() {
         return None;
     }
-    Some(payload_runtime_hint(spawned, false))
+    if !is_staged_payload_dir(dir) && infer_missing_core_libs(dir).is_empty() {
+        return None;
+    }
+    Some(payload_runtime_hint(spawned))
 }
 
-fn payload_runtime_hint(spawned: &Path, dll_not_found: bool) -> String {
+fn infer_missing_core_libs(dir: &Path) -> Vec<&'static str> {
+    missing_required_lib_prefixes(dir, aifs_protocol::LlmAccel::Cpu)
+}
+
+fn payload_runtime_hint(spawned: &Path) -> String {
     let dir = spawned.parent().unwrap_or(spawned);
-    let accel = accel_from_payload_dir(dir);
-    let missing = missing_required_lib_prefixes(dir, accel);
-    let required = accel.required_lib_prefixes().join(", ");
-    let mut text = if dll_not_found {
-        format!(
-            "Windows searched {dir} first for PE imports (STATUS_DLL_NOT_FOUND).",
-            dir = dir.display()
-        )
-    } else {
-        format!(
-            "payload directory {dir} ({accel})",
+    if let Some(accel) = accel_from_payload_dir(dir).filter(|_| is_staged_payload_dir(dir)) {
+        let missing = missing_required_lib_prefixes(dir, accel);
+        if missing.is_empty() {
+            return format!(
+                "{accel} payload at {dir} has {required}.",
+                accel = accel.as_str(),
+                dir = dir.display(),
+                required = accel.required_lib_prefixes().join(", "),
+            );
+        }
+        return format!(
+            "{accel} payload at {dir} is missing {names}.",
+            accel = accel.as_str(),
             dir = dir.display(),
-            accel = accel.as_str()
-        )
-    };
-    if missing.is_empty() {
-        text.push_str(&format!(
-            " Required {accel} libraries ({required}) are present in that folder; a working NVIDIA driver is not a payload library.",
-            accel = accel.as_str(),
-        ));
-    } else {
-        text.push_str(&format!(
-            " {accel} payload is missing required libraries: {names}.",
-            accel = accel.as_str(),
             names = missing.join(", "),
-        ));
+        );
     }
-    text
+    let missing = infer_missing_core_libs(dir);
+    if missing.is_empty() {
+        return format!(
+            "{dir} is not a staged llm-runtime payload.",
+            dir = dir.display()
+        );
+    }
+    format!(
+        "{dir} is not a staged llm-runtime payload (missing {names}).",
+        dir = dir.display(),
+        names = missing.join(", "),
+    )
 }
 
 fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
     match code as u32 {
-        WINDOWS_STATUS_DLL_NOT_FOUND => Some(
-            "required DLL not found (Windows STATUS_DLL_NOT_FOUND). The loader exits before stderr exists. Windows looks in the payload directory first for llama/ggml (and ggml-cuda or ggml-vulkan when that accelerator applies); a working NVIDIA driver is not enough",
-        ),
+        WINDOWS_STATUS_DLL_NOT_FOUND => Some("required DLL not found (STATUS_DLL_NOT_FOUND)"),
         WINDOWS_STATUS_DLL_INIT_FAILED => {
             Some("a DLL failed to initialize (Windows STATUS_DLL_INIT_FAILED)")
         }
@@ -958,7 +967,10 @@ mod tests {
         let meaning = explain_worker_exit_code(code)
             .unwrap_or_else(|| panic!("expected STATUS_DLL_NOT_FOUND"));
         assert!(meaning.contains("STATUS_DLL_NOT_FOUND"), "{meaning}");
-        assert!(meaning.contains("payload directory"), "{meaning}");
+        assert!(
+            !meaning.contains("payload directory"),
+            "payload dir belongs in the hint, not the NTSTATUS gloss: {meaning}"
+        );
         assert!(
             !meaning.contains("target/debug"),
             "Cargo target is the wrong default cause: {meaning}"
@@ -970,6 +982,10 @@ mod tests {
         assert!(
             !meaning.contains("nvcuda.dll"),
             "driver DLL is the wrong default cause: {meaning}"
+        );
+        assert!(
+            !meaning.contains("loader exits before stderr"),
+            "keep STATUS_DLL copy short: {meaning}"
         );
         let message = format_exit_code(code);
         assert!(message.contains("0xC0000135"), "{message}");
@@ -993,24 +1009,38 @@ mod tests {
         let hint = dll_search_hint(code, &spawned).unwrap_or_else(|| panic!("hint"));
         assert!(hint.contains(dir.to_string_lossy().as_ref()), "{hint}");
         assert!(
-            hint.contains("missing required libraries") && hint.contains("ggml-cuda"),
+            hint.contains("cuda payload") && hint.contains("ggml-cuda"),
             "{hint}"
         );
+        assert!(!hint.contains("cpu payload"), "{hint}");
         assert!(!hint.contains("nvcuda"), "{hint}");
         assert!(!hint.contains("target/debug"), "{hint}");
+        assert!(!hint.contains("Windows searched"), "{hint}");
         let disconnected = format_disconnected(None, &[], Some(&spawned));
         assert!(
             disconnected.contains("aifs-worker-llm.exe"),
             "{disconnected}"
         );
         assert!(
-            disconnected.contains("missing required libraries")
-                && disconnected.contains("ggml-cuda"),
+            disconnected.contains("cuda payload") && disconnected.contains("ggml-cuda"),
             "{disconnected}"
         );
+        let cargo_dir = root.join("debug");
+        std::fs::create_dir_all(&cargo_dir).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(cargo_dir.join("aifs-worker-llm.exe"), b"worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let cargo_spawned = cargo_dir.join("aifs-worker-llm.exe");
+        let cargo_hint =
+            dll_search_hint(code, &cargo_spawned).unwrap_or_else(|| panic!("cargo hint"));
+        assert!(
+            cargo_hint.contains("not a staged llm-runtime payload"),
+            "{cargo_hint}"
+        );
+        assert!(cargo_hint.contains("missing llama, ggml"), "{cargo_hint}");
+        assert!(!cargo_hint.contains("cpu payload"), "{cargo_hint}");
         let media = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-media.exe");
         let media_hint = dll_search_hint(code, media).unwrap_or_else(|| panic!("media hint"));
-        assert!(media_hint.contains("STATUS_DLL_NOT_FOUND"), "{media_hint}");
+        assert!(media_hint.contains("Windows searched"), "{media_hint}");
         assert!(!media_hint.contains("llama"), "{media_hint}");
         std::fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
