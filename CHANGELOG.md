@@ -74,6 +74,9 @@
 - Both workspace Cancel buttons show Cancelling…, disable, and replace the
   Working… status line as soon as cancel is requested, while the engine stops
   at the next cooperative check.
+- LLM accelerator payloads are a directory contract (`llm-runtime/<accel>/`):
+  a non-empty worker plus llama/core ggml libs; CUDA also needs `ggml-cuda`.
+  Host `nvcuda.dll` does not complete a CUDA payload.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

@@ -5,8 +5,9 @@ Lessons from [hyperfield/ai-file-sorter](https://github.com/hyperfield/ai-file-s
 shape. Port the **behaviour**, not `LocalLLMClient.cpp`.
 
 Companion to [`golden-path-execution-plan.md`](golden-path-execution-plan.md)
-(workspace UX) and [`protocol.md`](protocol.md) (JSONL contracts). This file is
-the llama / catalog download sequence only.
+(workspace UX), [`protocol.md`](protocol.md) (JSONL contracts), and
+[`llm-runtime-payloads.md`](llm-runtime-payloads.md) (per-accelerator worker
+directories). This file is the llama / catalog download sequence only.
 
 ## Constraints that do not move
 
