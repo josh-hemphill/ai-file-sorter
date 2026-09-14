@@ -91,6 +91,10 @@
   copy would collide with CUDA vs CPU `ggml`). Discovery walks
   `resources/` and macOS `Contents/Resources`. The staged payload worker is
   marked executable on Unix so resource copies that drop `+x` still spawn.
+- LLM worker hello/spawn failures name the payload directory and missing
+  required library prefixes (`llama`, `ggml`, `ggml-cuda`, `ggml-vulkan`).
+  Windows `STATUS_DLL_NOT_FOUND` no longer blames `target/debug` or a flat
+  sidecar; `nvcuda.dll` is not treated as a payload library.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

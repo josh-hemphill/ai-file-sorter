@@ -155,6 +155,25 @@ pub fn infer_accel_from_libs(dir: &Path) -> Option<LlmAccel> {
     None
 }
 
+/// Accelerator implied by `…/llm-runtime/<accel>` or libraries in `dir`.
+pub fn accel_from_payload_dir(dir: &Path) -> LlmAccel {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(LlmAccel::parse)
+        .or_else(|| infer_accel_from_libs(dir))
+        .unwrap_or(LlmAccel::Cpu)
+}
+
+/// Required native-lib prefixes for `accel` that are not present in `dir`.
+pub fn missing_required_lib_prefixes(dir: &Path, accel: LlmAccel) -> Vec<&'static str> {
+    accel
+        .required_lib_prefixes()
+        .iter()
+        .copied()
+        .filter(|prefix| !dir_has_runtime_lib(dir, prefix))
+        .collect()
+}
+
 /// Complete payloads under `root/llm-runtime/<accel>/` (incomplete dirs are skipped).
 pub fn list_payloads_under(root: impl AsRef<Path>) -> Vec<LlmPayload> {
     LLM_ACCELS
@@ -358,6 +377,23 @@ mod tests {
         assert_eq!(payload.accel, LlmAccel::Cuda);
         assert_eq!(payload.dir, dir);
         assert!(payload.binary.ends_with("aifs-worker-llm"));
+    }
+
+    #[test]
+    fn missing_required_libs_use_folder_name_not_driver_dlls() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let dir = llm_payload_dir(root.path(), LlmAccel::Cuda);
+        write_worker(&dir);
+        write_lib(&dir, "llama.dll");
+        write_lib(&dir, "ggml.dll");
+        write_lib(&dir, "nvcuda.dll");
+        assert_eq!(accel_from_payload_dir(&dir), LlmAccel::Cuda);
+        assert_eq!(
+            missing_required_lib_prefixes(&dir, LlmAccel::Cuda),
+            vec!["ggml-cuda"]
+        );
+        write_lib(&dir, "ggml-cuda.dll");
+        assert!(missing_required_lib_prefixes(&dir, LlmAccel::Cuda).is_empty());
     }
 
     #[test]
