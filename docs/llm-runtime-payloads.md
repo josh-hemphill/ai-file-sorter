@@ -70,5 +70,10 @@ Spawn prepends **only** the payload directory to `PATH` /
 `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `get_models` lists files without
 spawning hello.
 
+`pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator
+and stage that payload. `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two
+payloads, two cargo builds). A CPU rebuild does not delete an existing
+`llm-runtime/cuda` snapshot.
+
 See `crates/aifs-protocol/src/llm_payload.rs` and
 `crates/aifs-worker-client/src/payload.rs`.

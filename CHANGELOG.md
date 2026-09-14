@@ -86,6 +86,9 @@
   `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. Spawn sets the
   library search path to that payload directory only. `get_models` still
   does not hello the worker.
+- `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into
+  `llm-runtime/<accel>/` without deleting sibling accelerators. Combining
+  `cuda` and `vulkan` in one `AIFS_LLM_FEATURES` cargo build is refused.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

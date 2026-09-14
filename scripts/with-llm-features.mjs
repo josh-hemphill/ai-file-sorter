@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { parseLlmFeatures } from './llm-features.mjs';
+import { parseLlmFeatures, assertSingleLlmAccel } from './llm-features.mjs';
 
 const [features, command, ...args] = process.argv.slice(2);
 if (!features || !command) {
   console.error(
-    'usage: with-llm-features.mjs <cuda|vulkan|metal[,...]> <command> [args...]',
+    'usage: with-llm-features.mjs <cuda|vulkan|metal> <command> [args...]',
   );
   process.exit(2);
 }
@@ -13,8 +13,14 @@ if (!features || !command) {
 const parsed = parseLlmFeatures(features);
 if (parsed.length === 0) {
   console.error(
-    `aifs: unknown LLM features "${features}" (use cuda, vulkan, and/or metal)`,
+    `aifs: unknown LLM features "${features}" (use cuda, vulkan, or metal)`,
   );
+  process.exit(2);
+}
+try {
+  assertSingleLlmAccel(parsed);
+} catch (error) {
+  console.error(error.message);
   process.exit(2);
 }
 

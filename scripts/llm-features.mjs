@@ -21,6 +21,16 @@ export function parseLlmFeatures(raw) {
   return extras;
 }
 
+/** One cargo `aifs-worker-llm` build may include at most one of cuda/vulkan/metal. */
+export function assertSingleLlmAccel(features) {
+  const accels = features.filter((feature) => LLM_ACCEL_FEATURES.includes(feature));
+  if (accels.length > 1) {
+    throw new Error(
+      `aifs: refuse compiling ${accels.join('+')} into one aifs-worker-llm; stage each payload separately (pnpm llama:cuda, then pnpm llama)`,
+    );
+  }
+}
+
 /** True when argv is `cargo engine-llm` or `cargo build -p aifs-worker-llm`. */
 export function isCargoEngineLlm(argv) {
   const tokens = argv.filter((arg) => arg !== '--packaged');
@@ -55,6 +65,8 @@ export function argvHasFeature(argv, feature) {
  */
 export function appendEngineLlmFeatures(argv, env = process.env) {
   const extras = parseLlmFeatures(env.AIFS_LLM_FEATURES);
+  const fromArgv = LLM_ACCEL_FEATURES.filter((feature) => argvHasFeature(argv, feature));
+  assertSingleLlmAccel([...new Set([...extras, ...fromArgv])]);
   if (extras.length === 0 || !isCargoEngineLlm(argv)) return argv;
   const missing = extras.filter((feature) => !argvHasFeature(argv, feature));
   if (missing.length === 0) return argv;

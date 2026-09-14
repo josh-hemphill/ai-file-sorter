@@ -58,12 +58,19 @@ test('appendEngineLlmFeatures adds missing CUDA/Vulkan from AIFS_LLM_FEATURES', 
     ),
     ['cargo', 'engine-llm', '--features', 'llama,cuda'],
   );
-  assert.deepEqual(
-    appendEngineLlmFeatures(
-      ['cargo', 'engine-llm', '--features', 'llama,cuda'],
-      { AIFS_LLM_FEATURES: 'cuda,vulkan' },
-    ),
-    ['cargo', 'engine-llm', '--features', 'llama,cuda', '--features', 'llama,vulkan'],
+  assert.throws(
+    () =>
+      appendEngineLlmFeatures(['cargo', 'engine-llm'], {
+        AIFS_LLM_FEATURES: 'cuda,vulkan',
+      }),
+    /refuse compiling cuda\+vulkan/,
+  );
+  assert.throws(
+    () =>
+      appendEngineLlmFeatures(['cargo', 'engine-llm', '--features', 'llama,vulkan'], {
+        AIFS_LLM_FEATURES: 'cuda',
+      }),
+    /refuse compiling/,
   );
 });
 
@@ -128,6 +135,17 @@ test('with-cmake-generator.mjs --packaged still forwards AIFS_LLM_FEATURES', () 
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('with-cmake-generator.mjs refuses cuda+vulkan as one cargo build', () => {
+  const env = { ...process.env, AIFS_LLM_FEATURES: 'cuda,vulkan' };
+  const result = spawnSync(
+    process.execPath,
+    [join(here, 'with-cmake-generator.mjs'), 'cargo', 'engine-llm'],
+    { encoding: 'utf8', env },
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /refuse compiling cuda\+vulkan/);
+});
+
 test('with-cmake-generator.mjs leaves CPU llama when AIFS_LLM_FEATURES is unset', () => {
   const env = { ...process.env };
   delete env.AIFS_LLM_FEATURES;
@@ -163,21 +181,16 @@ test('with-llm-features.mjs sets AIFS_LLM_FEATURES for the child', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('with-llm-features.mjs accepts comma-separated aliases', () => {
+test('with-llm-features.mjs refuses cuda+vulkan as one cargo build', () => {
   const env = { ...process.env };
   delete env.AIFS_LLM_FEATURES;
   const result = spawnSync(
     process.execPath,
-    [
-      join(here, 'with-llm-features.mjs'),
-      'cuda,vulcan',
-      process.execPath,
-      '-e',
-      'process.exit(process.env.AIFS_LLM_FEATURES === "cuda,vulkan" ? 0 : 1)',
-    ],
+    [join(here, 'with-llm-features.mjs'), 'cuda,vulcan', process.execPath, '-e', '0'],
     { encoding: 'utf8', env },
   );
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /refuse compiling cuda\+vulkan/);
 });
 
 test('with-llm-features.mjs rejects empty or unknown features', () => {
