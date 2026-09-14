@@ -22,8 +22,8 @@ use thiserror::Error;
 mod payload;
 
 pub use payload::{
-    LLM_BACKEND_ENV, discover_llm_payload, list_llm_payloads, list_llm_payloads_from,
-    runtime_search_roots, spawn_llm_preference,
+    LLM_BACKEND_ENV, LlmListRootsGuard, discover_llm_payload, list_llm_payloads,
+    list_llm_payloads_from, override_llm_list_roots, runtime_search_roots, spawn_llm_preference,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);

@@ -89,6 +89,8 @@
 - `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into
   `llm-runtime/<accel>/` without deleting sibling accelerators. Combining
   `cuda` and `vulkan` in one `AIFS_LLM_FEATURES` cargo build is refused.
+- `get_models` lists complete `llm-runtime/<accel>/` payloads (`llm_payloads`)
+  without spawning hello. Host-ready is a driver/OS probe, not `CUDA_PATH`.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

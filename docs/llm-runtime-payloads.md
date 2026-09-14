@@ -67,8 +67,8 @@ The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 still overrides discovery; library search is that file's directory.
 
 Spawn prepends **only** the payload directory to `PATH` /
-`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `get_models` lists files without
-spawning hello.
+`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `get_models` lists complete payloads
+as `llm_payloads` without spawning hello.
 
 `pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator
 and stage that payload. `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two

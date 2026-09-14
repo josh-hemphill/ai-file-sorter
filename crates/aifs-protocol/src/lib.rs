@@ -38,9 +38,9 @@ pub use hosted::{
     hosted_model_label, is_hosted_backend, sanitize_hosted_text,
 };
 pub use llm_payload::{
-    LLM_ACCEL_AUTO_ORDER, LLM_ACCELS, LLM_RUNTIME_DIR, LlmAccel, LlmPayload, host_accel_available,
-    infer_accel_from_libs, inspect_payload, list_payloads_under, llm_payload_dir, payload_complete,
-    runtime_lib_matches_prefix, select_llm_payload,
+    LLM_ACCEL_AUTO_ORDER, LLM_ACCELS, LLM_RUNTIME_DIR, LlmAccel, LlmPayload, LlmPayloadStatus,
+    host_accel_available, infer_accel_from_libs, inspect_payload, list_payloads_under,
+    llm_payload_dir, payload_complete, runtime_lib_matches_prefix, select_llm_payload,
 };
 pub use models::{
     BUILTIN_CATALOG, GPU_PREFERENCES, LlmWorkerStatus, MODEL_SLOT_IDS, ModelArtifactStatus,
