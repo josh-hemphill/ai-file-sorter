@@ -20,7 +20,8 @@ import {
   undoJournal,
   getModels,
 } from "../engine";
-import { destinationTree } from "../tree";
+import SourceTree from "../components/SourceTree.vue";
+import { sessionRootProjectBanner, sourceTree } from "../tree";
 import type {
   ApplyJournal,
   CenterView,
@@ -56,7 +57,6 @@ import {
   retainProgressMessage,
   cancelActionLabel,
   inFlightStatusText,
-  roleKindLabel,
   skippedReasonLabel,
   journalBelongsToPlan,
   planAlreadyApplied,
@@ -110,7 +110,8 @@ const stageProgress = ref<Record<string, { current: number; total: number | null
 );
 const modelSummary = ref("All analysis slots off");
 
-const tree = computed(() => destinationTree(revision.value));
+const tree = computed(() => sourceTree(snapshot.value));
+const rootProjectBanner = computed(() => sessionRootProjectBanner(snapshot.value));
 const files = computed(
   () => snapshot.value?.entries.filter((entry) => entry.kind === "file") ?? [],
 );
@@ -167,6 +168,7 @@ const confirmSummary = computed(() =>
   applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
 );
 const tabCounts = computed(() => ({
+  structure: tree.value.fileCount,
   items: files.value.length,
   relationships: snapshot.value?.bundles.length ?? 0,
   activity: logLines.value.length + issues.value.length + diffs.value.length,
@@ -485,16 +487,6 @@ async function sendChat() {
   }
 }
 
-function renderTree(node: ReturnType<typeof destinationTree>, depth = 0): string {
-  if (depth === 0) {
-    return node.children.map((child) => renderTree(child, 1)).join("");
-  }
-  const pad = "  ".repeat(depth - 1);
-  const files = node.fileCount ? ` · ${node.fileCount}` : "";
-  const kids = node.children.map((child) => renderTree(child, depth + 1)).join("");
-  return `${pad}${node.name}${files}\n${kids}`;
-}
-
 let stopProgress: (() => void) | undefined;
 let stopLog: (() => void) | undefined;
 onMounted(async () => {
@@ -618,15 +610,20 @@ function familyOf(entry: ObservedEntry): string {
         role="tabpanel"
         aria-labelledby="tab-structure"
       >
-        <pre v-if="revision">{{ renderTree(tree) || "(empty proposal)" }}</pre>
-        <p v-else class="muted">Scan a source to see the proposed folder tree.</p>
-        <section v-if="snapshot?.directory_roles?.length" class="roles">
-          <h2>Folder roles</h2>
-          <article v-for="role in snapshot.directory_roles" :key="role.root" class="card">
-            <strong>{{ role.root }}</strong>
-            <span class="muted">{{ roleKindLabel(role.kind) }} · {{ role.reason }}</span>
-          </article>
-        </section>
+        <p v-if="rootProjectBanner" class="callout" role="status">{{ rootProjectBanner }}</p>
+        <ul
+          v-if="snapshot"
+          class="source-tree"
+          role="tree"
+          aria-label="Source folders"
+        >
+          <SourceTree
+            :node="tree"
+            :selected-asset="selectedAsset"
+            @select="selectedAsset = $event"
+          />
+        </ul>
+        <p v-else class="muted">Scan a source to see the folder tree.</p>
         <section v-if="snapshot?.skipped.length" class="skipped">
           <h2>Skipped</h2>
           <p class="muted">

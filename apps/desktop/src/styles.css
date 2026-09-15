@@ -301,10 +301,73 @@ button:disabled {
   padding: 12px 16px;
 }
 
-.tree pre {
+.source-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.source-tree .source-tree {
+  padding-left: 18px;
+}
+
+.source-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  text-align: left;
+  padding: 4px 6px;
+}
+
+.source-row.selected {
+  background: var(--bg-3);
+}
+
+.source-twist {
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.source-name {
   font-family: var(--mono);
   font-size: 13px;
-  white-space: pre;
+}
+
+.source-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chip {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.4;
+}
+
+.chip-protected {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+}
+
+.chip-preserve_layout {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
 }
 
 table {
