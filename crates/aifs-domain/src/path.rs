@@ -176,13 +176,17 @@ impl RelativePath {
     }
 
     /// Resolves the path under a concrete root directory.
+    ///
+    /// Segments are appended as literal components. `PathBuf::push` is not used
+    /// because a segment such as `C:evil` is a Windows drive prefix and would
+    /// replace `root` instead of nesting under it.
     pub fn resolve(&self, root: &Path) -> PathBuf {
         if self.is_session_root() {
             return root.to_path_buf();
         }
         let mut out = root.to_path_buf();
         for segment in self.segments() {
-            out.push(segment);
+            push_literal_segment(&mut out, segment);
         }
         out
     }
@@ -206,7 +210,54 @@ pub fn escape_path_segment(value: &str) -> String {
         out.push(escape_segment_char(ch));
     }
     let trimmed = out.trim().trim_matches('.').trim();
-    trimmed.to_owned()
+    let candidate = if trimmed.is_empty() {
+        "_".to_owned()
+    } else {
+        trimmed.to_owned()
+    };
+    ensure_valid_destination_segment(candidate)
+}
+
+/// Escapes every segment of a relative path so it is safe as a new destination.
+pub fn escape_relative_path(path: &RelativePath) -> Result<RelativePath, RelativePathError> {
+    if path.is_session_root() {
+        return Ok(path.clone());
+    }
+    let joined = path
+        .segments()
+        .map(escape_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    RelativePath::parse(&joined)
+}
+
+fn ensure_valid_destination_segment(mut segment: String) -> String {
+    for _ in 0..4 {
+        if validate_segment(&segment).is_ok() {
+            return segment;
+        }
+        segment = format!("_{segment}");
+    }
+    "_".to_owned()
+}
+
+/// Appends `segment` as one filesystem component without interpreting prefixes.
+fn push_literal_segment(out: &mut PathBuf, segment: &str) {
+    if segment.is_empty() {
+        return;
+    }
+    let mut raw = std::mem::take(out).into_os_string();
+    if !raw.is_empty() {
+        let lossy = raw.to_string_lossy();
+        let ends_with_sep = lossy.ends_with('/')
+            || lossy.ends_with('\\')
+            || lossy.ends_with(std::path::MAIN_SEPARATOR);
+        if !ends_with_sep {
+            raw.push(std::path::MAIN_SEPARATOR.to_string());
+        }
+    }
+    raw.push(segment);
+    *out = PathBuf::from(raw);
 }
 
 fn escape_segment_char(ch: char) -> char {
@@ -409,8 +460,25 @@ mod tests {
             escape_path_segment("Live: Tokyo | 2024"),
             "Live\u{FF1A} Tokyo \u{FF5C} 2024"
         );
-        assert_eq!(escape_path_segment("  ..  "), "");
+        assert_eq!(escape_path_segment("  ..  "), "_");
         assert_eq!(escape_path_segment("ok"), "ok");
+        assert_eq!(escape_path_segment("CON"), "_CON");
+        assert_eq!(escape_path_segment("C:evil"), "C\u{FF1A}evil");
+    }
+
+    #[test]
+    fn resolve_keeps_drive_looking_segments_under_the_root() {
+        let path = RelativePath::parse("Music/C:evil").unwrap_or_else(|e| panic!("{e}"));
+        let resolved = path.resolve(Path::new("/tmp/inbox"));
+        assert_eq!(resolved, Path::new("/tmp/inbox/Music/C:evil"));
+        assert!(resolved.starts_with("/tmp/inbox"));
+    }
+
+    #[test]
+    fn escape_relative_path_maps_destination_segments() {
+        let path = RelativePath::parse("Music/C:evil.mp3").unwrap_or_else(|e| panic!("{e}"));
+        let escaped = escape_relative_path(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(escaped.as_str(), "Music/C\u{FF1A}evil.mp3");
     }
 
     #[test]

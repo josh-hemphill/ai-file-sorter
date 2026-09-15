@@ -2,7 +2,7 @@
 //! assistants iterate on before anything touches disk.
 
 use crate::ids::{AssetId, RevisionId, SessionId};
-use crate::path::RelativePath;
+use crate::path::{RelativePath, RelativePathError, escape_path_segment, escape_relative_path};
 use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -231,7 +231,7 @@ fn apply_patch(
             rationale,
         } => {
             let placement = placement_mut(revision, *asset)?;
-            placement.destination = destination.clone();
+            placement.destination = escape_relative_path(destination)?;
             placement.origin = origin.clone();
             placement.review = ReviewState::Proposed;
             if rationale.is_some() {
@@ -243,9 +243,11 @@ fn apply_patch(
             folder,
             rationale,
         } => {
+            let folder = escape_relative_path(folder)?;
             for asset in assets {
                 let placement = placement_mut(revision, *asset)?;
-                placement.destination = folder.join(placement.destination.file_name())?;
+                let file_name = escape_path_segment(placement.destination.file_name());
+                placement.destination = folder.join(&file_name)?;
                 placement.origin = origin.clone();
                 placement.review = ReviewState::Proposed;
                 if rationale.is_some() {
@@ -255,7 +257,21 @@ fn apply_patch(
         }
         RevisionPatch::Rename { asset, file_name } => {
             let placement = placement_mut(revision, *asset)?;
-            placement.destination = placement.destination.with_file_name(file_name)?;
+            if file_name.is_empty() {
+                return Err(PatchError::Path(RelativePathError::Empty));
+            }
+            if file_name == "."
+                || file_name == ".."
+                || file_name.contains('/')
+                || file_name.contains('\\')
+            {
+                return Err(PatchError::Path(RelativePathError::NotAFileName(
+                    file_name.clone(),
+                )));
+            }
+            placement.destination = placement
+                .destination
+                .with_file_name(&escape_path_segment(file_name))?;
             placement.origin = origin.clone();
             placement.review = ReviewState::Proposed;
         }
@@ -393,6 +409,42 @@ mod tests {
                 }],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn destination_patches_escape_windows_hostile_segments() {
+        let asset = AssetId::new();
+        let base = revision_with(asset, "inbox/track.mp3");
+        let moved = base
+            .with_patches(
+                RevisionAuthor::User,
+                "move",
+                &[RevisionPatch::SetDestination {
+                    asset,
+                    destination: RelativePath::parse("Music/C:evil.mp3")
+                        .unwrap_or_else(|e| panic!("{e}")),
+                    rationale: None,
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            moved.placement(asset).map(|p| p.destination.as_str()),
+            Some("Music/C\u{FF1A}evil.mp3")
+        );
+        let renamed = base
+            .with_patches(
+                RevisionAuthor::User,
+                "rename",
+                &[RevisionPatch::Rename {
+                    asset,
+                    file_name: "Love: Live.flac".into(),
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            renamed.placement(asset).map(|p| p.destination.as_str()),
+            Some("inbox/Love\u{FF1A} Live.flac")
         );
     }
 

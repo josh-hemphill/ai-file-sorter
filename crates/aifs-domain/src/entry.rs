@@ -187,6 +187,11 @@ impl FileIdentity {
         if self.size != other.size {
             return false;
         }
+        if let (Some(a), Some(b)) = (self.device, other.device)
+            && a != b
+        {
+            return false;
+        }
         if let (Some(a), Some(b)) = (&self.content_fingerprint, &other.content_fingerprint) {
             return a == b;
         }
@@ -303,6 +308,16 @@ mod tests {
         assert!(!base.matches(&moved_mtime));
         assert!(!base.matches(&bigger));
         assert!(!hashed_a.matches(&hashed_b));
+        let other_volume = FileIdentity {
+            device: Some(2),
+            ..base.clone()
+        };
+        assert!(!base.matches(&other_volume));
+        let missing_device = FileIdentity {
+            device: None,
+            ..base.clone()
+        };
+        assert!(base.matches(&missing_device));
     }
 
     #[test]
