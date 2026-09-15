@@ -461,7 +461,7 @@ mod tests {
         assert!(
             payload
                 .binary
-                .starts_with(&llm_payload_dir(&root, LlmAccel::Cuda)),
+                .starts_with(llm_payload_dir(&root, LlmAccel::Cuda)),
             "must spawn staged cuda, not cargo sidecar {}; got {:?}",
             cargo.display(),
             payload.binary
