@@ -11,6 +11,9 @@ import {
   planCounts,
   previewRows,
   rememberRoot,
+  rememberScanSession,
+  pruneScanSessions,
+  engineActionsLocked,
   retainProgressMessage,
   cancelActionLabel,
   inFlightStatusText,
@@ -30,6 +33,27 @@ test("rememberRoot prepends and caps at eight", () => {
   assert.equal(many.length, 8);
   assert.equal(many[0], "/9");
   assert.ok(!many.includes("/8"));
+});
+
+test("rememberScanSession stores the id and drops roots that fell off the list", () => {
+  const kept = rememberScanSession({}, "/a", "sid-a", ["/a"]);
+  assert.deepEqual(kept, { "/a": "sid-a" });
+  const updated = rememberScanSession(
+    { "/a": "old", "/b": "sid-b" },
+    "/a",
+    "sid-a",
+    ["/a", "/c"],
+  );
+  assert.deepEqual(updated, { "/a": "sid-a" });
+  assert.deepEqual(pruneScanSessions({ "/a": "sid-a", "/z": "gone" }, ["/a"]), {
+    "/a": "sid-a",
+  });
+});
+
+test("engineActionsLocked covers busy and apply confirm", () => {
+  assert.equal(engineActionsLocked(false, false), false);
+  assert.equal(engineActionsLocked(true, false), true);
+  assert.equal(engineActionsLocked(false, true), true);
 });
 
 test("retainProgressMessage keeps the last path across working heartbeats", () => {

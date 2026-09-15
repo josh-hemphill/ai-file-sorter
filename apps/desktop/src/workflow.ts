@@ -14,6 +14,7 @@ import type {
 } from "./types";
 
 export const RECENT_ROOTS_KEY = "aifs.recentRoots";
+export const SCAN_SESSIONS_KEY = "aifs.scanSessions";
 export const RECENT_ROOTS_LIMIT = 8;
 
 export const CENTER_TABS: { id: CenterView; label: string }[] = [
@@ -67,6 +68,72 @@ export function persistRecentRoots(paths: string[]): void {
   } catch {
     // Private mode or missing WebView storage should not break scanning.
   }
+}
+
+/** Loads persisted scan session ids keyed by root path. */
+export function loadScanSessions(): Record<string, string> {
+  try {
+    const raw = globalThis.localStorage?.getItem(SCAN_SESSIONS_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const sessions: Record<string, string> = {};
+    for (const [path, session] of Object.entries(parsed as Record<string, unknown>)) {
+      if (path.length > 0 && typeof session === "string" && session.length > 0) {
+        sessions[path] = session;
+      }
+    }
+    return sessions;
+  } catch {
+    return {};
+  }
+}
+
+/** Writes scan session ids to localStorage. */
+export function persistScanSessions(sessions: Record<string, string>): void {
+  try {
+    globalThis.localStorage?.setItem(SCAN_SESSIONS_KEY, JSON.stringify(sessions));
+  } catch {
+    // Private mode or missing WebView storage should not break scanning.
+  }
+}
+
+/** Drops session ids for roots that are no longer in the recent list. */
+export function pruneScanSessions(
+  sessions: Record<string, string>,
+  roots: string[],
+): Record<string, string> {
+  const allowed = new Set(roots);
+  const next: Record<string, string> = {};
+  for (const [root, id] of Object.entries(sessions)) {
+    if (allowed.has(root)) {
+      next[root] = id;
+    }
+  }
+  return next;
+}
+
+/** Keeps a session id for a root and drops ids for roots that fell off the recent list. */
+export function rememberScanSession(
+  sessions: Record<string, string>,
+  path: string,
+  session: string,
+  roots: string[],
+): Record<string, string> {
+  const next = pruneScanSessions(sessions, roots);
+  if (roots.includes(path) && session.length > 0) {
+    next[path] = session;
+  }
+  return next;
+}
+
+/** True while an engine command is in flight or Apply confirm is open. */
+export function engineActionsLocked(busy: boolean, confirmApply: boolean): boolean {
+  return busy || confirmApply;
 }
 
 const PLACEHOLDER_PROGRESS_MESSAGE = "working";
