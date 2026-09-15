@@ -522,14 +522,23 @@ impl Engine {
         );
 
         if let Some(prior) = resume {
-            checkpoint::carry_evidence(&mut snapshot, &prior);
-            let extracted = checkpoint::extract_done_count(&snapshot);
-            emit_log(
-                emit,
-                id,
-                LogLevel::Info,
-                format!("Resuming session; {extracted} files already have metadata."),
-            );
+            if options.reuse_evidence {
+                checkpoint::carry_evidence(&mut snapshot, &prior);
+                let extracted = checkpoint::extract_done_count(&snapshot);
+                emit_log(
+                    emit,
+                    id,
+                    LogLevel::Info,
+                    format!("Resuming session; {extracted} files already have metadata."),
+                );
+            } else {
+                emit_log(
+                    emit,
+                    id,
+                    LogLevel::Info,
+                    "Fresh analysis; previous evidence was not carried.".to_owned(),
+                );
+            }
         }
 
         if self.should_stop(id) {
@@ -1123,7 +1132,7 @@ fn chat_via_worker(
             }
             other => format!("LLM worker failed to start: {other}"),
         })?;
-    let context = chat::chat_context(snapshot, revision);
+    let context = chat::chat_context(snapshot, revision, utterance);
     let storage_dir = resolved_models_dir(&inventory.storage_dir)
         .display()
         .to_string();
@@ -1497,6 +1506,7 @@ fn should_emit_progress(last: &mut Instant, current: u64, total: Option<u64>) ->
 }
 
 fn skip_log_line(path: &str, reason: &SkipReason) -> String {
+    let path = aifs_domain::decode_oem_path(path);
     match reason {
         SkipReason::ProtectedProject { rule_id } => {
             format!("{path} · skipped · protected project ({rule_id})")
@@ -2223,6 +2233,92 @@ mod tests {
                 bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) != Some("Night Drive")
             }),
             "must not carry evidence from a different root, evidence={:?}",
+            snapshot.evidence
+        );
+    }
+
+    #[test]
+    fn fresh_scan_does_not_carry_prior_evidence() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        aifs_extractors::write_id3v23_fixture(
+            &dir.path().join("show.mp3"),
+            "Night Drive",
+            "Ada",
+            "After Hours",
+            "2019",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let session = SessionId::new();
+        let mut engine = Engine::new();
+        engine.handle(Request {
+            id: "1".into(),
+            command: Command::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+        });
+        match terminal(engine.handle(Request {
+            id: "2".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        })) {
+            Event::ScanCompleted { snapshot } => {
+                assert!(snapshot.evidence.iter().any(|bag| {
+                    bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive")
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let events = engine.handle(Request {
+            id: "3".into(),
+            command: Command::Scan {
+                root: dir.path().to_path_buf(),
+                options: ScanOptions {
+                    extract_metadata: true,
+                    fingerprint_prefix_bytes: 32,
+                    reuse_evidence: false,
+                    ..ScanOptions::default()
+                },
+                session: Some(session),
+            },
+        });
+        let logs: Vec<_> = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                Event::Log { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("Fresh analysis; previous evidence was not carried.")),
+            "expected fresh-analysis log, got {logs:?}"
+        );
+        assert!(
+            logs.iter().all(|line| !line.contains("Resuming session")),
+            "fresh scan must not resume, logs={logs:?}"
+        );
+        let snapshot = match terminal(events) {
+            Event::ScanCompleted { snapshot } => snapshot,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(
+            snapshot
+                .evidence
+                .iter()
+                .filter(
+                    |bag| bag.fact(aifs_domain::evidence::keys::MEDIA_TITLE) == Some("Night Drive")
+                )
+                .count(),
+            1,
+            "fresh extract should replace prior bags, evidence={:?}",
             snapshot.evidence
         );
     }

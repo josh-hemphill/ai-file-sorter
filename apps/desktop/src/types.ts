@@ -140,6 +140,7 @@ export interface ScanOptions {
   protect_projects: boolean;
   extract_metadata: boolean;
   fingerprint_prefix_bytes: number;
+  reuse_evidence: boolean;
 }
 
 export interface CategoryWhitelist {

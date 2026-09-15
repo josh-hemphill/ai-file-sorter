@@ -67,7 +67,9 @@ Rules:
    evidence). Persisted; never mutated.
 2. `propose` → root `ProposalRevision` from heuristics.
 3. `patch` (user) or `chat` (assistant tools) → child revision. The chain is the
-   review history. Chat never mutates disk; it only patches the proposal.
+   review history. Chat never mutates disk; it only patches the proposal. The
+   worker sees a paged unit-and-loose-file prompt (`docs/assistant-context.md`),
+   not the full snapshot.
 4. `plan` → `OperationPlan` or a list of `PlanIssue`s. Hard-bundle splits, protected
    members, collisions, and path escapes are errors.
 5. `apply` → `ApplyJournal`, written before each operation. Dry run produces a journal

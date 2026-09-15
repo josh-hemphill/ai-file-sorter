@@ -190,6 +190,12 @@ struct ScanArgs {
     preset: String,
     #[serde(default)]
     session: Option<SessionId>,
+    #[serde(default = "default_reuse_evidence", alias = "reuseEvidence")]
+    reuse_evidence: bool,
+}
+
+fn default_reuse_evidence() -> bool {
+    true
 }
 
 fn policy_for_preset(preset: &str) -> Option<(ScanOptions, ProposalPolicy)> {
@@ -234,7 +240,8 @@ async fn scan_root(
     let state = state.inner().clone();
     run_blocking(move || {
         with_ready_client(&state, |client| {
-            let (options, _) = resolve_policy(client, &args.preset)?;
+            let (mut options, _) = resolve_policy(client, &args.preset)?;
+            options.reuse_evidence = args.reuse_evidence;
             let envelopes = client
                 .request_with_events(
                     aifs_protocol::Command::Scan {

@@ -15,7 +15,8 @@ the engine, CLI, and Tauri 2 + Vue 3 workspace.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/domain-model.md`](docs/domain-model.md),
-[`docs/protocol.md`](docs/protocol.md), the
+[`docs/protocol.md`](docs/protocol.md),
+[`docs/assistant-context.md`](docs/assistant-context.md), the
 [`golden-path execution plan`](docs/golden-path-execution-plan.md), and the
 [`upstream model-runtime plan`](docs/upstream-model-plan.md).
 
@@ -30,6 +31,8 @@ git clone https://github.com/josh-hemphill/ai-file-sorter.git
 cd ai-file-sorter
 pnpm build
 pnpm cli -- scan fixtures/inbox-mixed
+pnpm cli -- scan /path/to/folder --session <id>   # resume extract/analyze
+pnpm cli -- scan /path/to/folder --session <id> --fresh  # discard carried evidence
 pnpm cli -- organize fixtures/inbox-mixed          # dry run
 pnpm cli -- organize /path/to/folder --apply
 pnpm cli -- chat fixtures/inbox-mixed "Move podcasts away from music"

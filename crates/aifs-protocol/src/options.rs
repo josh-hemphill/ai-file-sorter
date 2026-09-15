@@ -19,6 +19,10 @@ pub struct ScanOptions {
     pub extract_metadata: bool,
     /// Bytes of each file to hash for the content fingerprint (`0` disables hashing).
     pub fingerprint_prefix_bytes: u64,
+    /// Carry extract/analyze evidence from a previous scan of this session.
+    ///
+    /// Set to `false` to re-run metadata and models from scratch.
+    pub reuse_evidence: bool,
 }
 
 impl Default for ScanOptions {
@@ -30,6 +34,7 @@ impl Default for ScanOptions {
             protect_projects: true,
             extract_metadata: true,
             fingerprint_prefix_bytes: 64 * 1024,
+            reuse_evidence: true,
         }
     }
 }
@@ -143,6 +148,7 @@ mod tests {
             serde_json::from_str(r#"{"recursive":false}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(!options.recursive);
         assert!(options.protect_projects);
+        assert!(options.reuse_evidence);
         let policy: ProposalPolicy =
             serde_json::from_str(r#"{"style":"refined"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(policy.style, FolderStyle::Refined);

@@ -3,8 +3,8 @@
 use crate::cancel::WorkStatus;
 use crate::checkpoint::{CHECKPOINT_EVERY, has_category_evidence, has_description_evidence};
 use aifs_domain::{
-    EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot, evidence::keys,
-    looks_like_screenshot,
+    BundleConstraint, EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot,
+    evidence::keys, looks_like_screenshot,
 };
 use aifs_protocol::{
     AppSettings, FolderStyle, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text,
@@ -12,6 +12,37 @@ use aifs_protocol::{
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
 const ANALYSIS_STOPPED_LOG: &str = "analysis stopped";
+const DESCRIBE_LOG_CHARS: usize = 96;
+
+/// Scan line when a layout unit is not described or categorized yet.
+pub(crate) fn deferred_unit_log(root: &str, files: usize) -> String {
+    format!(
+        "{} · deferred · {files} files stay in this folder until the assistant breaks it up",
+        aifs_domain::decode_oem_path(root)
+    )
+}
+
+/// Scan line for a finished image caption.
+pub(crate) fn described_log(path: &str, evidence: &Evidence) -> String {
+    match evidence.fact(keys::DESCRIPTION) {
+        Some(text) => format!(
+            "described {} · {}",
+            aifs_domain::decode_oem_path(path),
+            truncate_log(text, DESCRIBE_LOG_CHARS)
+        ),
+        None => format!("described {}", aifs_domain::decode_oem_path(path)),
+    }
+}
+
+fn truncate_log(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_owned();
+    }
+    let mut truncated: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
 
 /// Log line or categorize/describe progress from supervised analysis.
 pub enum AnalyzeNotice<'a> {
@@ -78,6 +109,7 @@ pub fn analyze_into_supervised(
     let mut loaded: Option<String> = None;
     let allowed_categories = settings.policy.whitelist.main.clone();
     let style = settings.policy.style;
+    log_deferred_units(snapshot, &mut on_notice);
 
     if run_describe && let Some(slot) = vision {
         match ensure_loaded(
@@ -95,6 +127,7 @@ pub fn analyze_into_supervised(
                     .filter(|entry| {
                         entry.kind == EntryKind::File
                             && matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
+                            && !snapshot.defers_content_analysis(entry)
                     })
                     .cloned()
                     .collect();
@@ -126,9 +159,9 @@ pub fn analyze_into_supervised(
                         &mut should_continue,
                     ) {
                         Ok(Some(evidence)) => {
-                            on_notice(AnalyzeNotice::Log(format!(
-                                "described {}",
-                                entry.path.as_str()
+                            on_notice(AnalyzeNotice::Log(described_log(
+                                entry.path.as_str(),
+                                &evidence,
                             )));
                             let mut combined = prior;
                             combined.push(evidence.clone());
@@ -176,7 +209,10 @@ pub fn analyze_into_supervised(
         let targets: Vec<ObservedEntry> = snapshot
             .entries
             .iter()
-            .filter(|entry| should_include_in_categorize(entry, run_document))
+            .filter(|entry| {
+                should_include_in_categorize(entry, run_document)
+                    && !snapshot.defers_content_analysis(entry)
+            })
             .cloned()
             .collect();
         match categorize_targets(CategorizePass {
@@ -204,7 +240,9 @@ pub fn analyze_into_supervised(
         let targets: Vec<ObservedEntry> = snapshot
             .entries
             .iter()
-            .filter(|entry| should_include_in_document(entry))
+            .filter(|entry| {
+                should_include_in_document(entry) && !snapshot.defers_content_analysis(entry)
+            })
             .cloned()
             .collect();
         match categorize_targets(CategorizePass {
@@ -454,6 +492,23 @@ fn log_category(on_log: &mut impl FnMut(String), entry: &ObservedEntry, evidence
     on_log(format!("categorized {} → {label}", entry.path.as_str()));
 }
 
+fn log_deferred_units(snapshot: &WorkspaceSnapshot, on_notice: &mut impl FnMut(AnalyzeNotice<'_>)) {
+    for bundle in &snapshot.bundles {
+        let BundleConstraint::PreserveLayout { root } = &bundle.constraint else {
+            continue;
+        };
+        let files = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::File && entry.path.starts_with(root))
+            .count();
+        if files == 0 {
+            continue;
+        }
+        on_notice(AnalyzeNotice::Log(deferred_unit_log(root.as_str(), files)));
+    }
+}
+
 fn maybe_log_screenshot(
     on_notice: &mut impl FnMut(AnalyzeNotice<'_>),
     entry: &ObservedEntry,
@@ -503,6 +558,44 @@ mod tests {
             lock: aifs_domain::LockState::Readable,
         };
         assert!(looks_like_screenshot(&entry, &[]));
+    }
+
+    #[test]
+    fn described_log_includes_a_truncated_caption() {
+        let evidence = Evidence::new(
+            aifs_domain::AssetId::new(),
+            aifs_domain::EvidenceSource::LocalModel {
+                model: "stub".into(),
+            },
+            aifs_domain::Confidence::new(0.5),
+        )
+        .with_fact(
+            keys::DESCRIPTION,
+            "a red car parked on a cobblestone street",
+        );
+        assert_eq!(
+            described_log("trip/car.jpg", &evidence),
+            "described trip/car.jpg · a red car parked on a cobblestone street"
+        );
+        let long = Evidence::new(
+            aifs_domain::AssetId::new(),
+            aifs_domain::EvidenceSource::LocalModel {
+                model: "stub".into(),
+            },
+            aifs_domain::Confidence::new(0.5),
+        )
+        .with_fact(keys::DESCRIPTION, "x".repeat(120));
+        let line = described_log("shot.jpg", &long);
+        assert!(line.starts_with("described shot.jpg · "));
+        assert!(line.ends_with('…'));
+        assert_eq!(
+            line.chars().count(),
+            "described shot.jpg · ".chars().count() + DESCRIBE_LOG_CHARS
+        );
+        assert_eq!(
+            deferred_unit_log("Pictures", 133),
+            "Pictures · deferred · 133 files stay in this folder until the assistant breaks it up"
+        );
     }
 
     fn file(path: &str, family: FileFamily) -> ObservedEntry {

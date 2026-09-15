@@ -2,6 +2,17 @@
 
 ## Unreleased (Rust rewrite fork)
 
+- Scan keeps OEM-mangled names (`Padm\u{82}` / `H\u{94}chsten`) instead of skipping
+  them; destination escaping decodes those C1 controls to Latin letters.
+- Image describe logs a truncated caption (`described shot.jpg · a red car…`).
+- Library/archive “move as a unit” detection keeps only the outermost folder.
+  Nested albums and date folders inherit that unit. Describe and categorize skip
+  files inside the unit until the assistant is asked to break it up.
+- Scan can reuse or discard prior extract/analyze evidence (`ScanOptions.reuse_evidence`,
+  desktop **Reuse previous analysis**, CLI `--session` / `--fresh`).
+- Chat prompts now lead with layout units and ranked loose files (with truncated
+  descriptions) instead of the first 48 paths. See `docs/assistant-context.md`.
+
 - Promoted the Cargo workspace, fixtures, docs, and desktop app to the repository
   root so `cargo`, `make`, and rust-analyzer work without a nested `rust/` directory.
 - Removed the C++/Qt application, vendored native dependencies, and Qt CI from this

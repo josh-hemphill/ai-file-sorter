@@ -1,6 +1,6 @@
 //! Command-line interface that talks to `aifs-engine` over stdio.
 
-use aifs_domain::{JournalStatus, RevisionAuthor, RevisionPatch};
+use aifs_domain::{JournalStatus, RevisionAuthor, RevisionPatch, SessionId};
 use aifs_engine_client::{EngineClient, discover_engine_binary};
 use aifs_protocol::{ProposalPolicy, ScanOptions};
 use clap::{Parser, Subcommand};
@@ -40,6 +40,12 @@ enum Commands {
         /// Skip media-tag extraction.
         #[arg(long)]
         no_extract: bool,
+        /// Resume extract/analyze for this session id.
+        #[arg(long)]
+        session: Option<SessionId>,
+        /// Discard carried evidence and re-analyze.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Scan, propose, accept, plan, and apply (default: dry run).
     Organize {
@@ -54,6 +60,12 @@ enum Commands {
         /// Include hidden files.
         #[arg(long)]
         include_hidden: bool,
+        /// Resume extract/analyze for this session id.
+        #[arg(long)]
+        session: Option<SessionId>,
+        /// Discard carried evidence and re-analyze.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Scan, propose, then run a revision-based assistant turn.
     Chat {
@@ -67,6 +79,12 @@ enum Commands {
         /// Include hidden files.
         #[arg(long)]
         include_hidden: bool,
+        /// Resume extract/analyze for this session id.
+        #[arg(long)]
+        session: Option<SessionId>,
+        /// Discard carried evidence and re-analyze.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Scan, propose, and compare destinations to a golden JSON map.
     Compare {
@@ -103,6 +121,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             no_recursive,
             no_protect_projects,
             no_extract,
+            session,
+            fresh,
         } => {
             let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let options = ScanOptions {
@@ -110,9 +130,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 include_hidden,
                 protect_projects: !no_protect_projects,
                 extract_metadata: !no_extract,
+                reuse_evidence: !fresh,
                 ..ScanOptions::default()
             };
-            let snapshot = client.scan(&folder, options, None)?;
+            let snapshot = client.scan(&folder, options, session)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&snapshot)?);
             } else {
@@ -141,15 +162,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             apply,
             include_hidden,
+            session,
+            fresh,
         } => {
             let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let snapshot = client.scan(
                 &folder,
                 ScanOptions {
                     include_hidden,
+                    reuse_evidence: !fresh,
                     ..ScanOptions::default()
                 },
-                None,
+                session,
             )?;
             let revision = client.propose(snapshot.session, ProposalPolicy::default())?;
             let assets: Vec<_> = revision.placements.keys().copied().collect();
@@ -198,15 +222,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             utterance,
             json,
             include_hidden,
+            session,
+            fresh,
         } => {
             let client = EngineClient::connect(&engine_path, "aifs-cli")?;
             let snapshot = client.scan(
                 &folder,
                 ScanOptions {
                     include_hidden,
+                    reuse_evidence: !fresh,
                     ..ScanOptions::default()
                 },
-                None,
+                session,
             )?;
             let revision = client.propose(snapshot.session, ProposalPolicy::default())?;
             let reply = client.chat(snapshot.session, revision.id, utterance)?;

@@ -24,12 +24,13 @@ const ARCHIVE_NAMES: &[&str] = &[
 
 /// Classifies directories and emits PreserveLayout bundles for units that must not flatten.
 pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
-    let directories: Vec<_> = snapshot
+    let mut directories: Vec<_> = snapshot
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Directory)
         .map(|entry| (entry.id, entry.path.clone()))
         .collect();
+    directories.sort_by_key(|(_, root)| root.as_str().matches('/').count());
 
     for (dir_id, root) in directories {
         if snapshot
@@ -37,6 +38,9 @@ pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
             .iter()
             .any(|project| project.root == root && project.strength == ProjectStrength::Strong)
         {
+            continue;
+        }
+        if ancestor_preserves_layout(snapshot, &root) {
             continue;
         }
         let name = root.file_name().to_ascii_lowercase();
@@ -83,6 +87,16 @@ pub fn classify_directories(snapshot: &mut WorkspaceSnapshot) {
             });
         }
     }
+}
+
+fn ancestor_preserves_layout(snapshot: &WorkspaceSnapshot, root: &RelativePath) -> bool {
+    snapshot.directory_roles.iter().any(|role| {
+        matches!(
+            role.kind,
+            DirectoryRoleKind::Library | DirectoryRoleKind::WeakArchive
+        ) && root.starts_with(&role.root)
+            && root != &role.root
+    })
 }
 
 fn role_for(
@@ -293,5 +307,39 @@ mod tests {
             }),
             "nested year folders that are not dump children should keep archive context"
         );
+    }
+
+    #[test]
+    fn nested_media_folders_inherit_the_outermost_library_unit() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Pictures"),
+            dir("Pictures/Lensa"),
+            dir("Pictures/Screenshots"),
+            file("Pictures/a.jpg", FileFamily::Image),
+            file("Pictures/b.jpg", FileFamily::Image),
+            file("Pictures/c.jpg", FileFamily::Image),
+            file("Pictures/Lensa/one.jpg", FileFamily::Image),
+            file("Pictures/Lensa/two.jpg", FileFamily::Image),
+            file("Pictures/Lensa/three.jpg", FileFamily::Image),
+            file("Pictures/Screenshots/one.png", FileFamily::Image),
+            file("Pictures/Screenshots/two.png", FileFamily::Image),
+            file("Pictures/Screenshots/three.png", FileFamily::Image),
+        ];
+        classify_directories(&mut snapshot);
+        let libraries: Vec<_> = snapshot
+            .directory_roles
+            .iter()
+            .filter(|role| role.kind == DirectoryRoleKind::Library)
+            .map(|role| role.root.as_str())
+            .collect();
+        assert_eq!(libraries, vec!["Pictures"]);
+        let units: Vec<_> = snapshot
+            .bundles
+            .iter()
+            .filter(|bundle| matches!(bundle.constraint, BundleConstraint::PreserveLayout { .. }))
+            .map(|bundle| bundle.label.as_str())
+            .collect();
+        assert_eq!(units, vec!["Pictures"]);
     }
 }

@@ -27,8 +27,9 @@ export async function scanRoot(
   root: string,
   preset: string,
   session?: string,
+  reuseEvidence = true,
 ): Promise<WorkspaceSnapshot> {
-  return invoke("scan_root", { args: { root, preset, session } });
+  return invoke("scan_root", { args: { root, preset, session, reuseEvidence } });
 }
 
 export async function cancelInFlight(): Promise<void> {

@@ -61,7 +61,10 @@ already mutated disk still emit `journal` (partial/failed) rather than pretendin
 the work never happened.
 
 Pass `session` on `scan` to resume. The desktop shell keeps a per-root session id
-so Cancel then Scan continues extract instead of starting over.
+so Cancel then Scan continues extract instead of starting over. `ScanOptions.reuse_evidence`
+(default `true`) copies matching extract/analyze facts onto the new snapshot.
+Set it to `false` (desktop **Reuse previous analysis** unchecked, CLI `--fresh`)
+to keep the session but discard carried evidence and re-run workers.
 
 The engine-client idle wait is 180s per event (reset on every progress/log line)
 so categorize/describe can exceed 60s as long as workers keep emitting.
@@ -89,7 +92,9 @@ model `RevisionPatch` JSON when the chat slot is assigned. Keyword tools
 slot is off, the worker fails, or the reply is not parseable JSON with a
 `patches` key. Child revisions
 are authored by the assistant model when patches apply. The assistant never
-receives SQL or raw filesystem operations. `plan` requires accepted placements
+receives SQL or raw filesystem operations. Chat context is a paged unit summary
+plus ranked loose files; see [`docs/assistant-context.md`](assistant-context.md).
+`plan` requires accepted placements
 (the CLI `organize` command accepts all heuristic placements, then dry-runs by
 default).
 
