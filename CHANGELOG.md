@@ -74,6 +74,9 @@
 - `cargo engine-bins` builds the stub LLM worker. Staging no longer copies that
   stub over a llama-linked `llm-runtime/cuda` payload. A stub sitting next to
   leftover cublas DLLs is not treated as a complete CUDA snapshot.
+- Settings and Setup stay mounted during scan, so switching pages does not show
+  a loading blank. While the engine is busy, `get_settings` / `get_models` return
+  the last snapshot instead of waiting on the scan JSONL lock.
 - LLM worker spawn/hello failures include the child exit code and the last
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".

@@ -5,6 +5,7 @@ import {
   mdiContentSaveOutline,
   mdiDownloadOutline,
   mdiInformationOutline,
+  mdiLoading,
 } from "@mdi/js";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import Icon from "../components/Icon.vue";
@@ -179,6 +180,15 @@ onUnmounted(() => {
       `make desktop` compiles llama.cpp; `cargo test` still uses the stub worker.
     </p>
 
+    <article v-if="!loaded && !error" class="card settings-loading" role="status" aria-live="polite">
+      <Icon :path="mdiLoading" :size="20" class="spin" />
+      <div>
+        <strong>Loading setup…</strong>
+        <p class="muted">Reading slot assignments and staged llm-runtime payloads.</p>
+      </div>
+    </article>
+
+    <template v-else-if="loaded">
     <article class="card">
       <h2>Storage</h2>
       <label class="field">
@@ -263,5 +273,6 @@ onUnmounted(() => {
       @change="replaceSlot"
       @download="download"
     />
+    </template>
   </section>
 </template>
