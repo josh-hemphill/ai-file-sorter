@@ -11,11 +11,13 @@ All types live in `crates/aifs-domain` and are plain serialisable values.
 - `RelativePath` is the only path type that crosses the engine boundary in proposals and
   plans. It is normalised (`/` separators, no `.`/`..` except the session-root sentinel
   `.`) and rejects absolute paths, reserved Windows device names, trailing dots/spaces,
-  and control characters. Existing files may keep song-title punctuation (`?`, `:`, `|`).
-  Destination builders call `escape_path_segment` so those characters become Windows-safe
-  lookalikes instead of being dropped. The path can be resolved under a
-  session root safely. `RelativePath::session_root()` (`.`) means "the scanned folder
-  itself", used when a project is detected at the session root.
+  and C0/DEL controls. Existing files may keep song-title punctuation (`?`, `:`, `|`)
+  and C1 OEM characters (`U+0080..=U+009F`) from mis-decoded filenames (`Padm\u{82}`
+  for `Padmé`). Destination builders call `escape_path_segment` so those characters
+  become Windows-safe lookalikes or decoded Latin letters instead of being dropped.
+  The path can be resolved under a session root safely. `RelativePath::session_root()`
+  (`.`) means "the scanned folder itself", used when a project is detected at the
+  scanned folder.
 
 ## Observation
 

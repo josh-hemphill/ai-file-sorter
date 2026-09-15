@@ -164,4 +164,29 @@ impl WorkspaceSnapshot {
             .iter()
             .find(|bundle| bundle.is_hard() && bundle.members.contains(&id))
     }
+
+    /// Outermost layout-preserving folder that covers `path`, if any.
+    pub fn covering_layout_root(&self, path: &RelativePath) -> Option<&RelativePath> {
+        self.bundles
+            .iter()
+            .find_map(|bundle| match &bundle.constraint {
+                crate::relationship::BundleConstraint::PreserveLayout { root }
+                    if path.starts_with(root) =>
+                {
+                    Some(root)
+                }
+                _ => None,
+            })
+    }
+
+    /// True when describe/categorize should wait until a unit is broken up.
+    pub fn defers_content_analysis(&self, entry: &ObservedEntry) -> bool {
+        if entry.kind != crate::entry::EntryKind::File {
+            return false;
+        }
+        self.covering_layout_root(&entry.path).is_some()
+            || self
+                .hard_bundle_for(entry.id)
+                .is_some_and(crate::relationship::Bundle::is_protected)
+    }
 }

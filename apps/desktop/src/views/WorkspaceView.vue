@@ -84,6 +84,7 @@ const rootPath = ref("");
 const recentRoots = ref<string[]>(loadRecentRoots());
 const scanSessions = ref<Record<string, string>>({});
 const preset = ref<IntentPreset>("inbox");
+const reuseEvidence = ref(true);
 const view = ref<CenterView>("structure");
 const snapshot = ref<WorkspaceSnapshot | null>(null);
 const revision = ref<ProposalRevision | null>(null);
@@ -258,7 +259,12 @@ async function runScan() {
   try {
     await connectEngine();
     engineReady.value = true;
-    const next = await scanRoot(rootPath.value, preset.value, sessionFor(rootPath.value));
+    const next = await scanRoot(
+      rootPath.value,
+      preset.value,
+      sessionFor(rootPath.value),
+      reuseEvidence.value,
+    );
     snapshot.value = next;
     scanSessions.value = { ...scanSessions.value, [rootPath.value]: next.session };
     recentRoots.value = rememberRoot(recentRoots.value, rootPath.value);
@@ -542,6 +548,10 @@ function familyOf(entry: ObservedEntry): string {
         {{ item }}
       </button>
       <p v-if="!recentRoots.length" class="muted">Scanned folders show up here.</p>
+      <label class="choice">
+        <input v-model="reuseEvidence" type="checkbox" />
+        Reuse previous analysis
+      </label>
       <button
         v-if="busy"
         type="button"
@@ -810,6 +820,7 @@ function familyOf(entry: ObservedEntry): string {
         </p>
         <p v-if="!chatLog.length" class="muted">
           Tools can search, inspect bundles, group podcasts, rename from tags, and validate.
+          Layout units stay together; chat will not split them.
         </p>
       </div>
       <form class="row" @submit.prevent="sendChat">

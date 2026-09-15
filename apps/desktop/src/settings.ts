@@ -32,6 +32,7 @@ export function defaultSettings(): AppSettings {
       protect_projects: true,
       extract_metadata: true,
       fingerprint_prefix_bytes: 64 * 1024,
+      reuse_evidence: true,
     },
     policy: {
       style: "consistent",

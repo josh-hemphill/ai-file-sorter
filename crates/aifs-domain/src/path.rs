@@ -17,7 +17,10 @@ pub enum RelativePathError {
     /// The path contains a `..` segment.
     #[error("path escapes the root with '..': {0}")]
     ParentTraversal(String),
-    /// A segment contains a control character (including NUL).
+    /// A segment contains a C0 control character (including NUL) or DEL.
+    ///
+    /// C1 controls (`U+0080..=U+009F`) are kept so existing OEM/MacRoman names
+    /// such as `Padmé` stored as `Padm\u{82}` can still be scanned.
     #[error("segment '{segment}' contains forbidden character {character:?}")]
     ForbiddenCharacter {
         /// Offending segment.
@@ -217,13 +220,62 @@ fn escape_segment_char(ch: char) -> char {
         '|' => '\u{FF5C}',
         '?' => '\u{FF1F}',
         '*' => '\u{FF0A}',
-        ch if ch.is_control() => ' ',
-        ch => ch,
+        ch if is_c0_or_del(ch) => ' ',
+        ch => decode_oem_control(ch),
     }
 }
 
+/// True for C0 controls and DEL. C1 (`U+0080..=U+009F`) is excluded so OEM names scan.
+fn is_c0_or_del(ch: char) -> bool {
+    matches!(ch, '\0'..='\u{001F}' | '\u{007F}')
+}
+
+/// Maps C1 controls that are usually CP437/OEM mojibake (`Padm\u{82}` → `Padmé`).
+pub fn decode_oem_control(ch: char) -> char {
+    match ch {
+        '\u{0080}' => 'Ç',
+        '\u{0081}' => 'ü',
+        '\u{0082}' => 'é',
+        '\u{0083}' => 'â',
+        '\u{0084}' => 'ä',
+        '\u{0085}' => 'à',
+        '\u{0086}' => 'å',
+        '\u{0087}' => 'ç',
+        '\u{0088}' => 'ê',
+        '\u{0089}' => 'ë',
+        '\u{008A}' => 'è',
+        '\u{008B}' => 'ï',
+        '\u{008C}' => 'î',
+        '\u{008D}' => 'ì',
+        '\u{008E}' => 'Ä',
+        '\u{008F}' => 'Å',
+        '\u{0090}' => 'É',
+        '\u{0091}' => 'æ',
+        '\u{0092}' => 'Æ',
+        '\u{0093}' => 'ô',
+        '\u{0094}' => 'ö',
+        '\u{0095}' => 'ò',
+        '\u{0096}' => 'û',
+        '\u{0097}' => 'ù',
+        '\u{0098}' => 'ÿ',
+        '\u{0099}' => 'Ö',
+        '\u{009A}' => 'Ü',
+        '\u{009B}' => 'ø',
+        '\u{009C}' => '£',
+        '\u{009D}' => 'Ø',
+        '\u{009E}' => '×',
+        '\u{009F}' => 'ƒ',
+        other => other,
+    }
+}
+
+/// Decodes C1 OEM controls in a path for logs and destination names.
+pub fn decode_oem_path(value: &str) -> String {
+    value.chars().map(decode_oem_control).collect()
+}
+
 fn validate_segment(segment: &str) -> Result<(), RelativePathError> {
-    if let Some(character) = segment.chars().find(|ch| ch.is_control()) {
+    if let Some(character) = segment.chars().find(|ch| is_c0_or_del(*ch)) {
         return Err(RelativePathError::ForbiddenCharacter {
             segment: segment.to_owned(),
             character,
@@ -324,6 +376,15 @@ mod tests {
             RelativePath::parse("a/\u{0001}b"),
             Err(RelativePathError::ForbiddenCharacter { .. })
         ));
+    }
+
+    #[test]
+    fn oem_c1_filenames_are_kept_and_decoded_for_destinations() {
+        let oem =
+            RelativePath::parse("06 Anakin and Padm\u{82}.mp3").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(oem.as_str(), "06 Anakin and Padm\u{82}.mp3");
+        assert_eq!(decode_oem_path(oem.as_str()), "06 Anakin and Padmé.mp3");
+        assert_eq!(escape_path_segment("H\u{94}chsten"), "Höchsten");
     }
 
     #[test]
