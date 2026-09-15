@@ -50,7 +50,13 @@ pub fn analyze_into_supervised(
     }
 
     let mut llm = match WorkerClient::connect_llm(&models.gpu_preference) {
-        Ok(client) => client,
+        Ok(client) => {
+            on_notice(AnalyzeNotice::Log(format!(
+                "LLM worker started [{}]",
+                client.binary().display()
+            )));
+            client
+        }
         Err(WorkerClientError::NotFound(_)) => {
             on_notice(AnalyzeNotice::Log(
                 "LLM worker is not installed; scan continues with extract and heuristics."

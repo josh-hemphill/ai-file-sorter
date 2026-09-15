@@ -10,6 +10,7 @@ import {
   inferAccelFromLibNames,
   isWorkerRuntimeLib,
   llmPayloadDir,
+  payloadDirComplete,
   shouldStageAfterEngineLlm,
   stageLlmPayloadFromDir,
 } from './stage-llm-payload.mjs';
@@ -31,6 +32,27 @@ test('inferAccelFromLibNames prefers cuda then vulkan then cpu', () => {
     inferAccelFromLibNames(['llama.dll', 'ggml-vulkan.dll', 'ggml-cuda.dll']),
     'cuda',
   );
+});
+
+test('payloadDirComplete accepts a static CUDA worker with cublas beside it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-payload-complete-'));
+  const dir = llmPayloadDir(root, 'cuda');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'aifs-worker-llm.exe'), Buffer.from('MZ\0cublas64_13.dll\0'));
+  writeFileSync(join(dir, 'cublas64_13.dll'), 'cublas');
+  assert.equal(payloadDirComplete(dir, 'cuda'), true);
+  assert.equal(payloadDirComplete(dir, 'cpu'), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('payloadDirComplete rejects a stub worker sitting next to leftover cublas', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aifs-payload-stub-'));
+  const dir = llmPayloadDir(root, 'cuda');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'aifs-worker-llm.exe'), 'stub infer worker');
+  writeFileSync(join(dir, 'cublas64_13.dll'), 'cublas');
+  assert.equal(payloadDirComplete(dir, 'cuda'), false);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test('cpu stage leaves an existing cuda payload in place', () => {

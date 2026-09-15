@@ -31,11 +31,13 @@ pnpm cli -- organize fixtures/inbox-mixed
 pnpm cli -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
 
-`pnpm cli --` is `cargo aifs` / `cargo run -p aifs-cli --` (do not add a second `--` after `cargo aifs`). `pnpm build` compiles `aifs-engine`, `aifs`, and the four workers (LLM **stub**)
-into `target/debug/`. `pnpm desktop` then rebuilds `aifs-worker-llm` with llama.cpp
-(CPU). `pnpm desktop:cuda` / `pnpm desktop:vulkan` / `pnpm desktop:metal` set
-`AIFS_LLM_FEATURES` so both `pnpm llama` and Tauri's `beforeDevCommand` keep that
-accelerator (`vulcan` is accepted as `vulkan`).
+`pnpm build` compiles `aifs-engine`, `aifs`, and the four workers (LLM **stub**)
+into `target/debug/`. `pnpm desktop` starts Tauri and compiles llama.cpp only when
+`llm-runtime/<accel>/` is missing. `pnpm llama` / `pnpm llama:cuda` always rebuild.
+`pnpm desktop:cuda` / `pnpm desktop:vulkan` / `pnpm desktop:metal` set
+`AIFS_LLM_FEATURES` so that compile (when needed) stays on the GPU worker
+(`vulcan` is accepted as `vulkan`). After a CUDA payload is staged, use
+`pnpm desktop:cuda` or `pnpm desktop:open:cuda` — do not run `pnpm llama` first.
 
 Local llama.cpp (also used by `pnpm desktop`):
 
@@ -45,7 +47,8 @@ pnpm llama
 # Windows: prefer pnpm llama, or set CMAKE_GENERATOR (see README)
 pnpm llama:cuda     # CUDA; pins GPU SM. Cargo looks idle on llama-cpp-sys-2 while nvcc runs.
 pnpm llama:vulkan
-pnpm desktop:cuda   # full desktop start; do not follow a CUDA llama with plain pnpm desktop
+pnpm desktop:cuda   # start desktop; skips llama when llm-runtime/cuda is already staged
+pnpm desktop:open:cuda  # same, without pnpm build first
 # CUDA and Vulkan are separate payloads; never AIFS_LLM_FEATURES=cuda,vulkan on one cargo build
 ```
 

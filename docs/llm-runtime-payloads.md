@@ -84,8 +84,11 @@ spawned as a stub; a complete CUDA snapshot is still used if the NVIDIA probe
 is a false negative. Discovery then names why CUDA was not used (no
 `llm-runtime/cuda`, missing `ggml-cuda`, or NVIDIA probe failed at
 `%SystemRoot%\System32\nvcuda.dll`).
-`AIFS_WORKER_LLM` still overrides discovery; library search is that file's
-directory.
+The desktop client does not set `AIFS_WORKER_LLM` (that used to pin Cargo
+`target/debug/aifs-worker-llm` and skip a complete `llm-runtime/cuda`).
+`AIFS_WORKER_LLM` still overrides discovery when it points at a staged
+payload, a complete sidecar, or a stub; an unstaged llama-linked cargo exe is
+ignored. Library search is that file's directory.
 
 Spawn prepends **only** the payload directory to `PATH` /
 `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. Hello/spawn failures that look like a
@@ -95,7 +98,9 @@ essay. `get_models` lists complete payloads as `llm_payloads` without spawning
 hello.
 
 `pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator
-and stage that payload. `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two
+and stage that payload. `pnpm desktop` / `tauri dev` skip that compile when the
+requested `llm-runtime/<accel>/` folder is already complete (`AIFS_FORCE_LLAMA=1`
+rebuilds; `AIFS_SKIP_LLAMA=1` always skips). `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two
 payloads, two cargo builds). A CPU rebuild does not delete an existing
 `llm-runtime/cuda` snapshot.
 

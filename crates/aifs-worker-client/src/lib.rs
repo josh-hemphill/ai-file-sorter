@@ -201,6 +201,11 @@ impl WorkerClient {
         Ok(client)
     }
 
+    /// Spawned worker path (staged `llm-runtime/<accel>/` or an explicit override).
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+
     /// Kills the child immediately. Used when scan cancel arrives during infer.
     pub fn kill(&mut self) {
         self.stdin.take();

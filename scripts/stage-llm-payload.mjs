@@ -130,6 +130,30 @@ function hasCudaToolkitLibs(names) {
   });
 }
 
+/** True when `dir` has a worker and the libs `accel` needs (no cargo rebuild). */
+export function payloadDirComplete(dir, accel) {
+  const worker = findWorkerBinary(dir);
+  if (!worker) return false;
+  const files = new Map();
+  collectRuntimeLibsFrom(dir, files);
+  const names = [...files.keys()];
+  if (accel === 'cuda') {
+    return (
+      names.some((name) => runtimeLibStem(name).startsWith('ggml-cuda')) ||
+      workerImportsCudaToolkit(worker.path)
+    );
+  }
+  if (accel === 'vulkan') {
+    return names.some((name) => runtimeLibStem(name).startsWith('ggml-vulkan'));
+  }
+  const hasLlama = names.some((name) => runtimeLibStem(name).startsWith('llama'));
+  const hasGgml = names.some((name) => {
+    const stem = runtimeLibStem(name);
+    return stem === 'ggml' || stem === 'ggml-base' || stem === 'ggml-cpu';
+  });
+  return hasLlama && hasGgml;
+}
+
 function assertExpectedAccel(expectedAccel, accel, collected, srcDir) {
   if (expectedAccel === 'cuda') {
     const hasPlugin = [...collected.keys()].some((name) =>

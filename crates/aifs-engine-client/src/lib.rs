@@ -680,22 +680,29 @@ fn command_mutates_disk(command: &Command) -> bool {
     )
 }
 
-/// Points the engine at worker binaries next to itself (or Cargo `target/`) so
-/// `tauri dev` empty sidecar placeholders do not hide `pnpm desktop:cuda` builds.
+/// Points extract workers at binaries next to the engine (or Cargo `target/`)
+/// so `tauri dev` empty sidecar placeholders do not hide `pnpm desktop:cuda`.
+///
+/// Does not set `AIFS_WORKER_LLM`: that override skips `llm-runtime/<accel>/`
+/// and would spawn Cargo `target/debug/aifs-worker-llm` without cublas.
 fn attach_worker_env(command: &mut ProcessCommand, engine: &Path) {
-    for kind in [
-        WorkerKind::Media,
-        WorkerKind::Document,
-        WorkerKind::Vision,
-        WorkerKind::Llm,
-    ] {
+    for (key, path) in sidecar_worker_env(engine) {
+        command.env(key, path);
+    }
+}
+
+/// `AIFS_WORKER_{MEDIA,DOCUMENT,VISION}` paths beside `engine`, excluding LLM.
+fn sidecar_worker_env(engine: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for kind in [WorkerKind::Media, WorkerKind::Document, WorkerKind::Vision] {
         if std::env::var_os(kind.env_var()).is_some() {
             continue;
         }
         if let Some(path) = discover_process_binary(kind.binary_stem(), Some(engine), None) {
-            command.env(kind.env_var(), path);
+            out.push((kind.env_var().to_owned(), path));
         }
     }
+    out
 }
 
 /// Resolves the engine binary from `AIFS_ENGINE`, then a sibling of the current
@@ -744,6 +751,32 @@ mod tests {
     fn idle_timeout_outlasts_worker_infer() {
         assert_eq!(IDLE_TIMEOUT, Duration::from_secs(180));
         assert!(IDLE_TIMEOUT > Duration::from_secs(120));
+    }
+
+    #[test]
+    fn sidecar_env_does_not_pin_llm_to_cargo_worker() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let engine = dir.path().join("aifs-engine.exe");
+        fs::write(&engine, b"engine").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.path().join("aifs-worker-llm.exe"), b"llm")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dir.path().join("aifs-worker-media.exe"), b"media")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let vars = sidecar_worker_env(&engine);
+        assert!(
+            vars.iter().all(|(key, _)| key != WorkerKind::Llm.env_var()),
+            "LLM must be discovered from llm-runtime, not pinned: {vars:?}"
+        );
+        if std::env::var_os(WorkerKind::Media.env_var()).is_none() {
+            assert!(
+                vars.iter()
+                    .any(|(key, path)| key == WorkerKind::Media.env_var()
+                        && path
+                            .file_stem()
+                            .is_some_and(|stem| stem == "aifs-worker-media")),
+                "extract sidecars still need AIFS_WORKER_MEDIA: {vars:?}"
+            );
+        }
     }
 
     #[test]

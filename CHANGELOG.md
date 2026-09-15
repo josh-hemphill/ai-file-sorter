@@ -61,6 +61,19 @@
   Tauri left an empty sidecar placeholder. Discovery skips empty files, walks
   up to Cargo `target/`, and scan logs the real spawn/hello error if the worker
   still cannot start.
+- Desktop no longer sets `AIFS_WORKER_LLM` to Cargo `target/debug/aifs-worker-llm`.
+  That override skipped a complete `llm-runtime/cuda` and spawned the unstaged
+  worker (Windows `STATUS_DLL_NOT_FOUND` / missing cublas). The engine autoselects
+  the staged payload; `AIFS_WORKER_LLM` only wins for a staged folder, a complete
+  sidecar, or a stub.
+- `pnpm desktop` / `pnpm desktop:cuda` skip `cargo engine-llm` when
+  `llm-runtime/<accel>/` is already complete. Rebuild with `pnpm llama:cuda` or
+  `AIFS_FORCE_LLAMA=1`. `pnpm desktop:open:cuda` starts Tauri without `pnpm build`.
+  Scan logs the spawned LLM worker path so CUDA vs cargo sidecar is visible in
+  Activity.
+- `cargo engine-bins` builds the stub LLM worker. Staging no longer copies that
+  stub over a llama-linked `llm-runtime/cuda` payload. A stub sitting next to
+  leftover cublas DLLs is not treated as a complete CUDA snapshot.
 - LLM worker spawn/hello failures include the child exit code and the last
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
@@ -86,7 +99,8 @@
   Vulkan → Metal → CPU) using host driver probes, not `CUDA_PATH`.
   `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. An explicit CUDA
   preference still spawns a complete CUDA payload if the NVIDIA probe fails.
-  Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned. Spawn sets the
+  Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned. The desktop
+  does not pin that cargo path via `AIFS_WORKER_LLM`. Spawn sets the
   library search path to that payload directory only. `get_models` still
   does not hello the worker.
 - `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into

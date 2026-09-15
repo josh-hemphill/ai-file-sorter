@@ -86,12 +86,31 @@ pub fn list_llm_payloads_from(roots: &[PathBuf]) -> Vec<LlmPayload> {
 
 /// Resolves the LLM worker payload to spawn.
 ///
-/// `AIFS_WORKER_LLM` still wins (library search is that file's directory).
-/// Otherwise autoselects a complete payload. An incomplete llama/CUDA cargo
-/// sidecar is not spawned; a stub worker with no native libs still is.
+/// `AIFS_WORKER_LLM` wins when it points at a staged `llm-runtime/<accel>/`
+/// worker, a complete sidecar, or a stub with no llama/CUDA link. An unstaged
+/// llama-linked Cargo exe (what the desktop used to pin) is ignored so a
+/// complete payload can still spawn.
 pub fn discover_llm_payload(gpu_preference: &str) -> Result<LlmPayload, WorkerClientError> {
-    if let Ok(explicit) = std::env::var(WorkerKind::Llm.env_var()) {
-        return payload_from_explicit_binary(Path::new(&explicit));
+    discover_llm_payload_with(
+        gpu_preference,
+        std::env::var(WorkerKind::Llm.env_var())
+            .ok()
+            .as_deref()
+            .map(Path::new),
+    )
+}
+
+fn discover_llm_payload_with(
+    gpu_preference: &str,
+    explicit: Option<&Path>,
+) -> Result<LlmPayload, WorkerClientError> {
+    if let Some(path) = explicit {
+        if !is_usable_process_binary(path) {
+            return Err(WorkerClientError::NotFound(path.display().to_string()));
+        }
+        if let Some(payload) = spawnable_explicit_payload(path) {
+            return Ok(payload);
+        }
     }
     let preference = spawn_llm_preference(gpu_preference);
     let roots = current_list_roots();
@@ -110,9 +129,18 @@ pub fn discover_llm_payload(gpu_preference: &str) -> Result<LlmPayload, WorkerCl
             &roots,
             &preference,
             host_accel_available,
-            sidecar.as_deref(),
+            sidecar.as_deref().or(explicit),
         ),
     ))
+}
+
+/// Staged payload, complete sidecar, or stub; not an unstaged llama-linked exe.
+fn spawnable_explicit_payload(path: &Path) -> Option<LlmPayload> {
+    let dir = path.parent()?;
+    if is_staged_payload_dir(dir) {
+        return payload_from_explicit_binary(path).ok();
+    }
+    complete_or_stub_sidecar(path)
 }
 
 fn select_payload_for_spawn<'a>(
@@ -416,6 +444,49 @@ mod tests {
     }
 
     #[test]
+    fn unstaged_explicit_llama_worker_does_not_override_complete_cuda() {
+        let root = temp_dir();
+        write_cpu_payload(&llm_payload_dir(&root, LlmAccel::Cuda));
+        fs::write(
+            llm_payload_dir(&root, LlmAccel::Cuda).join("ggml-cuda.dll"),
+            b"cuda",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let cargo = root.join("aifs-worker-llm.exe");
+        fs::write(&cargo, b"MZ\0cublas64_13.dll\0").unwrap_or_else(|error| panic!("{error}"));
+        let _guard = override_llm_list_roots(vec![root.clone()]);
+        let payload = super::discover_llm_payload_with("auto", Some(&cargo))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(payload.accel, LlmAccel::Cuda);
+        assert!(
+            payload
+                .binary
+                .starts_with(&llm_payload_dir(&root, LlmAccel::Cuda)),
+            "must spawn staged cuda, not cargo sidecar {}; got {:?}",
+            cargo.display(),
+            payload.binary
+        );
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn staged_explicit_worker_still_overrides_autoselect() {
+        let root = temp_dir();
+        let cpu = llm_payload_dir(&root, LlmAccel::Cpu);
+        let cuda = llm_payload_dir(&root, LlmAccel::Cuda);
+        write_cpu_payload(&cpu);
+        write_cpu_payload(&cuda);
+        fs::write(cuda.join("ggml-cuda.dll"), b"cuda").unwrap_or_else(|error| panic!("{error}"));
+        let cpu_bin = cpu.join("aifs-worker-llm");
+        let _guard = override_llm_list_roots(vec![root.clone()]);
+        let payload = super::discover_llm_payload_with("auto", Some(&cpu_bin))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(payload.accel, LlmAccel::Cpu);
+        assert_eq!(payload.binary, cpu_bin);
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
     fn spawn_preference_uses_backend_env_unless_blank() {
         assert_eq!(spawn_llm_preference_from("cpu", Some("cuda")), "cuda");
         assert_eq!(
@@ -493,6 +564,34 @@ mod tests {
             "libs under llm-runtime/cuda mean the cargo exe is not a stub"
         );
         fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn discover_prefers_complete_cuda_payload_over_cargo_sidecar() {
+        let debug = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug")
+            });
+        let cuda = llm_payload_dir(&debug, LlmAccel::Cuda);
+        if aifs_protocol::inspect_payload(&cuda, LlmAccel::Cuda).is_none() {
+            return;
+        }
+        let cargo = debug.join("aifs-worker-llm.exe");
+        let _guard = override_llm_list_roots(vec![debug]);
+        let listed = list_llm_payloads();
+        assert!(
+            listed.iter().any(|payload| payload.accel == LlmAccel::Cuda),
+            "complete cuda snapshot must be listed: {listed:?}"
+        );
+        let payload = super::discover_llm_payload("auto").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(payload.accel, LlmAccel::Cuda);
+        assert!(
+            payload.dir == cuda || payload.binary.starts_with(&cuda),
+            "must spawn {cuda:?}, not cargo sidecar {cargo:?}; got {:?}",
+            payload.binary
+        );
     }
 
     #[test]

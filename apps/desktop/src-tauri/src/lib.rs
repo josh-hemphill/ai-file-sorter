@@ -666,8 +666,8 @@ mod tests {
         );
         let makefile = include_str!("../../../../Makefile");
         assert!(
-            makefile.contains("$(MAKE) llama"),
-            "make desktop must overwrite the stub LLM worker with llama.cpp"
+            makefile.contains("pnpm --filter desktop tauri dev"),
+            "make desktop starts Tauri; llama is skipped when llm-runtime is already staged: {makefile}"
         );
         assert!(
             makefile.contains("node scripts/with-cmake-generator.mjs cargo engine-llm"),
@@ -681,10 +681,11 @@ mod tests {
         );
         let pkg = include_str!("../../../../package.json");
         assert!(
-            pkg.contains("with-cmake-generator.mjs cargo engine-llm")
+            pkg.contains("desktop:open")
+                && pkg.contains("\"desktop\": \"pnpm build && pnpm --filter desktop tauri dev\"")
                 && pkg.contains("pnpm llama")
                 && pkg.contains("tauri dev"),
-            "pnpm desktop must overwrite the stub LLM worker with llama.cpp: {pkg}"
+            "pnpm desktop reuses a staged llm-runtime; pnpm llama still rebuilds: {pkg}"
         );
         assert!(
             pkg.contains("desktop:cuda")
@@ -704,25 +705,32 @@ mod tests {
             "CUDA staging must harvest nested llama-cpp out dirs and fail closed: {stage}"
         );
         let tauri = include_str!("../tauri.conf.json");
-        for hook in ["beforeDevCommand", "beforeBuildCommand"] {
-            let line = tauri
-                .lines()
-                .find(|row| row.contains(hook))
-                .unwrap_or_else(|| panic!("{hook}"));
-            let bins = line
-                .find("cargo engine-bins")
-                .unwrap_or_else(|| panic!("{hook} must run cargo engine-bins: {line}"));
-            let wrap = line.find("with-cmake-generator.mjs").unwrap_or_else(|| {
-                panic!("{hook} must wrap cargo engine-llm for Windows CMake: {line}")
-            });
-            let llm = line
-                .find("cargo engine-llm")
-                .unwrap_or_else(|| panic!("{hook} must run cargo engine-llm: {line}"));
-            assert!(
-                bins < wrap && wrap < llm,
-                "{hook} must overwrite the stub worker with llama.cpp: {line}"
-            );
-        }
+        let before_dev = tauri
+            .lines()
+            .find(|row| row.contains("beforeDevCommand"))
+            .unwrap_or_else(|| panic!("beforeDevCommand"));
+        assert!(
+            before_dev.contains("cargo engine-bins")
+                && before_dev.contains("ensure-llm-worker.mjs"),
+            "beforeDevCommand skips cargo engine-llm when a payload is staged: {before_dev}"
+        );
+        let before_build = tauri
+            .lines()
+            .find(|row| row.contains("beforeBuildCommand"))
+            .unwrap_or_else(|| panic!("beforeBuildCommand"));
+        let bins = before_build.find("cargo engine-bins").unwrap_or_else(|| {
+            panic!("beforeBuildCommand must run cargo engine-bins: {before_build}")
+        });
+        let wrap = before_build.find("with-cmake-generator.mjs").unwrap_or_else(|| {
+            panic!("beforeBuildCommand must wrap cargo engine-llm for Windows CMake: {before_build}")
+        });
+        let llm = before_build.find("cargo engine-llm").unwrap_or_else(|| {
+            panic!("beforeBuildCommand must run cargo engine-llm: {before_build}")
+        });
+        assert!(
+            bins < wrap && wrap < llm,
+            "beforeBuildCommand must overwrite the stub worker with llama.cpp: {before_build}"
+        );
         let build = include_str!("../build.rs");
         assert!(
             !build.contains("src_dir.display()"),

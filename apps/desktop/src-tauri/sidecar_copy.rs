@@ -2,8 +2,9 @@
 
 use aifs_protocol::worker::WorkerKind;
 use aifs_protocol::{
-    LlmAccel, binary_imports_cuda_runtime, ensure_process_binary_executable, first_process_binary,
-    llm_payload_dir, runtime_lib_matches_prefix,
+    LlmAccel, binary_imports_cuda_runtime, binary_links_llama_runtime,
+    ensure_process_binary_executable, first_process_binary, llm_payload_dir,
+    runtime_lib_matches_prefix,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -372,12 +373,18 @@ fn stage_llm_payload_from_expected(
     assert_expected_staging_accel(expected, accel, &files, src_dir)?;
     let dest_dir = llm_payload_dir(runtime_root, accel);
     if let Some(src_bin) = first_process_binary(src_dir, WorkerKind::Llm.binary_stem()) {
-        std::fs::create_dir_all(&dest_dir)?;
         let dest_bin = dest_dir.join(
             src_bin
                 .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new(WorkerKind::Llm.binary_stem())),
         );
+        if dest_bin.is_file()
+            && binary_links_llama_runtime(&dest_bin)
+            && !binary_links_llama_runtime(&src_bin)
+        {
+            return Ok(accel);
+        }
+        std::fs::create_dir_all(&dest_dir)?;
         copy_if_changed(&src_bin, &dest_bin)?;
         ensure_process_binary_executable(&dest_bin)?;
     }
@@ -874,6 +881,35 @@ mod sidecar_copy_tests {
         assert!(error.to_string().contains("missing ggml-cuda"), "{error}");
         assert!(!runtime.join("llm-runtime").join("cpu").exists());
         assert!(!runtime.join("llm-runtime").join("cuda").exists());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn stub_cargo_worker_does_not_replace_llama_linked_cuda_payload() {
+        let root = temp_dir();
+        let src = root.join("src");
+        let runtime = root.join("resources");
+        let dest = runtime.join("llm-runtime").join("cuda");
+        fs::create_dir_all(&src).unwrap_or_else(|error| panic!("{error}"));
+        fs::create_dir_all(&dest).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("aifs-worker-llm.exe"), b"stub infer worker")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(src.join("ggml-cuda.dll"), b"plugin").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("aifs-worker-llm.exe"), b"MZ\0cublas64_13.dll\0")
+            .unwrap_or_else(|error| panic!("{error}"));
+        fs::write(dest.join("cublas64_13.dll"), b"keep-cublas")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let accel =
+            stage_llm_payload_from(&src, &runtime, None).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(accel, LlmAccel::Cuda);
+        assert_eq!(
+            fs::read(dest.join("aifs-worker-llm.exe")).unwrap_or_else(|error| panic!("{error}")),
+            b"MZ\0cublas64_13.dll\0"
+        );
+        assert_eq!(
+            fs::read(dest.join("cublas64_13.dll")).unwrap_or_else(|error| panic!("{error}")),
+            b"keep-cublas"
+        );
         fs::remove_dir_all(&root).unwrap_or_else(|error| panic!("{error}"));
     }
 
