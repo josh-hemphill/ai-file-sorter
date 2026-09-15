@@ -32,6 +32,7 @@ pub use ids::{AssetId, BundleId, JournalId, PlanId, RevisionId, SessionId};
 pub use journal::{ApplyJournal, JournalEntry, JournalState, JournalStatus};
 pub use path::{
     RelativePath, RelativePathError, decode_oem_control, decode_oem_path, escape_path_segment,
+    escape_relative_path,
 };
 pub use plan::{Operation, OperationPlan, PlanIssue, PlanIssueSeverity, PlannedOperation};
 pub use proposal::{
