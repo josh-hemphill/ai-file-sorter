@@ -1089,6 +1089,108 @@ mod tests {
     }
 
     #[test]
+    fn preserve_layout_flatten_is_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let flattened = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "flatten library",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Pictures/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: day_id,
+                        destination: RelativePath::parse("Pictures/day.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id, day_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &flattened);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+    }
+
+    #[test]
+    fn preserve_layout_conflicting_new_roots_are_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let split_roots = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "two new roots",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Archives/Music/Ada/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: day_id,
+                        destination: RelativePath::parse("Other/Music/Ada/day.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id, day_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &split_roots);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+    }
+
+    #[test]
     fn preserve_layout_unit_move_is_allowed() {
         let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
         let night = file("Music/Ada/night.mp3", FileFamily::Audio);
@@ -1364,9 +1466,9 @@ mod tests {
             !plan.operations.iter().any(|planned| matches!(
                 planned.operation,
                 Operation::RemoveEmptyDirectory { ref path }
-                    if path.as_str() == "dump/keep-empty"
+                    if path.as_str() == "dump/keep-empty" || path.as_str() == "dump"
             )),
-            "pre-existing empty folders must not be deleted, got {:?}",
+            "pre-existing empty folders must keep their parent, got {:?}",
             plan.operations
         );
     }
