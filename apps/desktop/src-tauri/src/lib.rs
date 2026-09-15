@@ -23,6 +23,8 @@ use tauri::{AppHandle, Emitter, State};
 #[derive(Clone)]
 struct EngineState {
     client: Arc<Mutex<Option<Arc<EngineClient>>>>,
+    settings: Arc<Mutex<Option<AppSettings>>>,
+    models: Arc<Mutex<Option<ModelInventory>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -131,6 +133,31 @@ fn with_ready_client<T>(
 ) -> Result<T, String> {
     ensure_client(state)?;
     with_client(state, fun)
+}
+
+/// Returns `cache` when the engine is busy with scan/download; otherwise fetches.
+fn cached_or_fetch<T: Clone>(
+    busy: bool,
+    cache: &Mutex<Option<T>>,
+    fetch: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if busy
+        && let Ok(guard) = cache.lock()
+        && let Some(value) = guard.as_ref()
+    {
+        return Ok(value.clone());
+    }
+    let value = fetch()?;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(value.clone());
+    }
+    Ok(value)
+}
+
+fn remember<T: Clone>(cache: &Mutex<Option<T>>, value: &T) {
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(value.clone());
+    }
 }
 
 /// Runs blocking engine stdio off the WebView thread.
@@ -418,7 +445,9 @@ async fn get_settings(state: State<'_, EngineState>) -> Result<AppSettings, Stri
     let state = state.inner().clone();
     run_blocking(move || {
         with_ready_client(&state, |client| {
-            client.get_settings().map_err(|error| error.to_string())
+            cached_or_fetch(client.is_busy(), &state.settings, || {
+                client.get_settings().map_err(|error| error.to_string())
+            })
         })
     })
     .await
@@ -432,9 +461,11 @@ async fn put_settings(
     let state = state.inner().clone();
     run_blocking(move || {
         with_ready_client(&state, |client| {
-            client
+            let settings = client
                 .put_settings(settings)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            remember(&state.settings, &settings);
+            Ok(settings)
         })
     })
     .await
@@ -445,7 +476,9 @@ async fn get_models(state: State<'_, EngineState>) -> Result<ModelInventory, Str
     let state = state.inner().clone();
     run_blocking(move || {
         with_ready_client(&state, |client| {
-            client.get_models().map_err(|error| error.to_string())
+            cached_or_fetch(client.is_busy(), &state.models, || {
+                client.get_models().map_err(|error| error.to_string())
+            })
         })
     })
     .await
@@ -459,9 +492,11 @@ async fn put_models(
     let state = state.inner().clone();
     run_blocking(move || {
         with_ready_client(&state, |client| {
-            client
+            let inventory = client
                 .put_models(inventory)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            remember(&state.models, &inventory);
+            Ok(inventory)
         })
     })
     .await
@@ -510,7 +545,10 @@ async fn download_model(
                 .map_err(|error| error.to_string())?;
             for envelope in envelopes {
                 match envelope.event {
-                    Event::Models { inventory } => return Ok(inventory),
+                    Event::Models { inventory } => {
+                        remember(&state.models, &inventory);
+                        return Ok(inventory);
+                    }
                     Event::Cancelled => return Err("request cancelled".to_owned()),
                     Event::Failed { message, .. } => return Err(message),
                     _ => {}
@@ -529,6 +567,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState {
             client: Arc::new(Mutex::new(None)),
+            settings: Arc::new(Mutex::new(None)),
+            models: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             connect_engine,
@@ -793,6 +833,26 @@ mod tests {
             impl_src.contains("fn cancel_in_flight(")
                 && !impl_src.contains("async fn cancel_in_flight"),
             "cancel_in_flight must stay sync so it is not queued behind a blocking worker"
+        );
+    }
+
+    #[test]
+    fn cached_or_fetch_returns_cache_when_busy() {
+        use super::cached_or_fetch;
+        use std::sync::Mutex;
+        let cache = Mutex::new(Some("cached".to_owned()));
+        let value = cached_or_fetch(true, &cache, || panic!("must not fetch while busy"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(value, "cached");
+        let fresh = cached_or_fetch(false, &cache, || Ok("fresh".to_owned()))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(fresh, "fresh");
+        assert_eq!(
+            cache
+                .lock()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .as_deref(),
+            Some("fresh")
         );
     }
 }

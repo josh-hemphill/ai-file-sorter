@@ -42,10 +42,10 @@ const pages = [
       @open-setup="surface = 'setup'"
     />
     <SettingsView
-      v-if="surface === 'settings'"
+      v-show="surface === 'settings'"
       @back="surface = 'workspace'"
       @setup="surface = 'setup'"
     />
-    <SetupView v-if="surface === 'setup'" @back="surface = 'workspace'" />
+    <SetupView v-show="surface === 'setup'" @back="surface = 'workspace'" />
   </div>
 </template>

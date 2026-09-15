@@ -594,6 +594,14 @@ impl EngineClient {
         result
     }
 
+    /// True while a request is waiting on engine stdout.
+    pub fn is_busy(&self) -> bool {
+        self.in_flight
+            .lock()
+            .ok()
+            .is_some_and(|slot| slot.is_some())
+    }
+
     fn recv_matching(&self, id: &RequestId) -> Result<Envelope, ClientError> {
         loop {
             if let Some(envelope) = self.take_buffered_matching(id) {
