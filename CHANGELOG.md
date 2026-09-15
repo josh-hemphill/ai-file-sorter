@@ -7,11 +7,12 @@
 - Image describe logs a truncated caption (`described shot.jpg · a red car…`).
 - Library/archive “move as a unit” detection keeps only the outermost folder.
   Nested albums and date folders inherit that unit. Describe and categorize skip
-  files inside the unit until the assistant is asked to break it up.
+  files inside the unit so the folder stays together.
 - Scan can reuse or discard prior extract/analyze evidence (`ScanOptions.reuse_evidence`,
   desktop **Reuse previous analysis**, CLI `--session` / `--fresh`).
 - Chat prompts now lead with layout units and ranked loose files (with truncated
-  descriptions) instead of the first 48 paths. See `docs/assistant-context.md`.
+  descriptions) instead of the first 48 paths. Chat still cannot split a unit;
+  destination edits on those members are dropped. See `docs/assistant-context.md`.
 
 - Promoted the Cargo workspace, fixtures, docs, and desktop app to the repository
   root so `cargo`, `make`, and rust-analyzer work without a nested `rust/` directory.

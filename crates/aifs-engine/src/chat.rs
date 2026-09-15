@@ -79,7 +79,7 @@ pub(crate) fn chat_context(
         "Patch ops: set_destination, move_to_folder, rename, accept, reject, reopen.".to_owned(),
         "folder and destination are root-relative; never '..', absolute paths, SQL, or shell."
             .to_owned(),
-        "Move layout units as a whole. Do not patch files inside a unit unless asked to break it up."
+        "Move layout units as a whole. Do not patch files inside a unit; the engine drops those edits."
             .to_owned(),
         "This prompt is a page, not the whole tree; prefer units, then matching loose files."
             .to_owned(),
@@ -623,6 +623,10 @@ mod tests {
         let context = chat_context(&snapshot, &revision, "pictures library");
         assert!(context.contains("library-unit"));
         assert!(context.contains("Pictures"));
+        assert!(
+            !context.contains("break it up"),
+            "chat must not promise an unimplemented break-up path: {context}"
+        );
         assert!(!context.contains(&track.as_uuid().to_string()));
         assert!(context.contains("late-night mix"));
         assert!(context.contains(&loose.as_uuid().to_string()));

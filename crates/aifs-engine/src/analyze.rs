@@ -17,7 +17,7 @@ const DESCRIBE_LOG_CHARS: usize = 96;
 /// Scan line when a layout unit is not described or categorized yet.
 pub(crate) fn deferred_unit_log(root: &str, files: usize) -> String {
     format!(
-        "{} · deferred · {files} files stay in this folder until the assistant breaks it up",
+        "{} · deferred · {files} files stay in this folder as a unit",
         aifs_domain::decode_oem_path(root)
     )
 }
@@ -594,7 +594,7 @@ mod tests {
         );
         assert_eq!(
             deferred_unit_log("Pictures", 133),
-            "Pictures · deferred · 133 files stay in this folder until the assistant breaks it up"
+            "Pictures · deferred · 133 files stay in this folder as a unit"
         );
     }
 

@@ -820,7 +820,7 @@ function familyOf(entry: ObservedEntry): string {
         </p>
         <p v-if="!chatLog.length" class="muted">
           Tools can search, inspect bundles, group podcasts, rename from tags, and validate.
-          Layout units stay together unless you ask to break them up.
+          Layout units stay together; chat will not split them.
         </p>
       </div>
       <form class="row" @submit.prevent="sendChat">

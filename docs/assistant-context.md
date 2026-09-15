@@ -11,7 +11,7 @@ slot is off or the model reply is not parseable.
 `chat_context` is capped at 3500 characters. It is a page, not the whole tree:
 
 1. **Instructions** — JSON patch vocabulary; root-relative paths only; do not
-   patch members of a layout unit unless the user asks to break that folder up.
+   patch members of a layout unit. The engine drops those destination edits.
 2. **Units** — strong projects and outermost `PreserveLayout` folders (libraries
    and weak archives). Each line has the root, why it is a unit, file count, and
    a few immediate child names. Nested albums/date folders are *not* listed as
@@ -31,9 +31,8 @@ and to stop the model from describing/sorting them one by one.
 The first prompt is intentionally incomplete. Later turns should:
 
 - **Inspect a unit** — keyword `inspect` / `keep` already summarises a bundle.
-  Ask the assistant to break up a library only when the user wants that; that is
-  when describe/categorize of its members should resume (not during the first
-  scan).
+  Chat cannot yet break a library into independently organised files; that still
+  needs an explicit follow-up (no re-describe pass is wired).
 - **Search** — `find` / `search` looks through paths and evidence without stuffing
   the whole tree into the prompt.
 - **Reuse the utterance** — tokens from the current chat line re-rank the loose
@@ -48,7 +47,7 @@ would be the next step if paged context is still too coarse.
 
 Describe and categorize skip files inside a layout unit and log
 
-`Pictures · deferred · 133 files stay in this folder until the assistant breaks it up`.
+`Pictures · deferred · 133 files stay in this folder as a unit`.
 
 Extract (tags/EXIF) still runs so unit summaries and later inspect/search have
 facts. Uncheck **Reuse previous analysis** (or pass `--fresh`) when you want
