@@ -428,6 +428,7 @@ pub fn validate(
         .map(|placement| (placement.asset, *placement))
         .collect();
     check_move_together_bundles(snapshot, &accepted_by_asset, &mut issues);
+    check_preserve_layout_bundles(snapshot, &accepted_by_asset, &mut issues);
 
     let mut moves: Vec<(AssetId, RelativePath, RelativePath)> = Vec::new();
     for placement in accepted {
@@ -626,6 +627,82 @@ fn check_protected_member(
     }
 }
 
+fn check_preserve_layout_bundles(
+    snapshot: &WorkspaceSnapshot,
+    accepted: &HashMap<AssetId, &Placement>,
+    issues: &mut Vec<PlanIssue>,
+) {
+    for bundle in &snapshot.bundles {
+        let BundleConstraint::PreserveLayout { root } = &bundle.constraint else {
+            continue;
+        };
+        let files: Vec<&ObservedEntry> = bundle
+            .members
+            .iter()
+            .filter_map(|id| snapshot.entry(*id))
+            .filter(|entry| entry.kind == EntryKind::File)
+            .collect();
+        if files.len() < 2 {
+            continue;
+        }
+        let destinations: Vec<(&ObservedEntry, RelativePath)> = files
+            .iter()
+            .map(|entry| {
+                let dest = accepted
+                    .get(&entry.id)
+                    .map(|placement| placement.destination.clone())
+                    .unwrap_or_else(|| entry.path.clone());
+                (*entry, dest)
+            })
+            .collect();
+        if destinations.iter().all(|(entry, dest)| dest == &entry.path) {
+            continue;
+        }
+        let mut new_roots: BTreeSet<String> = BTreeSet::new();
+        let mut split = false;
+        for (entry, dest) in &destinations {
+            match implied_layout_root(root, &entry.path, dest) {
+                Some(new_root) => {
+                    new_roots.insert(new_root.case_fold());
+                }
+                None => split = true,
+            }
+        }
+        if split || new_roots.len() != 1 {
+            issues.push(PlanIssue::error(
+                "bundle_split",
+                format!(
+                    "hard bundle '{}' must keep members under the same relocated folder",
+                    bundle.label
+                ),
+                files.iter().map(|entry| entry.id).collect(),
+            ));
+        }
+    }
+}
+
+fn implied_layout_root(
+    old_root: &RelativePath,
+    path: &RelativePath,
+    dest: &RelativePath,
+) -> Option<RelativePath> {
+    if path == old_root {
+        return Some(dest.clone());
+    }
+    let rest = path
+        .as_str()
+        .strip_prefix(&format!("{}/", old_root.as_str()))?;
+    if rest.is_empty() {
+        return Some(dest.clone());
+    }
+    let suffix = format!("/{rest}");
+    let new_root = dest.as_str().strip_suffix(&suffix)?;
+    if new_root.is_empty() {
+        return None;
+    }
+    RelativePath::parse(new_root).ok()
+}
+
 fn order_moves(
     moves: &[(AssetId, RelativePath, RelativePath)],
 ) -> Result<Vec<(AssetId, RelativePath, RelativePath)>, Vec<AssetId>> {
@@ -674,35 +751,25 @@ fn empty_directories_to_remove(
             parent = dir.parent();
         }
     }
-    let remaining_occupant = |dir: &RelativePath| {
-        snapshot.entries.iter().any(|entry| {
-            entry.kind != EntryKind::Directory
-                && entry.path.starts_with(dir)
-                && !moving.contains(&entry.path.case_fold())
-        }) || snapshot
-            .skipped
-            .iter()
-            .any(|entry| entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold()))
-    };
-    let removable_roots: BTreeSet<RelativePath> = emptied_roots
-        .into_iter()
+    let remaining_occupant =
+        |dir: &RelativePath| {
+            snapshot.entries.iter().any(|entry| {
+                entry.kind != EntryKind::Directory
+                    && entry.path.starts_with(dir)
+                    && !moving.contains(&entry.path.case_fold())
+            }) || snapshot.skipped.iter().any(|entry| {
+                entry.path.starts_with(dir) && !moving.contains(&entry.path.case_fold())
+            }) || snapshot.entries.iter().any(|entry| {
+                entry.kind == EntryKind::Directory
+                    && entry.path.starts_with(dir)
+                    && entry.path != *dir
+                    && !emptied_roots.contains(&entry.path)
+            })
+        };
+    let mut removable: Vec<RelativePath> = emptied_roots
+        .iter()
         .filter(|dir| !occupied.contains(&dir.case_fold()) && !remaining_occupant(dir))
-        .collect();
-    let mut candidates = removable_roots.clone();
-    for entry in &snapshot.entries {
-        if entry.kind != EntryKind::Directory || entry.path.is_session_root() {
-            continue;
-        }
-        if removable_roots
-            .iter()
-            .any(|root| entry.path.starts_with(root))
-        {
-            candidates.insert(entry.path.clone());
-        }
-    }
-    let mut removable: Vec<RelativePath> = candidates
-        .into_iter()
-        .filter(|dir| !occupied.contains(&dir.case_fold()) && !remaining_occupant(dir))
+        .cloned()
         .collect();
     removable.sort_by_key(|path| std::cmp::Reverse(path.as_str().len()));
     removable
@@ -976,6 +1043,209 @@ mod tests {
         assert!(plan.is_some());
     }
 
+    #[test]
+    fn preserve_layout_split_is_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let only_night = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "accept one track",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Documents/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &only_night);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+    }
+
+    #[test]
+    fn preserve_layout_flatten_is_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let flattened = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "flatten library",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Pictures/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: day_id,
+                        destination: RelativePath::parse("Pictures/day.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id, day_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &flattened);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+    }
+
+    #[test]
+    fn preserve_layout_conflicting_new_roots_are_rejected() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let split_roots = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "two new roots",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Archives/Music/Ada/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: day_id,
+                        destination: RelativePath::parse("Other/Music/Ada/day.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id, day_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &split_roots);
+        assert!(plan.is_none());
+        assert!(issues.iter().any(|issue| issue.code == "bundle_split"));
+    }
+
+    #[test]
+    fn preserve_layout_unit_move_is_allowed() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let night = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let day = file("Music/Ada/day.mp3", FileFamily::Audio);
+        let night_id = night.id;
+        let day_id = day.id;
+        snapshot.entries.push(directory("Music"));
+        snapshot.entries.push(directory("Music/Ada"));
+        snapshot.entries.push(night);
+        snapshot.entries.push(day);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Music".into(),
+            members: vec![night_id, day_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+            },
+            reason: "library".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let relocated = revision
+            .with_patches(
+                RevisionAuthor::User,
+                "move library as a unit",
+                &[
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: night_id,
+                        destination: RelativePath::parse("Archives/Music/Ada/night.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::SetDestination {
+                        asset: day_id,
+                        destination: RelativePath::parse("Archives/Music/Ada/day.mp3")
+                            .unwrap_or_else(|e| panic!("{e}")),
+                        rationale: None,
+                    },
+                    aifs_domain::RevisionPatch::Accept {
+                        assets: vec![night_id, day_id],
+                    },
+                ],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &relocated);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error),
+            "unit move should plan, got {issues:?}"
+        );
+        assert!(plan.is_some());
+    }
+
     fn directory(path: &str) -> ObservedEntry {
         ObservedEntry {
             id: AssetId::new(),
@@ -1172,6 +1442,34 @@ mod tests {
                     if path.as_str() == "dump/keep-empty" || path.as_str() == "dump"
             )),
             "must not delete unrelated empty folders while dump still has files"
+        );
+    }
+
+    #[test]
+    fn preexisting_empty_folder_is_not_removed_when_sibling_files_leave() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        snapshot.entries.push(directory("dump"));
+        snapshot.entries.push(directory("dump/keep-empty"));
+        snapshot
+            .entries
+            .push(file("dump/a.txt", FileFamily::Document));
+        let revision = accept_all(&propose(&snapshot, &ProposalPolicy::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &revision);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error)
+        );
+        let plan = plan.unwrap_or_else(|| panic!("plan"));
+        assert!(
+            !plan.operations.iter().any(|planned| matches!(
+                planned.operation,
+                Operation::RemoveEmptyDirectory { ref path }
+                    if path.as_str() == "dump/keep-empty" || path.as_str() == "dump"
+            )),
+            "pre-existing empty folders must keep their parent, got {:?}",
+            plan.operations
         );
     }
 
