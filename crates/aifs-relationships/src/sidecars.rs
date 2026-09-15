@@ -60,7 +60,24 @@ fn sidecar_bundle(members: &[&ObservedEntry], stem: &str) -> Option<Bundle> {
         return None;
     }
 
-    let anchor = pick_anchor(members);
+    let allowed = companion_families(
+        has_raw,
+        has_image,
+        has_video,
+        has_audio,
+        has_subtitle,
+        has_sidecar,
+    );
+    let members: Vec<&ObservedEntry> = members
+        .iter()
+        .copied()
+        .filter(|entry| allowed.contains(&entry.family))
+        .collect();
+    if members.len() < 2 {
+        return None;
+    }
+
+    let anchor = pick_anchor(&members);
     Some(Bundle {
         id: BundleId::new(),
         kind: BundleKind::SidecarGroup,
@@ -70,6 +87,30 @@ fn sidecar_bundle(members: &[&ObservedEntry], stem: &str) -> Option<Bundle> {
         constraint: BundleConstraint::MoveTogether,
         reason: "Companion files share a stem and should stay together.".to_owned(),
     })
+}
+
+fn companion_families(
+    has_raw: bool,
+    has_image: bool,
+    has_video: bool,
+    has_audio: bool,
+    has_subtitle: bool,
+    has_sidecar: bool,
+) -> Vec<FileFamily> {
+    let mut allowed = Vec::new();
+    if has_raw && (has_image || has_sidecar) {
+        allowed.extend([FileFamily::RawImage, FileFamily::Image, FileFamily::Sidecar]);
+    }
+    if has_video && has_subtitle {
+        allowed.extend([FileFamily::Video, FileFamily::Subtitle]);
+    }
+    if has_audio && (has_subtitle || has_sidecar) {
+        allowed.extend([FileFamily::Audio, FileFamily::Subtitle, FileFamily::Sidecar]);
+    }
+    if has_image && has_sidecar {
+        allowed.extend([FileFamily::Image, FileFamily::Sidecar]);
+    }
+    allowed
 }
 
 fn pick_anchor(members: &[&ObservedEntry]) -> AssetId {
@@ -166,11 +207,24 @@ pub(crate) fn parent_key(entry: &ObservedEntry) -> String {
 
 pub(crate) fn grouping_stem(entry: &ObservedEntry) -> String {
     let stem = entry.stem();
-    if entry.family == FileFamily::Subtitle {
-        strip_language_suffix(stem).to_ascii_lowercase()
+    let stripped = if entry.family == FileFamily::Subtitle {
+        strip_language_suffix(stem)
+    } else if entry.family == FileFamily::Sidecar {
+        strip_media_extension_suffix(stem)
     } else {
-        stem.to_ascii_lowercase()
+        stem
+    };
+    stripped.to_ascii_lowercase()
+}
+
+fn strip_media_extension_suffix(stem: &str) -> &str {
+    let Some((head, tail)) = stem.rsplit_once('.') else {
+        return stem;
+    };
+    if head.is_empty() || FileFamily::from_extension(tail) == FileFamily::Generic {
+        return stem;
     }
+    head
 }
 
 fn strip_language_suffix(stem: &str) -> &str {
