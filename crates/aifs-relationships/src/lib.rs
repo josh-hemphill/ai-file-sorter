@@ -34,6 +34,10 @@ fn add_project_bundles(snapshot: &mut WorkspaceSnapshot, protect_projects: bool)
         if project.strength != ProjectStrength::Strong {
             continue;
         }
+        if project.root.is_session_root() {
+            // Recorded on snapshot.projects so the UI can banner; files stay organisable.
+            continue;
+        }
         let members: Vec<_> = snapshot
             .entries
             .iter()
@@ -62,8 +66,8 @@ fn add_project_bundles(snapshot: &mut WorkspaceSnapshot, protect_projects: bool)
 mod tests {
     use super::*;
     use aifs_domain::{
-        AssetId, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry, RelationshipKind,
-        RelativePath, SessionId,
+        AssetId, BundleConstraint, EntryKind, FileFamily, FileIdentity, LockState, ObservedEntry,
+        ProjectMatch, ProjectStrength, RelationshipKind, RelativePath, SessionId,
     };
     use std::path::PathBuf;
 
@@ -214,5 +218,108 @@ mod tests {
             .unwrap_or_else(|| panic!("series bundle"));
         assert_eq!(bundle.members.len(), 3);
         assert!(!bundle.is_hard());
+    }
+
+    #[test]
+    fn session_root_strong_project_does_not_protect_every_file() {
+        let readme = file("README.md", FileFamily::Document);
+        let nested = file("notes.txt", FileFamily::Document);
+        let mut snapshot = snapshot_with(vec![readme.clone(), nested.clone()]);
+        snapshot.projects.push(ProjectMatch {
+            root: RelativePath::session_root(),
+            rule_id: "git".into(),
+            name: "Git repository".into(),
+            strength: ProjectStrength::Strong,
+            reason: "stable relative paths".into(),
+        });
+        snapshot.projects.push(ProjectMatch {
+            root: RelativePath::parse("rust-app").unwrap_or_else(|e| panic!("{e}")),
+            rule_id: "rust".into(),
+            name: "Rust project".into(),
+            strength: ProjectStrength::Strong,
+            reason: "Cargo metadata".into(),
+        });
+        let rust_src = ObservedEntry {
+            id: AssetId::new(),
+            path: RelativePath::parse("rust-app/src/main.rs").unwrap_or_else(|e| panic!("{e}")),
+            kind: EntryKind::File,
+            family: FileFamily::Code,
+            identity: FileIdentity {
+                size: 10,
+                ..FileIdentity::default()
+            },
+            is_hidden: false,
+            lock: LockState::Readable,
+        };
+        snapshot.entries.push(rust_src.clone());
+        enrich(&mut snapshot, true);
+        assert!(
+            snapshot.bundles.iter().all(|bundle| {
+                !matches!(bundle.constraint, BundleConstraint::Protected { .. })
+                    || !bundle.members.contains(&readme.id)
+            }),
+            "session-root git must not freeze inbox files, got {:?}",
+            snapshot.bundles
+        );
+        assert!(
+            snapshot.bundles.iter().any(|bundle| {
+                matches!(bundle.constraint, BundleConstraint::Protected { .. })
+                    && bundle.members.contains(&rust_src.id)
+            }),
+            "nested strong projects must stay protected, got {:?}",
+            snapshot.bundles
+        );
+    }
+
+    #[test]
+    fn sidecar_group_excludes_unrelated_same_stem_siblings() {
+        let jpeg = file("trip/IMG_1.jpg", FileFamily::Image);
+        let xmp = file("trip/IMG_1.xmp", FileFamily::Sidecar);
+        let notes = file("trip/IMG_1.txt", FileFamily::Document);
+        let mut snapshot = snapshot_with(vec![jpeg.clone(), xmp.clone(), notes.clone()]);
+        enrich(&mut snapshot, true);
+        let bundle = snapshot
+            .bundles
+            .iter()
+            .find(|bundle| bundle.kind == BundleKind::SidecarGroup)
+            .unwrap_or_else(|| panic!("sidecar bundle"));
+        assert_eq!(bundle.members.len(), 2);
+        assert!(bundle.members.contains(&jpeg.id));
+        assert!(bundle.members.contains(&xmp.id));
+        assert!(!bundle.members.contains(&notes.id));
+    }
+
+    #[test]
+    fn same_stem_sidecars_in_different_folders_stay_separate() {
+        let mut snapshot = snapshot_with(vec![
+            file("a/IMG_1.jpg", FileFamily::Image),
+            file("a/IMG_1.xmp", FileFamily::Sidecar),
+            file("b/IMG_1.jpg", FileFamily::Image),
+            file("b/IMG_1.xmp", FileFamily::Sidecar),
+        ]);
+        enrich(&mut snapshot, true);
+        let groups: Vec<_> = snapshot
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.kind == BundleKind::SidecarGroup)
+            .collect();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|bundle| bundle.members.len() == 2));
+    }
+
+    #[test]
+    fn adobe_sidecar_strips_inner_media_suffix() {
+        let raw = file("photo.CR2", FileFamily::RawImage);
+        let xmp = file("photo.CR2.xmp", FileFamily::Sidecar);
+        let mut snapshot = snapshot_with(vec![raw.clone(), xmp.clone()]);
+        enrich(&mut snapshot, true);
+        let bundle = snapshot
+            .bundles
+            .iter()
+            .find(|bundle| bundle.kind == BundleKind::SidecarGroup)
+            .unwrap_or_else(|| panic!("sidecar bundle"));
+        assert_eq!(bundle.members.len(), 2);
+        assert!(bundle.members.contains(&raw.id));
+        assert!(bundle.members.contains(&xmp.id));
     }
 }
