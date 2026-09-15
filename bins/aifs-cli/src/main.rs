@@ -1,10 +1,12 @@
 //! Command-line interface that talks to `aifs-engine` over stdio.
 
-use aifs_domain::{JournalStatus, RevisionAuthor, RevisionPatch, SessionId};
+use aifs_domain::{
+    ApplyJournal, JournalStatus, Operation, OperationPlan, RevisionAuthor, RevisionPatch, SessionId,
+};
 use aifs_engine_client::{EngineClient, discover_engine_binary};
 use aifs_protocol::{ProposalPolicy, ScanOptions};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// AI File Sorter CLI. Every command is executed by the isolated engine process.
@@ -204,15 +206,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .into());
             }
             if !json {
-                println!(
-                    "{} {} ({} moves, {} done, dry_run={})",
-                    if apply { "Applied" } else { "Previewed" },
-                    folder.display(),
-                    plan.move_count(),
-                    journal.done_count(),
-                    journal.dry_run
-                );
-                println!("  session {}  journal {}", snapshot.session, journal.id);
+                print_organize_preview(&folder, apply, &plan, &journal, snapshot.session);
             }
             let _ = client.shutdown();
             Ok(())
@@ -289,5 +283,36 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let _ = client.shutdown();
             Ok(())
         }
+    }
+}
+
+/// Prints a human from→to preview of the planned operations.
+fn print_organize_preview(
+    folder: &Path,
+    apply: bool,
+    plan: &OperationPlan,
+    journal: &ApplyJournal,
+    session: SessionId,
+) {
+    println!(
+        "{} {} ({} moves, {} done, dry_run={})",
+        if apply { "Applied" } else { "Previewed" },
+        folder.display(),
+        plan.move_count(),
+        journal.done_count(),
+        journal.dry_run
+    );
+    for planned in &plan.operations {
+        println!("  {}", format_planned_operation(&planned.operation));
+    }
+    println!("  session {}  journal {}", session, journal.id);
+}
+
+/// One-line label for a planned filesystem mutation.
+fn format_planned_operation(operation: &Operation) -> String {
+    match operation {
+        Operation::CreateDirectory { path } => format!("create {path}"),
+        Operation::Move { from, to, .. } => format!("{from} → {to}"),
+        Operation::RemoveEmptyDirectory { path } => format!("remove empty {path}"),
     }
 }

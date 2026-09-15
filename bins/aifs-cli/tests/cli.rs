@@ -138,6 +138,10 @@ fn organize_dry_run_does_not_move_files() {
     assert!(text.contains("Previewed"), "{text}");
     assert!(text.contains("dry_run=true"), "{text}");
     assert!(
+        text.contains("readme.txt →"),
+        "human organize output must show from→to rows, got:\n{text}"
+    );
+    assert!(
         source.is_file(),
         "dry-run must leave {} in place",
         source.display()
