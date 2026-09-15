@@ -30,8 +30,13 @@ A directory is complete for an accelerator when:
 | Accel | Required prefixes |
 |-------|-------------------|
 | cpu, metal | `llama`, `ggml` (core: `ggml`, `ggml-base`, or `ggml-cpu` only) |
-| cuda | those, plus `ggml-cuda` |
+| cuda | those, plus `ggml-cuda` **or** a statically linked worker that imports `cublas`/`cudart` with those toolkit DLLs beside it |
 | vulkan | those, plus `ggml-vulkan` |
+
+MSVC `llama-cpp-sys-2` often sets `BUILD_SHARED_LIBS=OFF`, so there is no
+`llama.dll` / `ggml-cuda.dll`. CUDA 13 keeps `cublas64_*.dll` in
+`CUDA_PATH/bin/x64` (not `bin/`). Staging copies that toolkit slice next to
+the worker and does not copy `nvcuda.dll`.
 
 `nvcuda.dll` / `libcuda.so` are host driver libraries. They never satisfy
 `ggml-cuda` or core `ggml`. `ggml-cuda.dll` does not count as core `ggml`.
@@ -47,11 +52,15 @@ runtime libs into:
 - `target/{profile}/llm-runtime/<accel>/`
 - `apps/desktop/src-tauri/resources/llm-runtime/<accel>/`
 
-`<accel>` is inferred from libraries next to the Cargo binary (and `deps/` /
-`build/llama-cpp-*/out`),
-including `ggml-cuda` / `ggml-vulkan` even when those plugins are not yet a
-complete payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
-into a CUDA payload. Staging one accelerator does not delete sibling folders
+`<accel>` is inferred from libraries next to the Cargo binary, in `deps/`, and
+nested under `build/llama-cpp-*/out` (MSVC cmake-rs often leaves
+`ggml-cuda.dll` in `out/bin/Release` or `out/build/bin/Release`, not the `out`
+root). Staging walks those trees and skips `CMakeFiles`. `ggml-cuda` /
+`ggml-vulkan` still count even when those plugins are not yet a complete
+payload directory. CUDA toolkit libs (`CUDA_PATH/bin`) are copied only
+into a CUDA payload. `pnpm llama:cuda` (`AIFS_LLM_FEATURES=cuda`) fails
+closed if `ggml-cuda` was not harvested, instead of writing a worker-only
+`llm-runtime/cpu`. Staging one accelerator does not delete sibling folders
 (`cpu` must not wipe `cuda`). Extract workers still copy into `binaries/` as
 `externalBin` sidecars. The LLM worker is **not** listed in `externalBin` and
 is not copied into `binaries/`; a packaged flat sidecar would collide with
@@ -70,11 +79,16 @@ The engine also walks ancestors of the engine exe and `CARGO_MANIFEST_DIR`
 (`LLM_ACCEL_AUTO_ORDER`). `auto` skips CUDA/Vulkan/Metal when
 `host_accel_available` is false (`CUDA_PATH` is not a host probe). An explicit
 `gpu_preference` of `cuda` still spawns a complete CUDA payload if the probe
-fails. Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned.
-Discovery then names why CUDA was not used (no `llm-runtime/cuda`, missing
-`ggml-cuda`, or NVIDIA probe failed at `%SystemRoot%\System32\nvcuda.dll`).
-`AIFS_WORKER_LLM` still overrides discovery; library search is that file's
-directory.
+fails. Incomplete llama-linked Cargo `target/debug/aifs-worker-llm` is not
+spawned as a stub; a complete CUDA snapshot is still used if the NVIDIA probe
+is a false negative. Discovery then names why CUDA was not used (no
+`llm-runtime/cuda`, missing `ggml-cuda`, or NVIDIA probe failed at
+`%SystemRoot%\System32\nvcuda.dll`).
+The desktop client does not set `AIFS_WORKER_LLM` (that used to pin Cargo
+`target/debug/aifs-worker-llm` and skip a complete `llm-runtime/cuda`).
+`AIFS_WORKER_LLM` still overrides discovery when it points at a staged
+payload, a complete sidecar, or a stub; an unstaged llama-linked cargo exe is
+ignored. Library search is that file's directory.
 
 Spawn prepends **only** the payload directory to `PATH` /
 `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. Hello/spawn failures that look like a
@@ -84,7 +98,9 @@ essay. `get_models` lists complete payloads as `llm_payloads` without spawning
 hello.
 
 `pnpm llama` / `llama:cuda` / `llama:vulkan` each compile **one** accelerator
-and stage that payload. `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two
+and stage that payload. `pnpm desktop` / `tauri dev` skip that compile when the
+requested `llm-runtime/<accel>/` folder is already complete (`AIFS_FORCE_LLAMA=1`
+rebuilds; `AIFS_SKIP_LLAMA=1` always skips). `AIFS_LLM_FEATURES=cuda,vulkan` is refused (two
 payloads, two cargo builds). A CPU rebuild does not delete an existing
 `llm-runtime/cuda` snapshot.
 

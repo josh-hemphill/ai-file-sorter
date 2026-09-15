@@ -44,6 +44,12 @@
 - `pnpm llama:cuda` pins `CMAKE_CUDA_ARCHITECTURES` to the local GPU SM and caps
   cmake jobs so the silent `llama-cpp-sys-2` CUDA compile finishes in minutes
   instead of looking hung while nvcc builds every default architecture.
+- LLM payload staging walks nested `build/llama-cpp-*/out` trees so Windows
+  MSVC cmake `out/bin/Release` copies of `llama` / `ggml` / `ggml-cuda` land in
+  `llm-runtime/cuda`. A statically linked CUDA worker (no `ggml-cuda.dll`) is
+  still staged as CUDA when `ggml-cuda.lib` or a `cublas64_*` import is present,
+  copying CUDA 13 toolkit DLLs from `CUDA_PATH/bin/x64`. `pnpm llama:cuda` fails
+  if neither the plugin nor cublas/cudart was harvested.
 - Activity scan paths stay on one ellipsis line (Current column and footer Working
   line) so long titles no longer resize the layout. Song-title punctuation (`?`,
   `:`, `|`) is kept on observed paths and encoded to Windows-safe lookalikes when
@@ -55,6 +61,22 @@
   Tauri left an empty sidecar placeholder. Discovery skips empty files, walks
   up to Cargo `target/`, and scan logs the real spawn/hello error if the worker
   still cannot start.
+- Desktop no longer sets `AIFS_WORKER_LLM` to Cargo `target/debug/aifs-worker-llm`.
+  That override skipped a complete `llm-runtime/cuda` and spawned the unstaged
+  worker (Windows `STATUS_DLL_NOT_FOUND` / missing cublas). The engine autoselects
+  the staged payload; `AIFS_WORKER_LLM` only wins for a staged folder, a complete
+  sidecar, or a stub.
+- `pnpm desktop` / `pnpm desktop:cuda` skip `cargo engine-llm` when
+  `llm-runtime/<accel>/` is already complete. Rebuild with `pnpm llama:cuda` or
+  `AIFS_FORCE_LLAMA=1`. `pnpm desktop:open:cuda` starts Tauri without `pnpm build`.
+  Scan logs the spawned LLM worker path so CUDA vs cargo sidecar is visible in
+  Activity.
+- `cargo engine-bins` builds the stub LLM worker. Staging no longer copies that
+  stub over a llama-linked `llm-runtime/cuda` payload. A stub sitting next to
+  leftover cublas DLLs is not treated as a complete CUDA snapshot.
+- Settings and Setup stay mounted during scan, so switching pages does not show
+  a loading blank. While the engine is busy, `get_settings` / `get_models` return
+  the last snapshot instead of waiting on the scan JSONL lock.
 - LLM worker spawn/hello failures include the child exit code and the last
   stderr (and non-JSON stdout) lines, so scan logs can show missing CUDA
   libraries instead of only "worker closed stdout unexpectedly".
@@ -80,7 +102,8 @@
   Vulkan → Metal → CPU) using host driver probes, not `CUDA_PATH`.
   `AIFS_LLM_BACKEND` overrides Settings `gpu_preference`. An explicit CUDA
   preference still spawns a complete CUDA payload if the NVIDIA probe fails.
-  Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned. Spawn sets the
+  Incomplete Cargo `target/debug/aifs-worker-llm` is not spawned. The desktop
+  does not pin that cargo path via `AIFS_WORKER_LLM`. Spawn sets the
   library search path to that payload directory only. `get_models` still
   does not hello the worker.
 - `pnpm llama` / `pnpm llama:cuda` snapshot the current worker into
@@ -99,8 +122,10 @@
   Windows `STATUS_DLL_NOT_FOUND` copy stays short. A Cargo `target/debug`
   folder is not called a CPU payload. When CUDA is not selected, the error
   says whether `llm-runtime/cuda` is missing/`ggml-cuda` is incomplete or the
-  NVIDIA probe failed (`%SystemRoot%\System32\nvcuda.dll`). Scan logs a shared
-  worker-start failure once for Categorize/Vision/Document.
+  NVIDIA probe failed (`%SystemRoot%\System32\nvcuda.dll`). A llama-linked cargo
+  exe is not spawned as a stub; a complete CUDA payload is used even when that
+  probe is a false negative. Scan logs a shared worker-start failure once for
+  Categorize/Vision/Document.
 - Historical 1.9.x notes below describe the upstream Qt product.
 
 

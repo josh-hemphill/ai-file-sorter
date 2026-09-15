@@ -201,6 +201,11 @@ impl WorkerClient {
         Ok(client)
     }
 
+    /// Spawned worker path (staged `llm-runtime/<accel>/` or an explicit override).
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+
     /// Kills the child immediately. Used when scan cancel arrives during infer.
     pub fn kill(&mut self) {
         self.stdin.take();
@@ -885,18 +890,7 @@ fn payload_runtime_hint(spawned: &Path) -> String {
             names = missing.join(", "),
         );
     }
-    let missing = infer_missing_core_libs(dir);
-    if missing.is_empty() {
-        return format!(
-            "{dir} is not a staged llm-runtime payload.",
-            dir = dir.display()
-        );
-    }
-    format!(
-        "{dir} is not a staged llm-runtime payload (missing {names}).",
-        dir = dir.display(),
-        names = missing.join(", "),
-    )
+    payload::explain_unstaged_spawn(spawned)
 }
 
 fn explain_worker_exit_code(code: i32) -> Option<&'static str> {
@@ -1027,16 +1021,18 @@ mod tests {
         );
         let cargo_dir = root.join("debug");
         std::fs::create_dir_all(&cargo_dir).unwrap_or_else(|error| panic!("{error}"));
-        std::fs::write(cargo_dir.join("aifs-worker-llm.exe"), b"worker")
+        std::fs::write(cargo_dir.join("aifs-worker-llm.exe"), b"MZ\0llama.dll\0")
             .unwrap_or_else(|error| panic!("{error}"));
         let cargo_spawned = cargo_dir.join("aifs-worker-llm.exe");
+        let _roots = override_llm_list_roots(vec![root.clone()]);
         let cargo_hint =
             dll_search_hint(code, &cargo_spawned).unwrap_or_else(|| panic!("cargo hint"));
         assert!(
-            cargo_hint.contains("not a staged llm-runtime payload"),
+            cargo_hint.contains("No usable LLM payload") && cargo_hint.contains("ggml-cuda"),
             "{cargo_hint}"
         );
-        assert!(cargo_hint.contains("missing llama, ggml"), "{cargo_hint}");
+        assert!(cargo_hint.contains("links llama/ggml"), "{cargo_hint}");
+        assert!(!cargo_hint.contains("cpu payload"), "{cargo_hint}");
         assert!(!cargo_hint.contains("cpu payload"), "{cargo_hint}");
         let media = Path::new("apps/desktop/src-tauri/binaries/aifs-worker-media.exe");
         let media_hint = dll_search_hint(code, media).unwrap_or_else(|| panic!("media hint"));

@@ -2,8 +2,9 @@
 #   pnpm build / make build     engine, CLI, and workers
 #   pnpm test  / make test      cargo test --workspace (builds engine bins first)
 #   pnpm check / make check     fmt, clippy, and tests
-#   pnpm desktop                stub engine/workers, then llama.cpp LLM worker, then Tauri/Vue
+#   pnpm desktop                engine/workers, then Tauri (reuses staged llm-runtime; llama compiles if missing)
 #   pnpm desktop:cuda           same with CUDA (sets AIFS_LLM_FEATURES so Tauri does not rebuild CPU llama)
+#   pnpm desktop:open:cuda      start Tauri only; skip llama when llm-runtime/cuda is already staged
 #   pnpm desktop:vulkan         same with Vulkan
 #   pnpm llama                  llama.cpp LLM worker; stages llm-runtime/<accel>/ (needs a C++ compiler)
 #   pnpm llama:cuda             same with CUDA (pins GPU SM; cargo looks idle on llama-cpp-sys-2)
@@ -17,8 +18,9 @@ help:
 		'pnpm build     cargo engine-bins (engine, CLI, workers)' \
 		'pnpm test      cargo test --workspace' \
 		'pnpm check     fmt + clippy + test' \
-		'pnpm desktop   build binaries, llama worker, and start Tauri/Vue' \
-		'pnpm desktop:cuda  same with CUDA (AIFS_LLM_FEATURES; Tauri beforeDevCommand keeps GPU llama)' \
+		'pnpm desktop   start Tauri/Vue (reuses staged llm-runtime; compiles llama if missing)' \
+		'pnpm desktop:cuda  same with CUDA (AIFS_LLM_FEATURES; skips llama when cuda payload exists)' \
+		'pnpm desktop:open:cuda  start Tauri only (no pnpm build; still skips llama if staged)' \
 		'pnpm desktop:vulkan same with Vulkan' \
 		'pnpm cli -- scan fixtures/inbox-mixed' \
 		'pnpm llama     llama.cpp LLM worker (needs a C++ compiler; used by pnpm desktop; wraps CMAKE_GENERATOR on Windows)' \
@@ -48,7 +50,6 @@ check:
 	$(MAKE) test
 
 desktop: build
-	$(MAKE) llama
 	pnpm install
 	pnpm --filter desktop tauri dev
 

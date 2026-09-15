@@ -33,7 +33,7 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
   assert.equal(pkg.scripts.check, 'pnpm fmt:check && pnpm clippy && pnpm test');
   assert.equal(
     pkg.scripts.desktop,
-    'pnpm build && pnpm llama && pnpm --filter desktop tauri dev',
+    'pnpm build && pnpm --filter desktop tauri dev',
   );
   assert.equal(
     pkg.scripts['desktop:cuda'],
@@ -47,8 +47,13 @@ test('root pnpm scripts orchestrate cargo and the desktop package', async () => 
     pkg.scripts['desktop:metal'],
     'node scripts/with-llm-features.mjs metal pnpm desktop',
   );
+  assert.equal(pkg.scripts['desktop:open'], 'pnpm --filter desktop tauri dev');
+  assert.equal(
+    pkg.scripts['desktop:open:cuda'],
+    'node scripts/with-llm-features.mjs cuda pnpm desktop:open',
+  );
   assert.equal(
     pkg.scripts['test:desktop'],
-    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs scripts/llm-features.test.mjs scripts/stage-llm-payload.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
+    'node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs scripts/llm-features.test.mjs scripts/stage-llm-payload.test.mjs scripts/ensure-llm-worker.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit',
   );
 });

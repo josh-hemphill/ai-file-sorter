@@ -188,7 +188,7 @@ watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
 watch(
   () => props.active,
   (active) => {
-    if (active) {
+    if (active && !busy.value) {
       void refreshModels();
     }
   },

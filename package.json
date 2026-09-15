@@ -18,12 +18,14 @@
     "fmt:check": "cargo fmt --all --check",
     "clippy": "cargo clippy --workspace --all-targets",
     "test": "pnpm build && cargo test --workspace",
-    "test:desktop": "node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs scripts/llm-features.test.mjs scripts/stage-llm-payload.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit",
+    "test:desktop": "node --test scripts/workspace.test.mjs scripts/windows-cmake-generator.test.mjs scripts/llama-cuda-env.test.mjs scripts/packaged-ggml.test.mjs scripts/llm-features.test.mjs scripts/stage-llm-payload.test.mjs scripts/ensure-llm-worker.test.mjs && pnpm --filter desktop test && pnpm --filter desktop exec vue-tsc --noEmit",
     "check": "pnpm fmt:check && pnpm clippy && pnpm test",
-    "desktop": "pnpm build && pnpm llama && pnpm --filter desktop tauri dev",
+    "desktop": "pnpm build && pnpm --filter desktop tauri dev",
     "desktop:cuda": "node scripts/with-llm-features.mjs cuda pnpm desktop",
     "desktop:vulkan": "node scripts/with-llm-features.mjs vulkan pnpm desktop",
     "desktop:metal": "node scripts/with-llm-features.mjs metal pnpm desktop",
+    "desktop:open": "pnpm --filter desktop tauri dev",
+    "desktop:open:cuda": "node scripts/with-llm-features.mjs cuda pnpm desktop:open",
     "cli": "cargo aifs"
   }
 }

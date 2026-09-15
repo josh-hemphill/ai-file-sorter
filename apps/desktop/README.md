@@ -11,6 +11,7 @@ From the **repository root**:
 pnpm install
 pnpm desktop
 pnpm desktop:cuda
+pnpm desktop:open:cuda
 pnpm desktop:vulkan
 ```
 
@@ -23,9 +24,12 @@ pnpm --filter desktop test
 pnpm --filter desktop tauri dev
 ```
 
-`tauri dev` also builds the engine, workers, and llama.cpp LLM worker via
-`beforeDevCommand`. CUDA/Vulkan/Metal are opt-in: `pnpm desktop:cuda` sets
+`tauri dev` rebuilds the engine and extract workers via `beforeDevCommand`.
+It compiles llama.cpp only when `llm-runtime/<accel>/` is missing (or
+`AIFS_FORCE_LLAMA=1`). CUDA/Vulkan/Metal are opt-in: `pnpm desktop:cuda` sets
 `AIFS_LLM_FEATURES` so that rebuild stays on GPU llama (plain `pnpm desktop` is CPU).
+`pnpm llama` / `pnpm llama:cuda` always recompile. After a CUDA payload exists,
+`pnpm desktop:cuda` or `pnpm desktop:open:cuda` starts the app without nvcc.
 Packaged builds copy the engine and extract workers into
 `src-tauri/binaries/{stem}-{target-triple}` and embed them as `externalBin`
 sidecars. The LLM worker is **not** an `externalBin` sidecar (a flat copy would

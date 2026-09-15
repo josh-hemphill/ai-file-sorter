@@ -119,7 +119,9 @@ the host driver is present; explicit `gpu_preference=cuda` still uses a complete
 CUDA payload if that probe fails). Unpackaged discovery does **not** fall back to
 an incomplete Cargo `aifs-worker-llm` next to the engine; packaged apps do not
 install that binary as a Tauri `externalBin` sidecar. `$AIFS_LLM_BACKEND`
-overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` still wins. Spawn sets
+overrides inventory `gpu_preference`. `$AIFS_WORKER_LLM` wins only for a staged
+payload, complete sidecar, or stub; the desktop does not pin Cargo
+`target/debug/aifs-worker-llm`. Spawn sets
 the library search path to that payload directory only. Spawn/hello failures
 include the child exit status and captured stderr (and non-JSON stdout banners)
 in the error text. Windows `STATUS_DLL_NOT_FOUND` (`exit -1073741515` /

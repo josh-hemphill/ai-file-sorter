@@ -73,10 +73,12 @@ cargo test --workspace
 ```
 
 `pnpm desktop` / `pnpm llama` compile llama.cpp into `aifs-worker-llm`
-(needs clang, CMake, and a C++ compiler). `pnpm llama` and Tauri's
-`beforeDevCommand` wrap `cargo engine-llm` so Windows can compile when Visual
+(needs clang, CMake, and a C++ compiler). `pnpm llama` always rebuilds.
+Tauri's `beforeDevCommand` wraps `cargo engine-llm` so Windows can compile when Visual
 Studio 2026 is installed but CMake is older than 4.2 (cmake-rs passes
-`-G "Visual Studio 18 2026"`, which those CMake builds do not know). Upgrade
+`-G "Visual Studio 18 2026"`, which those CMake builds do not know), and
+**skips that compile** when `llm-runtime/<accel>/` is already complete.
+Upgrade
 CMake to 4.2+ or set `CMAKE_GENERATOR` yourself (`Ninja`, or
 `Visual Studio 17 2022` when VS 2022 is present) if you invoke `cargo engine-llm`
 directly. Packaged Tauri builds (`beforeBuildCommand --packaged`) pin Windows/Linux
@@ -86,13 +88,17 @@ when only `GGML_NATIVE` is off) and on macOS set `CMAKE_INSTALL_RPATH=@loader_pa
 Local `pnpm llama` keeps llama-cpp-2 defaults. `pnpm build` and `cargo test --workspace` keep the stub worker so
 default CI stays fast. CUDA/Vulkan/Metal stay opt-in. `pnpm desktop` is CPU llama;
 use `pnpm desktop:cuda` / `pnpm desktop:vulkan` (or `AIFS_LLM_FEATURES`) so Tauri's
-`beforeDevCommand` does not overwrite a GPU worker with CPU `cargo engine-llm`:
+`beforeDevCommand` does not overwrite a GPU worker with CPU `cargo engine-llm`.
+After `pnpm llama:cuda`, start the app with `pnpm desktop:cuda` or
+`pnpm desktop:open:cuda` — llama.cpp is not compiled again unless you set
+`AIFS_FORCE_LLAMA=1`.
 
 ```bash
 pnpm llama
 pnpm llama:cuda
 pnpm llama:vulkan
 pnpm desktop:cuda
+pnpm desktop:open:cuda
 pnpm desktop:vulkan
 pnpm desktop:metal    # macOS
 AIFS_LLM_FEATURES=cuda pnpm desktop
