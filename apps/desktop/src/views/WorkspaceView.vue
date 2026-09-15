@@ -45,9 +45,14 @@ import {
   itemRows,
   loadRecentRoots,
   persistRecentRoots,
+  loadScanSessions,
+  persistScanSessions,
+  pruneScanSessions,
+  rememberScanSession,
+  engineActionsLocked,
+  rememberRoot,
   planCounts,
   previewRows,
-  rememberRoot,
   retainProgressMessage,
   cancelActionLabel,
   inFlightStatusText,
@@ -82,7 +87,9 @@ const cancelling = ref(false);
 const progress = ref<ProgressEvent | null>(null);
 const rootPath = ref("");
 const recentRoots = ref<string[]>(loadRecentRoots());
-const scanSessions = ref<Record<string, string>>({});
+const scanSessions = ref<Record<string, string>>(
+  pruneScanSessions(loadScanSessions(), recentRoots.value),
+);
 const preset = ref<IntentPreset>("inbox");
 const reuseEvidence = ref(true);
 const view = ref<CenterView>("structure");
@@ -92,6 +99,7 @@ const plan = ref<OperationPlan | null>(null);
 const issues = ref<PlanIssue[]>([]);
 const journal = ref<ApplyJournal | null>(null);
 const confirmApply = ref(false);
+const confirmPlanId = ref<string | null>(null);
 const selectedAsset = ref<string | null>(null);
 const query = ref("");
 const draft = ref("");
@@ -152,6 +160,9 @@ const journalForPlan = computed(() =>
 const applyLocked = computed(() =>
   planAlreadyApplied(journal.value, plan.value?.id),
 );
+const actionsLocked = computed(() =>
+  engineActionsLocked(busy.value, confirmApply.value),
+);
 const confirmSummary = computed(() =>
   applyConfirmCopy(snapshot.value?.root ?? rootPath.value, counts.value),
 );
@@ -186,6 +197,7 @@ watch(busy, (isBusy) => {
 });
 
 watch(recentRoots, (paths) => persistRecentRoots(paths), { deep: true });
+watch(scanSessions, (sessions) => persistScanSessions(sessions), { deep: true });
 watch(
   () => props.active,
   (active) => {
@@ -266,11 +278,15 @@ async function runScan() {
       reuseEvidence.value,
     );
     snapshot.value = next;
-    scanSessions.value = { ...scanSessions.value, [rootPath.value]: next.session };
     recentRoots.value = rememberRoot(recentRoots.value, rootPath.value);
+    scanSessions.value = rememberScanSession(
+      scanSessions.value,
+      rootPath.value,
+      next.session,
+      recentRoots.value,
+    );
     const proposed = await proposeSession(next.session, preset.value);
     revision.value = proposed;
-    view.value = "structure";
   } catch (error) {
     const text = String(error);
     engineError.value = /cancelled/i.test(text) ? "Scan cancelled." : text;
@@ -379,12 +395,24 @@ async function requestApply() {
     engineError.value = "Fix plan errors before applying.";
     return;
   }
+  confirmPlanId.value = plan.value.id;
   confirmApply.value = true;
 }
 
 async function confirmAndApply() {
+  const planId = confirmPlanId.value;
   confirmApply.value = false;
+  confirmPlanId.value = null;
+  if (!planId || plan.value?.id !== planId) {
+    engineError.value = "The plan changed. Validate again before Apply.";
+    return;
+  }
   await runApply(false);
+}
+
+function cancelApplyConfirm() {
+  confirmApply.value = false;
+  confirmPlanId.value = null;
 }
 
 async function runApply(dryRun: boolean) {
@@ -565,6 +593,7 @@ function familyOf(entry: ObservedEntry): string {
         v-else
         class="primary"
         type="button"
+        :disabled="confirmApply"
         @click="runScan"
       >
         Scan
@@ -646,6 +675,7 @@ function familyOf(entry: ObservedEntry): string {
                   <select
                     :value="placementFor(row.entry.id)?.review ?? 'proposed'"
                     :aria-label="`Review ${row.entry.path}`"
+                    :disabled="actionsLocked"
                     @click.stop
                     @change="
                       setReview(
@@ -677,6 +707,7 @@ function familyOf(entry: ObservedEntry): string {
                   <select
                     :value="placementFor(row.members[0]?.id ?? '')?.review ?? 'proposed'"
                     :aria-label="`Review bundle ${row.bundle.label}`"
+                    :disabled="actionsLocked"
                     @click.stop
                     @change="
                       setReviewAssets(
@@ -766,26 +797,26 @@ function familyOf(entry: ObservedEntry): string {
           >
             {{ cancelActionLabel(cancelling) }}
           </button>
-          <button type="button" :disabled="busy || !revision" @click="acceptAll">
+          <button type="button" :disabled="actionsLocked || !revision" @click="acceptAll">
             Approve all proposed changes
           </button>
-          <button type="button" :disabled="busy || !revision" @click="validatePlan">
+          <button type="button" :disabled="actionsLocked || !revision" @click="validatePlan">
             Validate
           </button>
-          <button type="button" :disabled="busy || !plan || applyLocked" @click="runApply(true)">
+          <button type="button" :disabled="actionsLocked || !plan || applyLocked" @click="runApply(true)">
             Preview
           </button>
           <button
             type="button"
             class="primary"
-            :disabled="busy || !plan || errorIssues.length > 0 || applyLocked"
+            :disabled="actionsLocked || !plan || errorIssues.length > 0 || applyLocked"
             @click="requestApply"
           >
             Apply
           </button>
           <button
             type="button"
-            :disabled="busy || !journalForPlan || journalForPlan.dry_run || journalForPlan.status === 'undone'"
+            :disabled="actionsLocked || !journalForPlan || journalForPlan.dry_run || journalForPlan.status === 'undone'"
             @click="runUndo"
           >
             Undo
@@ -826,17 +857,17 @@ function familyOf(entry: ObservedEntry): string {
       <form class="row" @submit.prevent="sendChat">
         <input
           v-model="draft"
-          :disabled="busy || !revision"
+          :disabled="actionsLocked || !revision"
           placeholder="Keep RAW and JPEG pairs together…"
         />
-        <button type="submit" :disabled="busy || !revision">Send</button>
+        <button type="submit" :disabled="actionsLocked || !revision">Send</button>
       </form>
     </aside>
     <ApplyConfirm
       v-if="confirmApply && snapshot"
       :root="snapshot.root"
       :summary="confirmSummary"
-      @cancel="confirmApply = false"
+      @cancel="cancelApplyConfirm"
       @confirm="confirmAndApply"
     />
   </div>
