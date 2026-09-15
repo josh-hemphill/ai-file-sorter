@@ -101,10 +101,12 @@ test("sourceTree nests files under directory segments", () => {
   assert.equal(tree.name, "Inbox");
   assert.equal(tree.path, ".");
   assert.equal(tree.fileCount, 2);
-  const music = findNode(tree, "Music");
+  const music = tree.children.find((child) => child.path === "Music");
   assert.equal(music?.kind, "directory");
   assert.equal(music?.fileCount, 1);
-  const track = findNode(tree, "Music/Artist/track.mp3");
+  const artist = music?.children.find((child) => child.path === "Music/Artist");
+  assert.equal(artist?.kind, "directory");
+  const track = artist?.children.find((child) => child.path === "Music/Artist/track.mp3");
   assert.equal(track?.kind, "file");
   assert.equal(track?.assetId, "f1");
   const readme = tree.children.find((child) => child.path === "readme.txt");
@@ -228,6 +230,22 @@ test("sourceTree chips PreserveLayout roots as move-as-a-unit", () => {
     ),
   );
   assert.deepEqual(chipLabels(findNode(tree, "Ada")), ["Move as a unit"]);
+});
+
+test("sourceTree chips PreserveLayout on the scan folder", () => {
+  const tree = sourceTree(
+    snapshotWith([fileEntry("f1", "notes.md")], {
+      bundles: [
+        {
+          id: "b1",
+          kind: "directory_role",
+          constraint: { kind: "preserve_layout", root: "." },
+          members: ["f1"],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(chipLabels(tree), ["Move as a unit"]);
 });
 
 test("sourceTree chips a session-root directory role on the scan folder", () => {

@@ -10,9 +10,8 @@ const props = withDefaults(
   defineProps<{
     node: SourceTreeNode;
     selectedAsset?: string | null;
-    depth?: number;
   }>(),
-  { selectedAsset: null, depth: 0 },
+  { selectedAsset: null },
 );
 
 const emit = defineEmits<{
@@ -85,7 +84,6 @@ function onSelect(assetId: string) {
         :key="child.path"
         :node="child"
         :selected-asset="selectedAsset"
-        :depth="depth + 1"
         @select="onSelect"
       />
     </ul>

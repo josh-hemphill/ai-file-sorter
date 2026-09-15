@@ -146,7 +146,7 @@ function attachChips(
   }
   for (const bundle of snapshot.bundles) {
     const root = preserveLayoutRoot(bundle);
-    if (!root || isSessionRootPath(root)) {
+    if (!root) {
       continue;
     }
     addChip(nodes.get(normalizeTreePath(root)), {
