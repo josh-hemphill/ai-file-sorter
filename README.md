@@ -33,11 +33,13 @@ pnpm build
 pnpm cli -- scan fixtures/inbox-mixed
 pnpm cli -- scan /path/to/folder --session <id>   # resume extract/analyze
 pnpm cli -- scan /path/to/folder --session <id> --fresh  # discard carried evidence
-pnpm cli -- organize fixtures/inbox-mixed          # dry run
+pnpm cli -- organize fixtures/inbox-mixed          # dry run (prints from→to)
 pnpm cli -- organize /path/to/folder --apply
 pnpm cli -- chat fixtures/inbox-mixed "Move podcasts away from music"
 pnpm cli -- compare fixtures/inbox-mixed fixtures/inbox-mixed.expected.json
 ```
+
+`compare` against `fixtures/inbox-mixed.expected.json` expects `readme.txt` to land in `Documents/2021-07/` because tests pin copied fixture mtimes to 2021-07-15. Git does not store mtimes, so comparing the tree in place uses each file’s current clock and can change that date suffix.
 
 `pnpm build` (or `make build` / `cargo engine-bins`) compiles `aifs-engine`, the `aifs` CLI, and the media / document /
 vision / LLM workers into `target/debug/`. The CLI locates `aifs-engine` next to
