@@ -212,6 +212,17 @@ pub(crate) fn files_look_like_camera_dump(files: &[ObservedEntry]) -> bool {
     camera * 2 >= media.len()
 }
 
+/// True for a leaf `Photos`/`Pictures` folder of real camera stems.
+pub(crate) fn is_leaf_photo_camera_dump(
+    name: &str,
+    files: &[ObservedEntry],
+    has_child_dirs: bool,
+) -> bool {
+    !has_child_dirs
+        && PHOTO_DUMP_TOKENS.contains(&name.to_ascii_lowercase().as_str())
+        && files_look_like_camera_dump(files)
+}
+
 fn is_nested_photo_dump(name: &str, parent: &str) -> bool {
     PHOTO_DUMP_TOKENS.contains(&name) && PHOTO_DUMP_TOKENS.contains(&parent)
 }
@@ -343,5 +354,8 @@ mod tests {
             folder_shape("projects", None, &files),
             FolderShape::CameraDump
         );
+        assert!(is_leaf_photo_camera_dump("Photos", &files, false));
+        assert!(!is_leaf_photo_camera_dump("Videos", &files, false));
+        assert!(!is_leaf_photo_camera_dump("Photos", &files, true));
     }
 }

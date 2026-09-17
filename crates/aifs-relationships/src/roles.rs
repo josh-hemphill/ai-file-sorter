@@ -6,8 +6,8 @@ use aifs_domain::{
 };
 
 use crate::folder_shape::{
-    BROAD_NAMES, FolderShape, files_look_like_camera_dump, folder_shape, is_date_folder_name,
-    is_dump_shaped, is_year_name, path_has_broad_segment,
+    BROAD_NAMES, FolderShape, folder_shape, is_date_folder_name, is_dump_shaped,
+    is_leaf_photo_camera_dump, is_year_name, path_has_broad_segment,
 };
 
 /// Classifies directories and emits PreserveLayout bundles for units that must not flatten.
@@ -102,12 +102,11 @@ fn ancestor_freezes_layout(snapshot: &WorkspaceSnapshot, root: &RelativePath) ->
         .cloned()
         .collect();
     let parent_name = root.parent().map(|parent| parent.file_name().to_owned());
-    let shape = folder_shape(
-        &root.file_name().to_ascii_lowercase(),
-        parent_name.as_deref(),
-        &files,
-    );
-    if is_dump_shaped(shape) {
+    let name = root.file_name().to_ascii_lowercase();
+    let shape = folder_shape(&name, parent_name.as_deref(), &files);
+    if is_dump_shaped(shape)
+        || is_leaf_photo_camera_dump(&name, &files, has_child_dirs(snapshot, root))
+    {
         return false;
     }
     snapshot.directory_roles.iter().any(|role| {
@@ -141,7 +140,7 @@ fn role_for(
         }
         FolderShape::Unknown => {}
     }
-    if files_are_mostly_media(files) && !files_look_like_camera_dump(files) {
+    if files_are_mostly_media(files) {
         return Some(DirectoryRoleKind::Library);
     }
     None
@@ -179,7 +178,7 @@ fn library_named_role(
     snapshot: &WorkspaceSnapshot,
 ) -> DirectoryRoleKind {
     if child_dirs.is_empty() {
-        if files_look_like_camera_dump(files) {
+        if is_leaf_photo_camera_dump(&root.file_name().to_ascii_lowercase(), files, false) {
             return DirectoryRoleKind::BroadInbox;
         }
         return DirectoryRoleKind::Library;
@@ -193,12 +192,15 @@ fn library_named_role(
             .filter(|entry| entry.kind == EntryKind::File && entry.path.starts_with(child))
             .cloned()
             .collect();
+        let child_name = child.file_name().to_ascii_lowercase();
         let child_shape = folder_shape(
-            &child.file_name().to_ascii_lowercase(),
+            &child_name,
             Some(&root.file_name().to_ascii_lowercase()),
             &child_files,
         );
-        if is_dump_shaped(child_shape) {
+        if is_dump_shaped(child_shape)
+            || is_leaf_photo_camera_dump(&child_name, &child_files, has_child_dirs(snapshot, child))
+        {
             dump_kids += 1;
         } else {
             keep_kids += 1;
@@ -211,6 +213,12 @@ fn library_named_role(
         return DirectoryRoleKind::Mixed;
     }
     DirectoryRoleKind::Library
+}
+
+fn has_child_dirs(snapshot: &WorkspaceSnapshot, root: &RelativePath) -> bool {
+    snapshot.entries.iter().any(|entry| {
+        entry.kind == EntryKind::Directory && entry.path.parent().as_ref() == Some(root)
+    })
 }
 
 fn files_are_mostly_media(files: &[ObservedEntry]) -> bool {
@@ -602,12 +610,14 @@ mod tests {
     }
 
     #[test]
-    fn photos_videos_and_leaf_numbered_videos_stay_library_units() {
+    fn photos_videos_and_leaf_camera_videos_stay_library_units() {
         let mut nested = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
         nested.entries = vec![
             dir("Photos"),
             dir("Photos/Videos"),
-            file("Photos/Videos/clip.mp4", FileFamily::Video),
+            file("Photos/Videos/VID_0001.mp4", FileFamily::Video),
+            file("Photos/Videos/VID_0002.mp4", FileFamily::Video),
+            file("Photos/Videos/VID_0003.mp4", FileFamily::Video),
         ];
         classify_directories(&mut nested);
         assert_eq!(
@@ -616,18 +626,77 @@ mod tests {
         );
         assert!(preserves(&nested, "Photos"));
         assert_eq!(role_kind(&nested, "Photos/Videos"), None);
+        assert!(nested.defers_content_analysis(entry_named(&nested, "Photos/Videos/VID_0001.mp4")));
+
+        let mut movies = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        movies.entries = vec![
+            dir("Movies"),
+            dir("Movies/Videos"),
+            file("Movies/Videos/VID_0001.mp4", FileFamily::Video),
+            file("Movies/Videos/VID_0002.mp4", FileFamily::Video),
+            file("Movies/Videos/VID_0003.mp4", FileFamily::Video),
+        ];
+        classify_directories(&mut movies);
+        assert_eq!(
+            role_kind(&movies, "Movies"),
+            Some(DirectoryRoleKind::Library)
+        );
+        assert!(preserves(&movies, "Movies"));
+        assert!(movies.defers_content_analysis(entry_named(&movies, "Movies/Videos/VID_0001.mp4")));
 
         let mut leaf = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
         leaf.entries = vec![
             dir("Videos"),
-            file("Videos/video_1.mp4", FileFamily::Video),
-            file("Videos/video_2.mp4", FileFamily::Video),
-            file("Videos/video_3.mp4", FileFamily::Video),
+            file("Videos/VID_0001.mp4", FileFamily::Video),
+            file("Videos/VID_0002.mp4", FileFamily::Video),
+            file("Videos/VID_0003.mp4", FileFamily::Video),
         ];
         classify_directories(&mut leaf);
         assert_eq!(role_kind(&leaf, "Videos"), Some(DirectoryRoleKind::Library));
         assert!(preserves(&leaf, "Videos"));
-        assert!(leaf.defers_content_analysis(entry_named(&leaf, "Videos/video_1.mp4")));
+        assert!(leaf.defers_content_analysis(entry_named(&leaf, "Videos/VID_0001.mp4")));
+    }
+
+    #[test]
+    fn media_photos_of_camera_stills_opens_the_dump() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Media"),
+            dir("Media/Photos"),
+            file("Media/Photos/IMG_001.jpg", FileFamily::Image),
+            file("Media/Photos/IMG_002.jpg", FileFamily::Image),
+            file("Media/Photos/IMG_003.jpg", FileFamily::Image),
+        ];
+        classify_directories(&mut snapshot);
+        assert_eq!(
+            role_kind(&snapshot, "Media"),
+            Some(DirectoryRoleKind::BroadInbox)
+        );
+        assert!(!preserves(&snapshot, "Media"));
+        assert_eq!(
+            role_kind(&snapshot, "Media/Photos"),
+            Some(DirectoryRoleKind::BroadInbox)
+        );
+        assert!(
+            !snapshot.defers_content_analysis(entry_named(&snapshot, "Media/Photos/IMG_001.jpg"))
+        );
+    }
+
+    #[test]
+    fn library_music_stays_a_library_unit() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Library"),
+            dir("Library/Music"),
+            file("Library/Music/night.mp3", FileFamily::Audio),
+        ];
+        classify_directories(&mut snapshot);
+        assert_eq!(
+            role_kind(&snapshot, "Library"),
+            Some(DirectoryRoleKind::Library)
+        );
+        assert!(preserves(&snapshot, "Library"));
+        assert_eq!(role_kind(&snapshot, "Library/Music"), None);
     }
 
     #[test]
