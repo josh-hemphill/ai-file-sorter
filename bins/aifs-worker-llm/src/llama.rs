@@ -7,9 +7,9 @@ use crate::device::{
 };
 use crate::gguf::{GgufFiles, LoadedSession, resolve_gguf};
 use crate::gguf_meta::read_block_count;
-use crate::parse::{apply_parsed, parse_infer_json};
+use crate::parse::{apply_parsed, infer_has_required_field, parse_infer_json};
 use crate::prompt::{
-    CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system, categorize_user,
+    CHAT_SYSTEM, DESCRIBE_SYSTEM, DOCUMENT_TEXT_CHARS, categorize_system_for, categorize_user_for,
     describe_user, drop_oldest_chars, drop_oldest_user_tokens, next_document_text_budget,
     prompt_token_keep, protected_prefix_len, shrink_prompt_evidence,
 };
@@ -173,14 +173,20 @@ impl WorkerHandler for LlamaHandler {
         style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         let model_id = self.require_loaded()?.info.model.clone();
+        if entry.kind == EntryKind::Directory {
+            let system = categorize_system_for(entry, allowed_categories, style);
+            let user = categorize_user_for(entry, evidence, allowed_categories, style);
+            let text = self.complete(&system, &user, MAX_GEN_TOKENS, PromptFit::DropOldestUser)?;
+            return Ok(evidence_from_text(&model_id, entry, &text, true));
+        }
         if entry.kind != EntryKind::File {
             return Ok(None);
         }
         let mut evidence = evidence.to_vec();
         let mut budget = DOCUMENT_TEXT_CHARS;
-        let system = categorize_system(allowed_categories, style);
+        let system = categorize_system_for(entry, allowed_categories, style);
         loop {
-            let user = categorize_user(entry, &evidence, allowed_categories, style);
+            let user = categorize_user_for(entry, &evidence, allowed_categories, style);
             match self.complete(&system, &user, MAX_GEN_TOKENS, PromptFit::ErrorIfOver) {
                 Ok(text) => return Ok(evidence_from_text(&model_id, entry, &text, true)),
                 Err(error) if is_context_window_error(&error) => {
@@ -514,10 +520,7 @@ fn evidence_from_text(
     want_category: bool,
 ) -> Option<Evidence> {
     let parsed = parse_infer_json(text)?;
-    if want_category && parsed.category.is_none() {
-        return None;
-    }
-    if !want_category && parsed.description.is_none() {
+    if !infer_has_required_field(&parsed, entry, want_category) {
         return None;
     }
     let mut bag = Evidence::new(

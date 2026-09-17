@@ -69,6 +69,14 @@ pub mod keys {
     pub const CATEGORY: &str = "category";
     /// Suggested subcategory from a model (untrusted).
     pub const CATEGORY_SUB: &str = "category.sub";
+    /// Model label for a directory: dump vs event/library vs archive (untrusted).
+    pub const DIRECTORY_GROUPING: &str = "directory.grouping";
+    /// Short model reason for [`DIRECTORY_GROUPING`] (untrusted).
+    pub const DIRECTORY_GROUPING_REASON: &str = "directory.grouping.reason";
+    /// Immediate child folder names, for grouping prompts.
+    pub const DIRECTORY_CHILDREN: &str = "directory.children";
+    /// Sample file stems under a directory, for grouping prompts.
+    pub const DIRECTORY_SAMPLE_STEMS: &str = "directory.sample_stems";
     /// Document title from PDF/Office properties.
     pub const DOCUMENT_TITLE: &str = "document.title";
     /// Truncated extracted document text (untrusted).

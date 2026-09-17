@@ -2,6 +2,7 @@
 
 use aifs_domain::escape_path_segment;
 use aifs_domain::evidence::keys;
+use aifs_domain::{EntryKind, ObservedEntry};
 use serde::Deserialize;
 
 const DESCRIPTION_CHARS: usize = 400;
@@ -14,6 +15,8 @@ pub struct ParsedInfer {
     pub category_sub: Option<String>,
     pub description: Option<String>,
     pub suggested_name: Option<String>,
+    pub grouping: Option<String>,
+    pub grouping_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +31,10 @@ struct InferJson {
     description: Option<String>,
     #[serde(default)]
     suggested_name: Option<String>,
+    #[serde(default)]
+    grouping: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// Parses a JSON object out of model text. Garbage yields `None`.
@@ -43,7 +50,10 @@ pub fn parse_infer_json(text: &str) -> Option<ParsedInfer> {
         .or_else(|| sanitize_label(parsed.sub.as_deref()));
     let description = sanitize_description(parsed.description.as_deref());
     let suggested_name = filename_only(parsed.suggested_name.as_deref());
-    if category.is_none() && description.is_none() && suggested_name.is_none() {
+    let grouping = parse_grouping(parsed.grouping.as_deref());
+    let grouping_reason = sanitize_description(parsed.reason.as_deref());
+    if category.is_none() && description.is_none() && suggested_name.is_none() && grouping.is_none()
+    {
         return None;
     }
     Some(ParsedInfer {
@@ -51,7 +61,38 @@ pub fn parse_infer_json(text: &str) -> Option<ParsedInfer> {
         category_sub,
         description,
         suggested_name,
+        grouping,
+        grouping_reason,
     })
+}
+
+/// True when parsed JSON has the field this infer kind requires.
+pub fn infer_has_required_field(
+    parsed: &ParsedInfer,
+    entry: &ObservedEntry,
+    want_category: bool,
+) -> bool {
+    if entry.kind == EntryKind::Directory {
+        parsed.grouping.is_some()
+    } else if want_category {
+        parsed.category.is_some()
+    } else {
+        parsed.description.is_some()
+    }
+}
+
+fn parse_grouping(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() || value.contains('/') || value.contains('\\') || value.contains("..") {
+        return None;
+    }
+    let normalized = value.to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "camera_dump" | "event_or_date" | "library" | "broad_inbox" | "archive" | "mixed" => {
+            Some(normalized)
+        }
+        _ => None,
+    }
 }
 
 fn sanitize_label(value: Option<&str>) -> Option<String> {
@@ -117,6 +158,12 @@ pub fn apply_parsed(parsed: &ParsedInfer, mut set: impl FnMut(&'static str, &str
     if let Some(name) = &parsed.suggested_name {
         set(keys::SUGGESTED_NAME, name);
     }
+    if let Some(grouping) = &parsed.grouping {
+        set(keys::DIRECTORY_GROUPING, grouping);
+    }
+    if let Some(reason) = &parsed.grouping_reason {
+        set(keys::DIRECTORY_GROUPING_REASON, reason);
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +195,19 @@ mod tests {
         let nested = parse_infer_json(r#"{"category":"Documents/Notes","description":"ok"}"#)
             .unwrap_or_else(|| panic!("expected json"));
         assert!(nested.category.is_none(), "{nested:?}");
+    }
+
+    #[test]
+    fn reads_directory_grouping_labels() {
+        let parsed = parse_infer_json(r#"{"grouping":"camera_dump","reason":"nested DCIM roll"}"#)
+            .unwrap_or_else(|| panic!("expected json"));
+        assert_eq!(parsed.grouping.as_deref(), Some("camera_dump"));
+        assert_eq!(parsed.grouping_reason.as_deref(), Some("nested DCIM roll"));
+        assert!(parse_infer_json(r#"{"grouping":"../Etc"}"#).is_none());
+        assert!(parse_infer_json(r#"{"grouping":"not_a_label"}"#).is_none());
+        let spaced = parse_infer_json(r#"{"grouping":"event-or-date"}"#)
+            .unwrap_or_else(|| panic!("normalized"));
+        assert_eq!(spaced.grouping.as_deref(), Some("event_or_date"));
     }
 
     #[test]

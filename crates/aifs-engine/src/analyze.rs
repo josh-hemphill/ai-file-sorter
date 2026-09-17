@@ -1,18 +1,23 @@
 //! Session-lived LLM analysis after deterministic extract.
 
 use crate::cancel::WorkStatus;
-use crate::checkpoint::{CHECKPOINT_EVERY, has_category_evidence, has_description_evidence};
+use crate::checkpoint::{
+    CHECKPOINT_EVERY, has_category_evidence, has_description_evidence, has_grouping_evidence,
+};
 use aifs_domain::{
-    BundleConstraint, EntryKind, Evidence, FileFamily, ObservedEntry, WorkspaceSnapshot,
-    evidence::keys, looks_like_screenshot,
+    BundleConstraint, Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry,
+    WorkspaceSnapshot, evidence::keys, looks_like_screenshot,
 };
 use aifs_protocol::{
     AppSettings, FolderStyle, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text,
 };
+use aifs_relationships::apply_grouping_evidence;
 use aifs_worker_client::{WorkerClient, WorkerClientError};
 
 const ANALYSIS_STOPPED_LOG: &str = "analysis stopped";
 const DESCRIBE_LOG_CHARS: usize = 96;
+const GROUPING_CHILD_LIMIT: usize = 24;
+const GROUPING_STEM_LIMIT: usize = 12;
 
 /// Scan line when a layout unit is not described or categorized yet.
 pub(crate) fn deferred_unit_log(root: &str, files: usize) -> String {
@@ -109,6 +114,27 @@ pub fn analyze_into_supervised(
     let mut loaded: Option<String> = None;
     let allowed_categories = settings.policy.whitelist.main.clone();
     let style = settings.policy.style;
+
+    if run_categorize && let Some(slot) = categorize {
+        let targets = grouping_targets(snapshot);
+        match group_directories(GroupPass {
+            llm: &mut llm,
+            loaded: &mut loaded,
+            snapshot,
+            models,
+            storage_dir: &storage_dir,
+            slot,
+            targets,
+            on_notice: &mut on_notice,
+            on_checkpoint: &mut on_checkpoint,
+            should_continue: &mut should_continue,
+        }) {
+            WorkStatus::Completed => {}
+            other => return other,
+        }
+        apply_grouping_evidence(snapshot);
+    }
+
     log_deferred_units(snapshot, &mut on_notice);
 
     if run_describe && let Some(slot) = vision {
@@ -268,6 +294,164 @@ pub fn analyze_into_supervised(
 
     shutdown_llm(&mut llm, loaded.is_some());
     WorkStatus::Completed
+}
+
+struct GroupPass<'a, Notice, Checkpoint, Continue>
+where
+    Notice: FnMut(AnalyzeNotice<'_>),
+    Checkpoint: FnMut(&WorkspaceSnapshot) -> bool,
+    Continue: FnMut() -> bool,
+{
+    llm: &'a mut WorkerClient,
+    loaded: &'a mut Option<String>,
+    snapshot: &'a mut WorkspaceSnapshot,
+    models: &'a ModelInventory,
+    storage_dir: &'a str,
+    slot: &'a ModelSlot,
+    targets: Vec<ObservedEntry>,
+    on_notice: &'a mut Notice,
+    on_checkpoint: &'a mut Checkpoint,
+    should_continue: &'a mut Continue,
+}
+
+fn group_directories<Notice, Checkpoint, Continue>(
+    pass: GroupPass<'_, Notice, Checkpoint, Continue>,
+) -> WorkStatus
+where
+    Notice: FnMut(AnalyzeNotice<'_>),
+    Checkpoint: FnMut(&WorkspaceSnapshot) -> bool,
+    Continue: FnMut() -> bool,
+{
+    let GroupPass {
+        llm,
+        loaded,
+        snapshot,
+        models,
+        storage_dir,
+        slot,
+        targets,
+        on_notice,
+        on_checkpoint,
+        should_continue,
+    } = pass;
+    match ensure_loaded(llm, loaded, slot, models, storage_dir, &mut |message| {
+        on_notice(AnalyzeNotice::Log(message));
+    }) {
+        Ok(()) => {
+            let total = targets.len() as u64;
+            let mut bags = Vec::new();
+            for (index, entry) in targets.into_iter().enumerate() {
+                if !should_continue() {
+                    snapshot.evidence.extend(bags);
+                    shutdown_llm(llm, loaded.is_some());
+                    return WorkStatus::Cancelled;
+                }
+                on_notice(AnalyzeNotice::Progress {
+                    stage: "categorize",
+                    current: index as u64 + 1,
+                    total,
+                    path: entry.path.as_str(),
+                });
+                if has_grouping_evidence(snapshot, &entry) {
+                    continue;
+                }
+                let prior = grouping_context(snapshot, &entry);
+                match llm.categorize_while(
+                    &snapshot.root,
+                    &entry,
+                    prior,
+                    Vec::new(),
+                    FolderStyle::Consistent,
+                    &mut *should_continue,
+                ) {
+                    Ok(Some(evidence)) => {
+                        on_notice(AnalyzeNotice::Log(grouped_log(
+                            entry.path.as_str(),
+                            &evidence,
+                        )));
+                        bags.push(evidence);
+                        if bags.len() >= CHECKPOINT_EVERY {
+                            snapshot.evidence.extend(std::mem::take(&mut bags));
+                            if !on_checkpoint(snapshot) {
+                                shutdown_llm(llm, loaded.is_some());
+                                return WorkStatus::PersistFailed;
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) if error.is_cancelled() => {
+                        return stop_analysis(snapshot, bags, llm, loaded.is_some(), on_notice);
+                    }
+                    Err(error) => on_notice(AnalyzeNotice::Log(format!(
+                        "grouping skipped {}: {}",
+                        entry.path.as_str(),
+                        sanitize_hosted_text(&error.to_string(), slot.api_key.as_deref())
+                    ))),
+                }
+            }
+            snapshot.evidence.extend(bags);
+        }
+        Err(message) => on_notice(AnalyzeNotice::Log(format!(
+            "Grouping load failed ({message}); folder roles stay heuristic."
+        ))),
+    }
+    WorkStatus::Completed
+}
+
+fn grouping_targets(snapshot: &WorkspaceSnapshot) -> Vec<ObservedEntry> {
+    snapshot
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == EntryKind::Directory
+                && snapshot
+                    .directory_roles
+                    .iter()
+                    .all(|role| role.root != entry.path)
+                && snapshot.covering_layout_root(&entry.path).is_none()
+        })
+        .cloned()
+        .collect()
+}
+
+fn grouping_context(snapshot: &WorkspaceSnapshot, dir: &ObservedEntry) -> Vec<Evidence> {
+    let children: Vec<_> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == EntryKind::Directory && entry.path.parent().as_ref() == Some(&dir.path)
+        })
+        .map(|entry| entry.path.file_name().to_owned())
+        .take(GROUPING_CHILD_LIMIT)
+        .collect();
+    let stems: Vec<_> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == EntryKind::File && entry.path.parent().as_ref() == Some(&dir.path)
+        })
+        .map(|entry| entry.stem().to_owned())
+        .take(GROUPING_STEM_LIMIT)
+        .collect();
+    let mut bag = Evidence::new(dir.id, EvidenceSource::Filesystem, Confidence::CERTAIN);
+    if !children.is_empty() {
+        bag = bag.with_fact(keys::DIRECTORY_CHILDREN, children.join(", "));
+    }
+    if !stems.is_empty() {
+        bag = bag.with_fact(keys::DIRECTORY_SAMPLE_STEMS, stems.join(", "));
+    }
+    if bag.is_empty() {
+        Vec::new()
+    } else {
+        vec![bag]
+    }
+}
+
+fn grouped_log(path: &str, evidence: &Evidence) -> String {
+    let label = evidence
+        .fact(keys::DIRECTORY_GROUPING)
+        .unwrap_or("unlabeled");
+    format!("grouped {} → {label}", aifs_domain::decode_oem_path(path))
 }
 
 struct CategorizePass<'a, Notice, Checkpoint, Continue>
@@ -625,5 +809,81 @@ mod tests {
         assert!(should_include_in_document(&sheet));
         assert!(!should_include_in_document(&shot));
         assert!(!should_include_in_document(&song));
+    }
+
+    #[test]
+    fn grouping_targets_skip_labeled_and_frozen_folders() {
+        let export = ObservedEntry {
+            id: aifs_domain::AssetId::new(),
+            path: aifs_domain::RelativePath::parse("Export")
+                .unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        };
+        let photos = ObservedEntry {
+            id: aifs_domain::AssetId::new(),
+            path: aifs_domain::RelativePath::parse("Photos")
+                .unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        };
+        let italy = ObservedEntry {
+            id: aifs_domain::AssetId::new(),
+            path: aifs_domain::RelativePath::parse("Photos/Italy")
+                .unwrap_or_else(|error| panic!("{error}")),
+            kind: EntryKind::Directory,
+            family: FileFamily::Generic,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        };
+        let mut snapshot = WorkspaceSnapshot::new(
+            aifs_domain::SessionId::new(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        snapshot.entries = vec![export.clone(), photos.clone(), italy];
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: photos.path.clone(),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "library".into(),
+            });
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Photos".into(),
+            members: vec![photos.id],
+            anchor: Some(photos.id),
+            constraint: BundleConstraint::PreserveLayout {
+                root: photos.path.clone(),
+            },
+            reason: "library".into(),
+        });
+        let paths: Vec<_> = grouping_targets(&snapshot)
+            .iter()
+            .map(|entry| entry.path.as_str().to_owned())
+            .collect();
+        assert_eq!(paths, vec!["Export".to_owned()]);
+        let evidence = Evidence::new(
+            export.id,
+            EvidenceSource::LocalModel {
+                model: "stub".into(),
+            },
+            Confidence::new(0.4),
+        )
+        .with_fact(keys::DIRECTORY_GROUPING, "camera_dump");
+        assert_eq!(
+            grouped_log("Export", &evidence),
+            "grouped Export → camera_dump"
+        );
+        let context = grouping_context(&snapshot, &export);
+        assert!(context.is_empty());
     }
 }
