@@ -373,21 +373,30 @@ mod tests {
         snapshot.entries = vec![
             dir("Downloads"),
             dir("Downloads/2024"),
-            file("Downloads/2024/notes.txt", FileFamily::Document),
+            file("Downloads/2024/a.jpg", FileFamily::Image),
+            file("Downloads/2024/b.jpg", FileFamily::Image),
+            file("Downloads/2024/c.jpg", FileFamily::Image),
         ];
         classify_directories(&mut snapshot);
         assert_eq!(role_kind(&snapshot, "Downloads/2024"), None);
         assert!(!preserves(&snapshot, "Downloads/2024"));
+        assert!(!snapshot.defers_content_analysis(entry_named(&snapshot, "Downloads/2024/a.jpg")));
     }
 
     #[test]
     fn year_folder_at_a_downloads_scan_root_is_not_an_archive() {
         let mut snapshot =
             WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
-        snapshot.entries = vec![dir("2024"), file("2024/notes.txt", FileFamily::Document)];
+        snapshot.entries = vec![
+            dir("2024"),
+            file("2024/a.jpg", FileFamily::Image),
+            file("2024/b.jpg", FileFamily::Image),
+            file("2024/c.jpg", FileFamily::Image),
+        ];
         classify_directories(&mut snapshot);
         assert_eq!(role_kind(&snapshot, "2024"), None);
         assert!(!preserves(&snapshot, "2024"));
+        assert!(!snapshot.defers_content_analysis(entry_named(&snapshot, "2024/a.jpg")));
     }
 
     #[test]
@@ -590,6 +599,35 @@ mod tests {
         assert!(preserves(&snapshot, "Movies"));
         assert_eq!(role_kind(&snapshot, "Movies/Videos"), None);
         assert!(snapshot.defers_content_analysis(entry_named(&snapshot, "Movies/Videos/clip.mp4")));
+    }
+
+    #[test]
+    fn photos_videos_and_leaf_numbered_videos_stay_library_units() {
+        let mut nested = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        nested.entries = vec![
+            dir("Photos"),
+            dir("Photos/Videos"),
+            file("Photos/Videos/clip.mp4", FileFamily::Video),
+        ];
+        classify_directories(&mut nested);
+        assert_eq!(
+            role_kind(&nested, "Photos"),
+            Some(DirectoryRoleKind::Library)
+        );
+        assert!(preserves(&nested, "Photos"));
+        assert_eq!(role_kind(&nested, "Photos/Videos"), None);
+
+        let mut leaf = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        leaf.entries = vec![
+            dir("Videos"),
+            file("Videos/video_1.mp4", FileFamily::Video),
+            file("Videos/video_2.mp4", FileFamily::Video),
+            file("Videos/video_3.mp4", FileFamily::Video),
+        ];
+        classify_directories(&mut leaf);
+        assert_eq!(role_kind(&leaf, "Videos"), Some(DirectoryRoleKind::Library));
+        assert!(preserves(&leaf, "Videos"));
+        assert!(leaf.defers_content_analysis(entry_named(&leaf, "Videos/video_1.mp4")));
     }
 
     #[test]

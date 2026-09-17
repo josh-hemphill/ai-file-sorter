@@ -159,17 +159,24 @@ pub(crate) fn is_camera_stem(stem: &str) -> bool {
     if stem.contains("-wa") && stem.starts_with("img-") {
         return true;
     }
-    if stem.starts_with("burst") && stem.chars().any(|ch| ch.is_ascii_digit()) {
-        return true;
-    }
-    for prefix in CAMERA_STEM_PREFIXES {
-        if let Some(rest) = stem.strip_prefix(prefix)
-            && rest.chars().any(|ch| ch.is_ascii_digit())
-        {
+    if let Some(rest) = stem.strip_prefix("burst") {
+        let rest = rest.trim_start_matches(['_', '-']);
+        if rest_is_camera_sequence(rest) {
             return true;
         }
     }
-    false
+    CAMERA_STEM_PREFIXES.iter().any(|prefix| {
+        stem.strip_prefix(prefix)
+            .is_some_and(rest_is_camera_sequence)
+    })
+}
+
+fn rest_is_camera_sequence(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_digit() && chars.all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-')
 }
 
 pub(crate) fn is_year_name(name: &str) -> bool {
@@ -280,8 +287,13 @@ mod tests {
         assert!(is_camera_stem("DSC01234"));
         assert!(is_camera_stem("PXL_20260915_123456"));
         assert!(is_camera_stem("IMG-20260915-WA0001"));
+        assert!(is_camera_stem("VID_0001"));
         assert!(!is_camera_stem("Italy-sunset"));
         assert!(!is_camera_stem("cover"));
+        assert!(!is_camera_stem("video_1"));
+        assert!(!is_camera_stem("movie_1"));
+        assert!(!is_camera_stem("description1"));
+        assert!(!is_camera_stem("photo_album1"));
     }
 
     #[test]

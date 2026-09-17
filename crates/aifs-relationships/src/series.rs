@@ -145,6 +145,32 @@ mod tests {
         ]);
         detect_series(&mut snapshot);
         assert_eq!(series_sizes(&snapshot), vec![3]);
+        assert!(snapshot.bundles.iter().any(|bundle| {
+            bundle.kind == BundleKind::Series && matches!(bundle.constraint, BundleConstraint::Soft)
+        }));
+    }
+
+    #[test]
+    fn burst_cap_is_twenty_four() {
+        let at_cap: Vec<_> = (1..=24)
+            .map(|index| image(&format!("IMG_{index:03}.jpg")))
+            .collect();
+        let mut capped = snapshot_with(at_cap);
+        detect_series(&mut capped);
+        assert_eq!(series_sizes(&capped), vec![24]);
+        let over: Vec<_> = (1..=25)
+            .map(|index| image(&format!("IMG_{index:03}.jpg")))
+            .collect();
+        let mut too_long = snapshot_with(over);
+        detect_series(&mut too_long);
+        assert!(
+            too_long
+                .bundles
+                .iter()
+                .all(|bundle| bundle.kind != BundleKind::Series),
+            "25 consecutive stills must not be a burst, got {:?}",
+            too_long.bundles
+        );
     }
 
     #[test]
