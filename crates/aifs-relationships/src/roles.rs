@@ -179,14 +179,7 @@ fn library_named_role(
     snapshot: &WorkspaceSnapshot,
 ) -> DirectoryRoleKind {
     if child_dirs.is_empty() {
-        if is_dump_shaped(folder_shape(
-            &root.file_name().to_ascii_lowercase(),
-            root.parent()
-                .map(|parent| parent.file_name().to_owned())
-                .as_deref(),
-            files,
-        )) || files_look_like_camera_dump(files)
-        {
+        if files_look_like_camera_dump(files) {
             return DirectoryRoleKind::BroadInbox;
         }
         return DirectoryRoleKind::Library;
@@ -383,13 +376,8 @@ mod tests {
             file("Downloads/2024/notes.txt", FileFamily::Document),
         ];
         classify_directories(&mut snapshot);
-        assert!(
-            !snapshot.directory_roles.iter().any(|role| {
-                role.kind == DirectoryRoleKind::WeakArchive
-                    && role.root.as_str() == "Downloads/2024"
-            }),
-            "dated folders under a dump must stay organisable"
-        );
+        assert_eq!(role_kind(&snapshot, "Downloads/2024"), None);
+        assert!(!preserves(&snapshot, "Downloads/2024"));
     }
 
     #[test]
@@ -398,12 +386,8 @@ mod tests {
             WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/Downloads"));
         snapshot.entries = vec![dir("2024"), file("2024/notes.txt", FileFamily::Document)];
         classify_directories(&mut snapshot);
-        assert!(
-            !snapshot.directory_roles.iter().any(|role| {
-                role.kind == DirectoryRoleKind::WeakArchive && role.root.as_str() == "2024"
-            }),
-            "year folders at a Downloads scan root must stay organisable"
-        );
+        assert_eq!(role_kind(&snapshot, "2024"), None);
+        assert!(!preserves(&snapshot, "2024"));
     }
 
     #[test]
@@ -588,5 +572,55 @@ mod tests {
         );
         assert!(preserves(&snapshot, "Wedding"));
         assert!(snapshot.defers_content_analysis(entry_named(&snapshot, "Wedding/IMG_001.jpg")));
+    }
+
+    #[test]
+    fn movies_videos_stays_a_library_unit() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Movies"),
+            dir("Movies/Videos"),
+            file("Movies/Videos/clip.mp4", FileFamily::Video),
+        ];
+        classify_directories(&mut snapshot);
+        assert_eq!(
+            role_kind(&snapshot, "Movies"),
+            Some(DirectoryRoleKind::Library)
+        );
+        assert!(preserves(&snapshot, "Movies"));
+        assert_eq!(role_kind(&snapshot, "Movies/Videos"), None);
+        assert!(snapshot.defers_content_analysis(entry_named(&snapshot, "Movies/Videos/clip.mp4")));
+    }
+
+    #[test]
+    fn camera_roll_and_new_folder_of_stills_are_dumps() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp"));
+        snapshot.entries = vec![
+            dir("Camera Roll"),
+            file("Camera Roll/IMG_001.jpg", FileFamily::Image),
+            file("Camera Roll/IMG_002.jpg", FileFamily::Image),
+            file("Camera Roll/IMG_003.jpg", FileFamily::Image),
+            dir("New Folder"),
+            file("New Folder/IMG_010.jpg", FileFamily::Image),
+            file("New Folder/IMG_011.jpg", FileFamily::Image),
+            file("New Folder/IMG_012.jpg", FileFamily::Image),
+        ];
+        classify_directories(&mut snapshot);
+        assert_eq!(
+            role_kind(&snapshot, "Camera Roll"),
+            Some(DirectoryRoleKind::BroadInbox)
+        );
+        assert!(!preserves(&snapshot, "Camera Roll"));
+        assert!(
+            !snapshot.defers_content_analysis(entry_named(&snapshot, "Camera Roll/IMG_001.jpg"))
+        );
+        assert_eq!(
+            role_kind(&snapshot, "New Folder"),
+            Some(DirectoryRoleKind::BroadInbox)
+        );
+        assert!(!preserves(&snapshot, "New Folder"));
+        assert!(
+            !snapshot.defers_content_analysis(entry_named(&snapshot, "New Folder/IMG_010.jpg"))
+        );
     }
 }

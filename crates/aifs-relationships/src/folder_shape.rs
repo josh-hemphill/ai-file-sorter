@@ -23,6 +23,9 @@ const DUMP_FOLDER_NAMES: &[&str] = &[
     "dcim", "camera", "img", "dsc", "raw", "recents", "imported", "unfiled", "private", "roll",
 ];
 
+/// Photo-library tokens that form a camera-dump stack when nested (`Photos/Pictures`).
+const PHOTO_DUMP_TOKENS: &[&str] = &["photos", "pictures"];
+
 /// Single-token folders that are not albums even when they contain files.
 const GENERIC_FOLDER_NAMES: &[&str] = &[
     "projects",
@@ -99,10 +102,13 @@ pub(crate) fn is_dump_shaped(shape: FolderShape) -> bool {
     matches!(shape, FolderShape::CameraDump | FolderShape::BroadInbox)
 }
 
-/// True when the folder name is a camera-roll or repeated library token.
+/// True when the folder name is a camera-roll or nested Photos/Pictures dump stack.
 pub(crate) fn is_dump_folder_name(name: &str, parent_name: Option<&str>) -> bool {
     let name = name.to_ascii_lowercase();
     if DUMP_FOLDER_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    if folder_tokens(&name).any(|token| DUMP_FOLDER_NAMES.contains(&token)) {
         return true;
     }
     if is_dcf_folder(&name) {
@@ -110,7 +116,7 @@ pub(crate) fn is_dump_folder_name(name: &str, parent_name: Option<&str>) -> bool
     }
     if let Some(parent) = parent_name {
         let parent = parent.to_ascii_lowercase();
-        if LIBRARY_NAMES.contains(&name.as_str()) && LIBRARY_NAMES.contains(&parent.as_str()) {
+        if is_nested_photo_dump(&name, &parent) {
             return true;
         }
     }
@@ -137,7 +143,7 @@ pub(crate) fn is_date_folder_name(name: &str) -> bool {
 /// Human event/album name: letterful and not a camera/library/dump/generic token.
 pub(crate) fn is_event_folder_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    if is_reserved_folder_name(&name) {
+    if is_reserved_folder_name(&name) || folder_tokens(&name).any(is_reserved_folder_name) {
         return false;
     }
     if is_date_folder_name(&name) || name_contains_year(&name) {
@@ -197,6 +203,15 @@ pub(crate) fn files_look_like_camera_dump(files: &[ObservedEntry]) -> bool {
         .filter(|entry| is_camera_stem(entry.stem()))
         .count();
     camera * 2 >= media.len()
+}
+
+fn is_nested_photo_dump(name: &str, parent: &str) -> bool {
+    PHOTO_DUMP_TOKENS.contains(&name) && PHOTO_DUMP_TOKENS.contains(&parent)
+}
+
+fn folder_tokens(name: &str) -> impl Iterator<Item = &str> {
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
 }
 
 fn is_reserved_folder_name(name: &str) -> bool {
@@ -272,9 +287,14 @@ mod tests {
     #[test]
     fn nested_pictures_token_is_a_dump() {
         assert!(is_dump_folder_name("pictures", Some("photos")));
+        assert!(is_dump_folder_name("pictures", Some("pictures")));
         assert!(!is_dump_folder_name("pictures", Some("home")));
+        assert!(!is_dump_folder_name("videos", Some("movies")));
+        assert!(!is_dump_folder_name("music", Some("library")));
+        assert!(!is_dump_folder_name("videos", Some("photos")));
         assert!(is_dump_folder_name("dcim", Some("photos")));
         assert!(is_dump_folder_name("100CANON", None));
+        assert!(is_dump_folder_name("Camera Roll", None));
     }
 
     #[test]
@@ -288,6 +308,8 @@ mod tests {
         assert!(!is_event_folder_name("dcim"));
         assert!(!is_event_folder_name("pictures"));
         assert!(!is_event_folder_name("projects"));
+        assert!(!is_event_folder_name("Camera Roll"));
+        assert!(!is_event_folder_name("New Folder"));
     }
 
     #[test]
