@@ -1,6 +1,6 @@
 //! Prompts for local infer. Model output is evidence, never a path or SQL.
 
-use aifs_domain::{Evidence, ObservedEntry, evidence::keys, looks_like_screenshot};
+use aifs_domain::{EntryKind, Evidence, ObservedEntry, evidence::keys, looks_like_screenshot};
 use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
@@ -14,6 +14,12 @@ pub const CATEGORIZE_SYSTEM: &str = "You label files for a desktop organizer. \
 Reply with one JSON object only: \
 {\"category\":\"Top\",\"sub\":\"Optional\",\"description\":\"short\",\"suggested_name\":\"file.ext\"}. \
 category is a single folder name, never a path. Do not invent SQL or filesystem commands.";
+
+/// System prompt for directory dump vs event/library labels.
+pub const GROUPING_SYSTEM: &str = "You label folders for a desktop organizer. \
+Reply with one JSON object only: \
+{\"grouping\":\"camera_dump|event_or_date|library|broad_inbox|archive|mixed\",\"reason\":\"short\"}. \
+grouping is one of those labels, never a path. Do not invent SQL or filesystem commands.";
 
 /// System prompt for local describe when a bitmap may be attached.
 #[cfg(any(test, feature = "llama"))]
@@ -52,6 +58,19 @@ pub fn categorize_system(allowed_categories: &[String], style: FolderStyle) -> S
     prompt
 }
 
+/// System prompt for categorize or directory grouping.
+pub fn categorize_system_for(
+    entry: &ObservedEntry,
+    allowed_categories: &[String],
+    style: FolderStyle,
+) -> String {
+    if entry.kind == EntryKind::Directory {
+        GROUPING_SYSTEM.to_owned()
+    } else {
+        categorize_system(allowed_categories, style)
+    }
+}
+
 /// Builds the user turn for categorize.
 pub fn categorize_user(
     entry: &ObservedEntry,
@@ -79,6 +98,29 @@ pub fn categorize_user(
         user.push_str("\nFolder style: refined.");
     }
     user
+}
+
+/// User turn for categorize or directory grouping.
+pub fn categorize_user_for(
+    entry: &ObservedEntry,
+    evidence: &[Evidence],
+    allowed_categories: &[String],
+    style: FolderStyle,
+) -> String {
+    if entry.kind == EntryKind::Directory {
+        grouping_user(entry, evidence)
+    } else {
+        categorize_user(entry, evidence, allowed_categories, style)
+    }
+}
+
+/// Builds the user turn for directory grouping.
+pub fn grouping_user(entry: &ObservedEntry, evidence: &[Evidence]) -> String {
+    format!(
+        "Folder path: {}\nDecide if this folder is a camera dump, a date/event album, a named library, a broad inbox, an archive, or mixed.\n{}",
+        entry.path.as_str(),
+        format_evidence(evidence)
+    )
 }
 
 /// Builds the user turn for describe.
@@ -300,6 +342,32 @@ mod tests {
         assert!(system.contains("category must be one of: Screenshots, Pictures"));
         assert!(system.contains("Screenshots, Podcasts"));
         assert!(looks_like_screenshot(&shot, &[]));
+    }
+
+    #[test]
+    fn grouping_prompt_asks_for_a_label_not_a_path() {
+        let folder = ObservedEntry {
+            id: AssetId::new(),
+            path: aifs_domain::RelativePath::parse("Export")
+                .unwrap_or_else(|error| panic!("{error}")),
+            kind: aifs_domain::EntryKind::Directory,
+            family: aifs_domain::FileFamily::Generic,
+            identity: aifs_domain::FileIdentity::default(),
+            is_hidden: false,
+            lock: aifs_domain::LockState::Readable,
+        };
+        let bag = Evidence::new(folder.id, EvidenceSource::Filesystem, Confidence::new(1.0))
+            .with_fact(keys::DIRECTORY_CHILDREN, "DCIM")
+            .with_fact(keys::DIRECTORY_SAMPLE_STEMS, "IMG_001");
+        let system = categorize_system_for(&folder, &[], FolderStyle::Consistent);
+        let user = categorize_user_for(&folder, &[bag], &[], FolderStyle::Consistent);
+        assert!(system.contains("camera_dump"));
+        assert!(system.contains("never a path"));
+        assert!(system.contains("SQL"));
+        assert!(user.contains("Folder path: Export"));
+        assert!(user.contains("DCIM"));
+        assert!(user.contains("IMG_001"));
+        assert!(!user.contains("rm "));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Hosted OpenAI / Gemini / custom HTTP infer. Keys are never logged.
 
-use crate::parse::{apply_parsed, parse_infer_json};
+use crate::parse::{apply_parsed, infer_has_required_field, parse_infer_json};
 use crate::prompt::{
-    CHAT_SYSTEM, DESCRIBE_SYSTEM_TEXT, categorize_system, categorize_user, describe_user,
+    CHAT_SYSTEM, DESCRIBE_SYSTEM_TEXT, categorize_system_for, categorize_user_for, describe_user,
 };
 use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
 use aifs_protocol::{
@@ -89,12 +89,12 @@ impl WorkerHandler for HostedHandler {
         style: FolderStyle,
     ) -> Result<Option<Evidence>, String> {
         let model_id = self.require_loaded()?.info.model.clone();
-        if entry.kind != EntryKind::File {
+        if entry.kind != EntryKind::File && entry.kind != EntryKind::Directory {
             return Ok(None);
         }
         let text = self.complete(
-            &categorize_system(allowed_categories, style),
-            &categorize_user(entry, evidence, allowed_categories, style),
+            &categorize_system_for(entry, allowed_categories, style),
+            &categorize_user_for(entry, evidence, allowed_categories, style),
             MAX_GEN_TOKENS,
         )?;
         Ok(evidence_from_text(&model_id, entry, &text, true))
@@ -166,10 +166,7 @@ fn evidence_from_text(
     want_category: bool,
 ) -> Option<Evidence> {
     let parsed = parse_infer_json(text)?;
-    if want_category && parsed.category.is_none() {
-        return None;
-    }
-    if !want_category && parsed.description.is_none() {
+    if !infer_has_required_field(&parsed, entry, want_category) {
         return None;
     }
     let mut bag = Evidence::new(

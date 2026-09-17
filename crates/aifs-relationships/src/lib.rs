@@ -2,12 +2,14 @@
 
 pub mod archives;
 mod folder_shape;
+pub mod grouping;
 pub mod hardlinks;
 pub mod projects;
 pub mod roles;
 pub mod series;
 pub mod sidecars;
 
+pub use grouping::apply_grouping_evidence;
 pub use projects::{DetectedProject, detect_project, should_skip_traversal};
 
 use aifs_domain::{

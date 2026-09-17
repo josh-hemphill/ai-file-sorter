@@ -62,6 +62,11 @@ pub fn has_description_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEn
     has_fact(snapshot, entry, keys::DESCRIPTION)
 }
 
+/// True when directory grouping already produced a label for `entry`.
+pub fn has_grouping_evidence(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> bool {
+    has_fact(snapshot, entry, keys::DIRECTORY_GROUPING)
+}
+
 /// Files in `snapshot` that already have extract evidence.
 pub fn extract_done_count(snapshot: &WorkspaceSnapshot) -> usize {
     snapshot

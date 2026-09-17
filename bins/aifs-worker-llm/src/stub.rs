@@ -71,6 +71,22 @@ impl WorkerHandler for StubHandler {
     ) -> Result<Option<Evidence>, String> {
         maybe_test_infer_sleep();
         let loaded = self.require_loaded()?;
+        if entry.kind == EntryKind::Directory {
+            return Ok(Some(
+                Evidence::new(
+                    entry.id,
+                    EvidenceSource::LocalModel {
+                        model: loaded.model.clone(),
+                    },
+                    Confidence::new(STUB_CONFIDENCE),
+                )
+                .with_fact(keys::DIRECTORY_GROUPING, stub_grouping(entry))
+                .with_fact(
+                    keys::DIRECTORY_GROUPING_REASON,
+                    format!("stub grouping for {}", entry.path.as_str()),
+                ),
+            ));
+        }
         if entry.kind != EntryKind::File {
             return Ok(None);
         }
@@ -158,6 +174,17 @@ fn model_label(backend: &ModelBackend) -> String {
         ModelBackend::OpenAi { model } => format!("openai:{model}"),
         ModelBackend::Gemini { model } => format!("gemini:{model}"),
         ModelBackend::CustomEndpoint { model, .. } => format!("custom:{model}"),
+    }
+}
+
+fn stub_grouping(entry: &ObservedEntry) -> &'static str {
+    let name = entry.path.file_name().to_ascii_lowercase();
+    match name.as_str() {
+        "dcim" | "camera" | "roll" | "export" => "camera_dump",
+        "italy" | "wedding" | "holiday" => "event_or_date",
+        "old" | "archive" => "archive",
+        "downloads" | "inbox" => "broad_inbox",
+        _ => "mixed",
     }
 }
 

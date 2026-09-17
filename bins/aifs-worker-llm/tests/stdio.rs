@@ -23,6 +23,19 @@ fn file_entry(path: &str, family: FileFamily) -> ObservedEntry {
 }
 
 #[cfg(not(feature = "llama"))]
+fn dir_entry(path: &str) -> ObservedEntry {
+    ObservedEntry {
+        id: AssetId::new(),
+        path: RelativePath::parse(path).unwrap_or_else(|error| panic!("{error}")),
+        kind: EntryKind::Directory,
+        family: FileFamily::Generic,
+        identity: FileIdentity::default(),
+        is_hidden: false,
+        lock: LockState::Readable,
+    }
+}
+
+#[cfg(not(feature = "llama"))]
 #[test]
 fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     let worker = env!("CARGO_BIN_EXE_aifs-worker-llm");
@@ -83,6 +96,21 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
     assert_eq!(
         inbox.fact(aifs_domain::evidence::keys::CATEGORY),
         Some("Inbox")
+    );
+
+    let folder = dir_entry("Export");
+    let grouped = client
+        .categorize(dir.path(), &folder, vec![], vec![], FolderStyle::Consistent)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("grouping evidence"));
+    assert_eq!(
+        grouped.fact(aifs_domain::evidence::keys::DIRECTORY_GROUPING),
+        Some("camera_dump")
+    );
+    assert!(
+        grouped
+            .fact(aifs_domain::evidence::keys::DIRECTORY_GROUPING_REASON)
+            .is_some_and(|text| text.contains("Export"))
     );
 
     let image = file_entry("shot.jpg", FileFamily::Image);
