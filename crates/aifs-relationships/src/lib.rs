@@ -1,6 +1,7 @@
 //! Deterministic relationship detectors: projects, sidecars, series, archives, hard links.
 
 pub mod archives;
+mod folder_shape;
 pub mod hardlinks;
 pub mod projects;
 pub mod roles;
