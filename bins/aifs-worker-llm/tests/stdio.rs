@@ -22,6 +22,7 @@ fn file_entry(path: &str, family: FileFamily) -> ObservedEntry {
     }
 }
 
+#[cfg(not(feature = "llama"))]
 fn dir_entry(path: &str) -> ObservedEntry {
     ObservedEntry {
         id: AssetId::new(),
