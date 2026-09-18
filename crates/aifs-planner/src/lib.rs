@@ -9,6 +9,7 @@ use aifs_domain::{
     Placement, PlanId, PlanIssue, PlanIssueSeverity, PlannedOperation, ProposalRevision,
     RelativePath, RelativePathError, ReviewState, RevisionAuthor, SuggestionOrigin, Timestamp,
     WorkspaceSnapshot, category_date_suffix, escape_path_segment, evidence::keys,
+    is_generic_camera_stem,
 };
 use aifs_protocol::{CategoryWhitelist, FolderStyle, ProposalPolicy};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -31,7 +32,7 @@ pub fn propose(snapshot: &WorkspaceSnapshot, policy: &ProposalPolicy) -> Proposa
         destinations.insert(entry.id, destination_for(snapshot, entry, policy));
     }
 
-    apply_bundle_constraints(snapshot, &mut destinations);
+    apply_bundle_constraints(snapshot, policy, &mut destinations);
 
     for entry in snapshot
         .entries
@@ -80,6 +81,23 @@ fn destination_for(
             aifs_domain::DirectoryRoleKind::Library | aifs_domain::DirectoryRoleKind::WeakArchive
         )
     {
+        if matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
+            && is_generic_camera_stem(entry.stem())
+        {
+            let file_name = file_name_for(snapshot, entry, policy);
+            let destination = with_file_name(&entry.path, &file_name);
+            let origin = if destination == entry.path {
+                SuggestionOrigin::Unchanged
+            } else {
+                SuggestionOrigin::Heuristic
+            };
+            let rationale = if origin == SuggestionOrigin::Heuristic {
+                Some("rename generic camera filename".to_owned())
+            } else {
+                Some(role.reason.clone())
+            };
+            return (destination, origin, rationale);
+        }
         return (
             entry.path.clone(),
             SuggestionOrigin::Unchanged,
@@ -268,7 +286,7 @@ fn file_name_for(
     policy: &ProposalPolicy,
 ) -> String {
     let original = entry.path.file_name().to_owned();
-    let ext = entry.extension().unwrap_or_default();
+    let ext = original_extension(entry);
     if policy.rename_media
         && matches!(entry.family, FileFamily::Audio | FileFamily::Video)
         && let Some(title) = evidence_text(snapshot, entry.id, keys::MEDIA_TITLE)
@@ -284,11 +302,100 @@ fn file_name_for(
         };
         return with_extension(&stem, &ext, &original);
     }
+    if matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
+        && is_generic_camera_stem(entry.stem())
+    {
+        if let Some(name) = evidence_text(snapshot, entry.id, keys::SUGGESTED_NAME)
+            && let Some(stem) = usable_image_stem(&name)
+        {
+            return with_extension(&stem, &ext, &original);
+        }
+        if let Some(description) = evidence_text(snapshot, entry.id, keys::DESCRIPTION) {
+            let stem = slug_from_caption(&description);
+            if !stem.is_empty() && !is_generic_camera_stem(&stem) {
+                return with_extension(&stem, &ext, &original);
+            }
+        }
+    }
     original
+}
+
+const CAPTION_SLUG_WORDS: usize = 6;
+const CAPTION_SLUG_STOP: &[&str] = &[
+    "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "with",
+];
+
+fn slug_from_caption(text: &str) -> String {
+    let words: Vec<String> = text
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| word.len() >= 2)
+        .map(|word| word.to_ascii_lowercase())
+        .filter(|word| !CAPTION_SLUG_STOP.contains(&word.as_str()))
+        .take(CAPTION_SLUG_WORDS)
+        .collect();
+    if words.is_empty() {
+        String::new()
+    } else {
+        sanitize_segment(&words.join("-"), "")
+    }
+}
+
+fn usable_image_stem(suggested: &str) -> Option<String> {
+    let name = suggested.rsplit(['/', '\\']).next().unwrap_or(suggested);
+    let stem = strip_filename_extension(name);
+    let stem = sanitize_segment(stem, "");
+    if stem.is_empty() || is_generic_camera_stem(&stem) {
+        None
+    } else {
+        Some(stem)
+    }
+}
+
+fn strip_filename_extension(name: &str) -> &str {
+    let Some(index) = name.rfind('.') else {
+        return name;
+    };
+    if index == 0 {
+        return name;
+    }
+    let ext = &name[index + 1..];
+    let looks_like_ext =
+        (2..=4).contains(&ext.len()) && ext.chars().all(|ch| ch.is_ascii_alphanumeric());
+    if looks_like_ext { &name[..index] } else { name }
+}
+
+fn stem_from_file_name(name: &str) -> String {
+    match name.rfind('.') {
+        Some(index) if index > 0 => name[..index].to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
+fn with_file_name(path: &RelativePath, file_name: &str) -> RelativePath {
+    path.with_file_name(file_name)
+        .unwrap_or_else(|_| path.clone())
+}
+
+fn shared_rename_stem(
+    snapshot: &WorkspaceSnapshot,
+    members: &[AssetId],
+    policy: &ProposalPolicy,
+) -> Option<String> {
+    for id in members {
+        let Some(entry) = snapshot.entry(*id) else {
+            continue;
+        };
+        let name = file_name_for(snapshot, entry, policy);
+        if name != entry.path.file_name() {
+            return Some(stem_from_file_name(&name));
+        }
+    }
+    None
 }
 
 fn apply_bundle_constraints(
     snapshot: &WorkspaceSnapshot,
+    policy: &ProposalPolicy,
     destinations: &mut HashMap<AssetId, (RelativePath, SuggestionOrigin, Option<String>)>,
 ) {
     for bundle in &snapshot.bundles {
@@ -308,17 +415,27 @@ fn apply_bundle_constraints(
                 }
             }
             BundleConstraint::MoveTogether => {
-                let Some(anchor) = bundle.anchor.and_then(|id| destinations.get(&id)) else {
+                let Some(anchor_id) = bundle.anchor else {
+                    continue;
+                };
+                let Some(anchor) = destinations.get(&anchor_id).cloned() else {
                     continue;
                 };
                 let folder = anchor.0.parent().unwrap_or_else(|| anchor.0.clone());
+                let shared_stem = shared_rename_stem(snapshot, &bundle.members, policy);
                 let member_ids = bundle.members.clone();
                 for member in member_ids {
                     let Some(entry) = snapshot.entry(member) else {
                         continue;
                     };
+                    let file_name = match &shared_stem {
+                        Some(stem) => {
+                            with_extension(stem, &original_extension(entry), entry.path.file_name())
+                        }
+                        None => entry.path.file_name().to_owned(),
+                    };
                     let dest = folder
-                        .join(entry.path.file_name())
+                        .join(&file_name)
                         .unwrap_or_else(|_| entry.path.clone());
                     destinations.insert(
                         member,
@@ -338,13 +455,17 @@ fn apply_bundle_constraints(
                 else {
                     continue;
                 };
+                let new_root = preserve_layout_new_root(snapshot, anchor_id, &anchor_dest);
                 let member_ids = bundle.members.clone();
                 for member in member_ids {
                     let Some(entry) = snapshot.entry(member) else {
                         continue;
                     };
-                    let dest = relocate_under(root, &entry.path, &anchor_dest)
+                    let mut dest = relocate_under(root, &entry.path, &new_root)
                         .unwrap_or_else(|_| entry.path.clone());
+                    if entry.kind == EntryKind::File {
+                        dest = with_file_name(&dest, &file_name_for(snapshot, entry, policy));
+                    }
                     destinations.insert(
                         member,
                         (
@@ -393,6 +514,29 @@ fn sanitize_segment(value: &str, fallback: &str) -> String {
     } else {
         escaped.chars().take(80).collect()
     }
+}
+
+fn preserve_layout_new_root(
+    snapshot: &WorkspaceSnapshot,
+    anchor_id: AssetId,
+    anchor_dest: &RelativePath,
+) -> RelativePath {
+    if snapshot
+        .entry(anchor_id)
+        .is_some_and(|entry| entry.kind == EntryKind::File)
+    {
+        anchor_dest.parent().unwrap_or_else(|| anchor_dest.clone())
+    } else {
+        anchor_dest.clone()
+    }
+}
+
+fn original_extension(entry: &ObservedEntry) -> String {
+    let Some(ext) = entry.extension() else {
+        return String::new();
+    };
+    let name = entry.path.file_name();
+    name[name.len().saturating_sub(ext.len())..].to_owned()
 }
 
 fn with_extension(stem: &str, ext: &str, fallback: &str) -> String {
@@ -695,12 +839,16 @@ fn implied_layout_root(
     if rest.is_empty() {
         return Some(dest.clone());
     }
-    let suffix = format!("/{rest}");
-    let new_root = dest.as_str().strip_suffix(&suffix)?;
-    if new_root.is_empty() {
-        return None;
+    if let Some((rest_dir, _)) = rest.rsplit_once('/') {
+        let dest_dir = dest.parent()?;
+        let suffix = format!("/{rest_dir}");
+        let new_root = dest_dir.as_str().strip_suffix(&suffix)?;
+        if new_root.is_empty() {
+            return None;
+        }
+        return RelativePath::parse(new_root).ok();
     }
-    RelativePath::parse(new_root).ok()
+    dest.parent()
 }
 
 fn order_moves(
@@ -894,6 +1042,258 @@ mod tests {
         let revision = propose(&snapshot, &ProposalPolicy::default());
         let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
         assert_eq!(placement.destination.as_str(), "Music/tmp/clip.mp3");
+    }
+
+    #[test]
+    fn generic_camera_stems_rename_in_place_inside_a_library() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let generic = file("Wedding/IMG_001.jpg", FileFamily::Image);
+        let named = file("Wedding/ceremony-kiss.jpg", FileFamily::Image);
+        let generic_id = generic.id;
+        let named_id = named.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                generic_id,
+                EvidenceSource::LocalModel {
+                    model: "vision".into(),
+                },
+                Confidence::new(0.6),
+            )
+            .with_fact(keys::SUGGESTED_NAME, "bride-smiling.jpg")
+            .with_fact(keys::DESCRIPTION, "a bride smiling under an arch"),
+        );
+        snapshot.evidence.push(
+            Evidence::new(
+                named_id,
+                EvidenceSource::LocalModel {
+                    model: "vision".into(),
+                },
+                Confidence::new(0.6),
+            )
+            .with_fact(keys::DESCRIPTION, "the ceremony kiss"),
+        );
+        snapshot.entries.push(directory("Wedding"));
+        snapshot.entries.push(generic);
+        snapshot.entries.push(named);
+        let wedding = RelativePath::parse("Wedding").unwrap_or_else(|e| panic!("{e}"));
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: wedding.clone(),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "event album".into(),
+            });
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Wedding".into(),
+            members: vec![generic_id, named_id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout { root: wedding },
+            reason: "event album".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let renamed = revision
+            .placement(generic_id)
+            .unwrap_or_else(|| panic!("generic"));
+        assert_eq!(renamed.destination.as_str(), "Wedding/bride-smiling.jpg");
+        assert_eq!(renamed.origin, SuggestionOrigin::Heuristic);
+        let kept = revision
+            .placement(named_id)
+            .unwrap_or_else(|| panic!("named"));
+        assert_eq!(kept.destination.as_str(), "Wedding/ceremony-kiss.jpg");
+        assert_eq!(kept.origin, SuggestionOrigin::Unchanged);
+        let accepted = accept_all(&revision).unwrap_or_else(|e| panic!("{e}"));
+        let (plan, issues) = validate(&snapshot, &accepted);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != PlanIssueSeverity::Error),
+            "in-place rename must not split the album, got {issues:?}"
+        );
+        assert!(plan.is_some());
+    }
+
+    #[test]
+    fn generic_camera_stem_falls_back_to_caption_slug() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("Photos/DSC_0001.jpg", FileFamily::Image);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                id,
+                EvidenceSource::LocalModel {
+                    model: "vision".into(),
+                },
+                Confidence::new(0.6),
+            )
+            .with_fact(keys::DESCRIPTION, "a bride smiling under an arch"),
+        );
+        snapshot.entries.push(entry);
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Photos").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "library".into(),
+            });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(
+            placement.destination.as_str(),
+            "Photos/bride-smiling-under-arch.jpg"
+        );
+    }
+
+    #[test]
+    fn sidecar_family_shares_the_renamed_stem() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let raw = file("IMG_1.CR2", FileFamily::RawImage);
+        let jpeg = file("IMG_1.jpg", FileFamily::Image);
+        let raw_id = raw.id;
+        let jpeg_id = jpeg.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                jpeg_id,
+                EvidenceSource::LocalModel {
+                    model: "vision".into(),
+                },
+                Confidence::new(0.6),
+            )
+            .with_fact(keys::SUGGESTED_NAME, "bride-smiling.jpg"),
+        );
+        snapshot.entries.push(raw);
+        snapshot.entries.push(jpeg);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::SidecarGroup,
+            label: "IMG_1".into(),
+            members: vec![raw_id, jpeg_id],
+            anchor: Some(raw_id),
+            constraint: BundleConstraint::MoveTogether,
+            reason: "sidecar".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        assert_eq!(
+            revision
+                .placement(jpeg_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Pictures/bride-smiling.jpg")
+        );
+        assert_eq!(
+            revision
+                .placement(raw_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Pictures/bride-smiling.CR2")
+        );
+    }
+
+    #[test]
+    fn split_archive_parts_keep_original_names() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let first = file("foo.part1.rar", FileFamily::Archive);
+        let second = file("foo.part2.rar", FileFamily::Archive);
+        let first_id = first.id;
+        let second_id = second.id;
+        snapshot.entries.push(first);
+        snapshot.entries.push(second);
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::ArchiveParts,
+            label: "foo".into(),
+            members: vec![first_id, second_id],
+            anchor: Some(first_id),
+            constraint: BundleConstraint::MoveTogether,
+            reason: "split archive".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        assert_eq!(
+            revision
+                .placement(first_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Archives/foo.part1.rar")
+        );
+        assert_eq!(
+            revision
+                .placement(second_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Archives/foo.part2.rar")
+        );
+    }
+
+    #[test]
+    fn tagged_audio_inside_a_library_stays_put() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let entry = file("Music/Ada/night.mp3", FileFamily::Audio);
+        let id = entry.id;
+        snapshot.evidence.push(
+            Evidence::new(id, EvidenceSource::MediaTags, Confidence::CERTAIN)
+                .with_fact(keys::MEDIA_TITLE, "Night Drive")
+                .with_fact(keys::MEDIA_ARTIST, "Ada"),
+        );
+        snapshot.entries.push(entry);
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: RelativePath::parse("Music").unwrap_or_else(|e| panic!("{e}")),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "library".into(),
+            });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        let placement = revision.placement(id).unwrap_or_else(|| panic!("p"));
+        assert_eq!(placement.destination.as_str(), "Music/Ada/night.mp3");
+        assert_eq!(placement.origin, SuggestionOrigin::Unchanged);
+    }
+
+    #[test]
+    fn preserve_layout_file_anchor_renames_generic_stems() {
+        let mut snapshot = WorkspaceSnapshot::new(SessionId::new(), PathBuf::from("/tmp/in"));
+        let generic = file("Trip/IMG_001.jpg", FileFamily::Image);
+        let extra = file("Trip/IMG_002.jpg", FileFamily::Image);
+        let generic_id = generic.id;
+        let extra_id = extra.id;
+        snapshot.evidence.push(
+            Evidence::new(
+                generic_id,
+                EvidenceSource::LocalModel {
+                    model: "vision".into(),
+                },
+                Confidence::new(0.6),
+            )
+            .with_fact(keys::SUGGESTED_NAME, "v1.2-portrait.jpg"),
+        );
+        snapshot.entries.push(generic);
+        snapshot.entries.push(extra);
+        let trip = RelativePath::parse("Trip").unwrap_or_else(|e| panic!("{e}"));
+        snapshot
+            .directory_roles
+            .push(aifs_domain::DirectoryRoleMatch {
+                root: trip.clone(),
+                kind: aifs_domain::DirectoryRoleKind::Library,
+                reason: "event album".into(),
+            });
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Trip".into(),
+            members: vec![generic_id, extra_id],
+            anchor: Some(generic_id),
+            constraint: BundleConstraint::PreserveLayout { root: trip },
+            reason: "event album".into(),
+        });
+        let revision = propose(&snapshot, &ProposalPolicy::default());
+        assert_eq!(
+            revision
+                .placement(generic_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Trip/v1.2-portrait.jpg")
+        );
+        assert_eq!(
+            revision
+                .placement(extra_id)
+                .map(|placement| placement.destination.as_str()),
+            Some("Trip/IMG_002.jpg")
+        );
     }
 
     #[test]
