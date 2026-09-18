@@ -179,7 +179,9 @@ impl WorkspaceSnapshot {
             })
     }
 
-    /// True when describe/categorize should wait until a unit is broken up.
+    /// True when categorize should wait until a unit is broken up.
+    ///
+    /// Describe still captions generic camera stems inside a layout unit.
     pub fn defers_content_analysis(&self, entry: &ObservedEntry) -> bool {
         if entry.kind != crate::entry::EntryKind::File {
             return false;
