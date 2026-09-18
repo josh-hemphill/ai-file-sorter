@@ -2,7 +2,10 @@
 
 use crate::device::{requested_n_gpu_layers, resolve_device};
 use aifs_domain::evidence::keys;
-use aifs_domain::{Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry};
+use aifs_domain::{
+    Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry,
+    is_generic_camera_stem,
+};
 use aifs_protocol::{FolderStyle, ModelBackend};
 use aifs_worker_runtime::{LoadedModel, WorkerHandler};
 use std::path::Path;
@@ -118,19 +121,27 @@ impl WorkerHandler for StubHandler {
         if !matches!(entry.family, FileFamily::Image | FileFamily::RawImage) {
             return Ok(None);
         }
-        Ok(Some(
-            Evidence::new(
-                entry.id,
-                EvidenceSource::LocalModel {
-                    model: loaded.model.clone(),
-                },
-                Confidence::new(STUB_CONFIDENCE),
-            )
-            .with_fact(
-                keys::DESCRIPTION,
-                format!("stub vision description of {}", entry.path.as_str()),
-            ),
-        ))
+        let mut bag = Evidence::new(
+            entry.id,
+            EvidenceSource::LocalModel {
+                model: loaded.model.clone(),
+            },
+            Confidence::new(STUB_CONFIDENCE),
+        )
+        .with_fact(
+            keys::DESCRIPTION,
+            format!("stub vision description of {}", entry.path.as_str()),
+        );
+        if is_generic_camera_stem(entry.stem()) {
+            let ext = entry.extension().unwrap_or_default();
+            let name = if ext.is_empty() {
+                "described-image".to_owned()
+            } else {
+                format!("described-image.{ext}")
+            };
+            bag = bag.with_fact(keys::SUGGESTED_NAME, name);
+        }
+        Ok(Some(bag))
     }
 
     fn chat(&mut self, utterance: &str, _context: &str) -> Result<String, String> {

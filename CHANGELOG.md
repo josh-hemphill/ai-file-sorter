@@ -5,6 +5,8 @@
 - Describe captions generic camera filenames (`IMG_1042`, `DSC_0001`) inside a
   pre-organized album. Categorize still leaves the folder as a unit; named
   photos stay skipped.
+- Describe JSON may include `suggested_name` from subject, pose, or another
+  distinguishing element. Generic camera filenames get that hint in the user turn.
 - Scan keeps OEM-mangled names (`Padm\u{82}` / `H\u{94}chsten`) instead of skipping
   them; destination escaping decodes those C1 controls to Latin letters.
 - Image describe logs a truncated caption (`described shot.jpg · a red car…`).

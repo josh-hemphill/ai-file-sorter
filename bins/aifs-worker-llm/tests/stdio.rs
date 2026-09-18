@@ -123,6 +123,21 @@ fn llm_stub_loads_and_categorizes_without_gguf_bytes() {
             .fact(aifs_domain::evidence::keys::DESCRIPTION)
             .is_some_and(|text| text.contains("shot.jpg"))
     );
+    assert!(
+        described
+            .fact(aifs_domain::evidence::keys::SUGGESTED_NAME)
+            .is_none()
+    );
+
+    let camera = file_entry("IMG_1042.jpg", FileFamily::Image);
+    let camera_described = client
+        .describe(dir.path(), &camera, vec![])
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|| panic!("camera describe evidence"));
+    assert_eq!(
+        camera_described.fact(aifs_domain::evidence::keys::SUGGESTED_NAME),
+        Some("described-image.jpg")
+    );
 
     let reply = client
         .chat("group the podcasts", "")
