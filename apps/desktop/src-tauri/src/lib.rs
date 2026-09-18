@@ -2,9 +2,10 @@
 //! mutation happens in this process beyond spawning the engine.
 //!
 //! Engine I/O is blocking JSONL. Commands that wait on it run on Tokio's
-//! blocking pool so the WebView event loop stays free. Native folder dialogs
-//! and cancel stay on the UI thread (dialogs require it; cancel must not queue
-//! behind a download).
+//! blocking pool so the WebView event loop stays free. Folder pickers are
+//! async so `blocking_pick_folder` is not parked on the GTK/WebView thread
+//! (a sync picker deadlocks and the dialog never appears). Cancel stays on
+//! the UI thread so it is not queued behind a download.
 
 use aifs_domain::{
     ApplyJournal, JournalId, OperationPlan, PlanId, PlanIssue, ProposalRevision, RevisionAuthor,
@@ -177,11 +178,21 @@ async fn connect_engine(state: State<'_, EngineState>) -> Result<(), String> {
     run_blocking(move || ensure_client(&state)).await
 }
 
+/// Opens a native folder picker off the WebView/GTK thread.
+///
+/// `blocking_pick_folder` waits on a channel that the dialog callback fills.
+/// Sync Tauri commands run on the UI thread, so that wait never lets the
+/// dialog start. Async dispatch keeps the event loop free, matching the
+/// plugin's own `open` command.
 #[tauri::command]
-fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+async fn pick_folder(app: AppHandle, window: tauri::Window) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let picked = app.dialog().file().blocking_pick_folder();
-    Ok(picked.map(|path| path.to_string()))
+    let picked = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .blocking_pick_folder();
+    Ok(picked.map(|path| path.simplified().to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -800,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_io_commands_are_async_and_folder_dialog_stays_sync() {
+    fn engine_io_commands_and_folder_dialog_are_async() {
         let src = include_str!("lib.rs");
         let impl_src = src
             .split("#[cfg(test)]")
@@ -812,6 +823,7 @@ mod tests {
         );
         for name in [
             "connect_engine",
+            "pick_folder",
             "scan_root",
             "propose_session",
             "patch_revision",
@@ -833,8 +845,8 @@ mod tests {
             );
         }
         assert!(
-            impl_src.contains("fn pick_folder(") && !impl_src.contains("async fn pick_folder"),
-            "pick_folder must stay sync; native dialogs need the UI thread"
+            impl_src.contains("blocking_pick_folder"),
+            "pick_folder must use the plugin blocking picker from the async runtime"
         );
         assert!(
             impl_src.contains("fn cancel_in_flight(")
