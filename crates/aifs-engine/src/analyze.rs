@@ -6,7 +6,7 @@ use crate::checkpoint::{
 };
 use aifs_domain::{
     BundleConstraint, Confidence, EntryKind, Evidence, EvidenceSource, FileFamily, ObservedEntry,
-    WorkspaceSnapshot, evidence::keys, looks_like_screenshot,
+    WorkspaceSnapshot, evidence::keys, is_generic_camera_stem, looks_like_screenshot,
 };
 use aifs_protocol::{
     AppSettings, FolderStyle, ModelBackend, ModelInventory, ModelSlot, sanitize_hosted_text,
@@ -19,12 +19,16 @@ const DESCRIBE_LOG_CHARS: usize = 96;
 const GROUPING_CHILD_LIMIT: usize = 24;
 const GROUPING_STEM_LIMIT: usize = 12;
 
-/// Scan line when a layout unit is not described or categorized yet.
-pub(crate) fn deferred_unit_log(root: &str, files: usize) -> String {
-    format!(
-        "{} · deferred · {files} files stay in this folder as a unit",
-        aifs_domain::decode_oem_path(root)
-    )
+/// Scan line when a layout unit is not categorized yet.
+pub(crate) fn deferred_unit_log(root: &str, files: usize, described: usize) -> String {
+    let root = aifs_domain::decode_oem_path(root);
+    if described == 0 {
+        format!("{root} · deferred · {files} files stay in this folder as a unit")
+    } else {
+        format!(
+            "{root} · deferred · {files} files stay in this folder as a unit; {described} generic camera names still described"
+        )
+    }
 }
 
 /// Scan line for a finished image caption.
@@ -150,11 +154,7 @@ pub fn analyze_into_supervised(
                 let targets: Vec<ObservedEntry> = snapshot
                     .entries
                     .iter()
-                    .filter(|entry| {
-                        entry.kind == EntryKind::File
-                            && matches!(entry.family, FileFamily::Image | FileFamily::RawImage)
-                            && !snapshot.defers_content_analysis(entry)
-                    })
+                    .filter(|entry| should_describe_file(snapshot, entry))
                     .cloned()
                     .collect();
                 let total = targets.len() as u64;
@@ -596,6 +596,26 @@ fn should_include_in_document(entry: &ObservedEntry) -> bool {
     entry.kind == EntryKind::File && entry.family.is_document_like()
 }
 
+/// True when vision should caption this image, including generic camera stems in a layout unit.
+fn should_describe_file(snapshot: &WorkspaceSnapshot, entry: &ObservedEntry) -> bool {
+    if entry.kind != EntryKind::File {
+        return false;
+    }
+    if !matches!(entry.family, FileFamily::Image | FileFamily::RawImage) {
+        return false;
+    }
+    if snapshot
+        .hard_bundle_for(entry.id)
+        .is_some_and(aifs_domain::Bundle::is_protected)
+    {
+        return false;
+    }
+    if !snapshot.defers_content_analysis(entry) {
+        return true;
+    }
+    is_generic_camera_stem(entry.stem())
+}
+
 fn slot<'a>(models: &'a ModelInventory, id: &str) -> Option<&'a ModelSlot> {
     models.slots.iter().find(|slot| slot.id == id)
 }
@@ -681,15 +701,23 @@ fn log_deferred_units(snapshot: &WorkspaceSnapshot, on_notice: &mut impl FnMut(A
         let BundleConstraint::PreserveLayout { root } = &bundle.constraint else {
             continue;
         };
-        let files = snapshot
+        let files: Vec<_> = snapshot
             .entries
             .iter()
             .filter(|entry| entry.kind == EntryKind::File && entry.path.starts_with(root))
-            .count();
-        if files == 0 {
+            .collect();
+        if files.is_empty() {
             continue;
         }
-        on_notice(AnalyzeNotice::Log(deferred_unit_log(root.as_str(), files)));
+        let described = files
+            .iter()
+            .filter(|entry| should_describe_file(snapshot, entry))
+            .count();
+        on_notice(AnalyzeNotice::Log(deferred_unit_log(
+            root.as_str(),
+            files.len(),
+            described,
+        )));
     }
 }
 
@@ -777,8 +805,12 @@ mod tests {
             "described shot.jpg · ".chars().count() + DESCRIBE_LOG_CHARS
         );
         assert_eq!(
-            deferred_unit_log("Pictures", 133),
+            deferred_unit_log("Pictures", 133, 0),
             "Pictures · deferred · 133 files stay in this folder as a unit"
+        );
+        assert_eq!(
+            deferred_unit_log("Wedding", 20, 18),
+            "Wedding · deferred · 20 files stay in this folder as a unit; 18 generic camera names still described"
         );
     }
 
@@ -809,6 +841,72 @@ mod tests {
         assert!(should_include_in_document(&sheet));
         assert!(!should_include_in_document(&shot));
         assert!(!should_include_in_document(&song));
+    }
+
+    #[test]
+    fn describe_opens_generic_camera_stems_inside_a_layout_unit() {
+        let generic = file("Wedding/IMG_001.jpg", FileFamily::Image);
+        let named = file("Wedding/ceremony-kiss.jpg", FileFamily::Image);
+        let raw = file("Wedding/DSC_0001.CR2", FileFamily::RawImage);
+        let song = file("Wedding/song.mp3", FileFamily::Audio);
+        let mut snapshot = aifs_domain::WorkspaceSnapshot::new(
+            aifs_domain::SessionId::new(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        snapshot.entries = vec![generic.clone(), named.clone(), raw.clone(), song.clone()];
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Folder,
+            label: "Wedding".into(),
+            members: vec![generic.id, named.id, raw.id, song.id],
+            anchor: None,
+            constraint: BundleConstraint::PreserveLayout {
+                root: aifs_domain::RelativePath::parse("Wedding")
+                    .unwrap_or_else(|error| panic!("{error}")),
+            },
+            reason: "library".into(),
+        });
+        assert!(snapshot.defers_content_analysis(&generic));
+        assert!(snapshot.defers_content_analysis(&named));
+        assert!(should_describe_file(&snapshot, &generic));
+        assert!(should_describe_file(&snapshot, &raw));
+        assert!(!should_describe_file(&snapshot, &named));
+        assert!(!should_describe_file(&snapshot, &song));
+    }
+
+    #[test]
+    fn describe_still_skips_protected_camera_stems() {
+        let image = file("proj/IMG_001.jpg", FileFamily::Image);
+        let mut snapshot = aifs_domain::WorkspaceSnapshot::new(
+            aifs_domain::SessionId::new(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        snapshot.entries = vec![image.clone()];
+        snapshot.bundles.push(aifs_domain::Bundle {
+            id: aifs_domain::BundleId::new(),
+            kind: aifs_domain::BundleKind::Project,
+            label: "proj".into(),
+            members: vec![image.id],
+            anchor: Some(image.id),
+            constraint: BundleConstraint::Protected {
+                reason: "stable relative paths".into(),
+            },
+            reason: "project".into(),
+        });
+        assert!(snapshot.defers_content_analysis(&image));
+        assert!(!should_describe_file(&snapshot, &image));
+    }
+
+    #[test]
+    fn describe_still_opens_loose_named_images() {
+        let named = file("inbox/italy-sunset.jpg", FileFamily::Image);
+        let mut snapshot = aifs_domain::WorkspaceSnapshot::new(
+            aifs_domain::SessionId::new(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        snapshot.entries = vec![named.clone()];
+        assert!(!snapshot.defers_content_analysis(&named));
+        assert!(should_describe_file(&snapshot, &named));
     }
 
     #[test]

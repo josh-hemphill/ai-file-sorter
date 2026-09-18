@@ -2,6 +2,9 @@
 
 ## Unreleased (Rust rewrite fork)
 
+- Describe captions generic camera filenames (`IMG_1042`, `DSC_0001`) inside a
+  pre-organized album. Categorize still leaves the folder as a unit; named
+  photos stay skipped.
 - Scan keeps OEM-mangled names (`Padm\u{82}` / `H\u{94}chsten`) instead of skipping
   them; destination escaping decodes those C1 controls to Latin letters.
 - Image describe logs a truncated caption (`described shot.jpg · a red car…`).
