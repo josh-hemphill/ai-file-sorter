@@ -7,6 +7,10 @@
   photos stay skipped.
 - Describe JSON may include `suggested_name` from subject, pose, or another
   distinguishing element. Generic camera filenames get that hint in the user turn.
+- Heuristic propose renames generic camera stems in place inside a library
+  (`Wedding/IMG_001.jpg` → `Wedding/bride-smiling.jpg`) from `suggested_name` or
+  a caption slug. Named photos and folder layout stay put; RAW/JPEG sidecars
+  share the new stem.
 - Scan keeps OEM-mangled names (`Padm\u{82}` / `H\u{94}chsten`) instead of skipping
   them; destination escaping decodes those C1 controls to Latin letters.
 - Image describe logs a truncated caption (`described shot.jpg · a red car…`).
