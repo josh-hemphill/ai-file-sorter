@@ -25,8 +25,10 @@ Rules:
   engine over the protocol in `crates/aifs-protocol`.
 - Tauri commands that wait on the engine (scan, download, chat, settings, models) run on
   a blocking worker thread. Progress and log events are emitted from that thread so the
-  WebView can paint. Native folder dialogs stay on the UI thread. `cancel` is a short
-  stdin write on the UI thread so it is not queued behind a download.
+  WebView can paint. Folder pickers are async commands that call `blocking_pick_folder`
+  off the GTK/WebView thread; a sync picker deadlocks the event loop and the dialog never
+  appears. `cancel` is a short stdin write on the UI thread so it is not queued behind a
+  download.
 - The Tauri shell launches a fixed engine binary with scoped capabilities. Release builds
   fail loudly if the engine is missing; there is no in-process fallback. Packaged apps
   embed `aifs-engine` and the extract workers (`media`, `document`, `vision`) as Tauri

@@ -2,6 +2,9 @@
 
 ## Unreleased (Rust rewrite fork)
 
+- Browse for a source folder no longer freezes the desktop window. The native
+  picker runs as an async Tauri command so GTK/WebView can keep pumping events
+  while the dialog is open.
 - Scan keeps OEM-mangled names (`Padm\u{82}` / `H\u{94}chsten`) instead of skipping
   them; destination escaping decodes those C1 controls to Latin letters.
 - Image describe logs a truncated caption (`described shot.jpg · a red car…`).
