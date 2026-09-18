@@ -1,6 +1,6 @@
 //! Shape of a folder: camera dump, date/event album, or named library.
 
-use aifs_domain::{FileFamily, ObservedEntry, RelativePath};
+use aifs_domain::{FileFamily, ObservedEntry, RelativePath, is_generic_camera_stem};
 
 pub(crate) const LIBRARY_NAMES: &[&str] = &[
     "music", "photos", "pictures", "videos", "movies", "library", "media",
@@ -46,10 +46,6 @@ const GENERIC_FOLDER_NAMES: &[&str] = &[
     "input",
     "cache",
     "logs",
-];
-
-const CAMERA_STEM_PREFIXES: &[&str] = &[
-    "img_", "img-", "dsc_", "dscn", "dsc", "pxl_", "mvimg_", "photo_", "vid_", "mov_", "mvi_",
 ];
 
 /// How a directory looks before any model label is applied.
@@ -155,28 +151,7 @@ pub(crate) fn is_event_folder_name(name: &str) -> bool {
 
 /// Camera-generated file stem (`IMG_1042`, `PXL_20260915_123`, `DSC01234`).
 pub(crate) fn is_camera_stem(stem: &str) -> bool {
-    let stem = stem.to_ascii_lowercase();
-    if stem.contains("-wa") && stem.starts_with("img-") {
-        return true;
-    }
-    if let Some(rest) = stem.strip_prefix("burst") {
-        let rest = rest.trim_start_matches(['_', '-']);
-        if rest_is_camera_sequence(rest) {
-            return true;
-        }
-    }
-    CAMERA_STEM_PREFIXES.iter().any(|prefix| {
-        stem.strip_prefix(prefix)
-            .is_some_and(rest_is_camera_sequence)
-    })
-}
-
-fn rest_is_camera_sequence(rest: &str) -> bool {
-    let mut chars = rest.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_digit() && chars.all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-')
+    is_generic_camera_stem(stem)
 }
 
 pub(crate) fn is_year_name(name: &str) -> bool {

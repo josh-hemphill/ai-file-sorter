@@ -45,10 +45,20 @@ would be the next step if paged context is still too coarse.
 
 ## Scan-time deferral
 
-Describe and categorize skip files inside a layout unit and log
+Categorize still skips files inside a layout unit so the folder is not
+sorted file-by-file. Describe now captions **generic camera filenames**
+(`IMG_1042`, `DSC_0001`, `PXL_…`) inside those units so a photoshoot
+album can keep its folders while the images get usable names later.
 
-`Pictures · deferred · 133 files stay in this folder as a unit`.
+The scan log is
 
-Extract (tags/EXIF) still runs so unit summaries and later inspect/search have
-facts. Uncheck **Reuse previous analysis** (or pass `--fresh`) when you want
-those workers to run again from scratch.
+`Pictures · deferred · 133 files stay in this folder as a unit`
+
+and, when generic camera stems are present,
+
+`Wedding · deferred · 20 files stay in this folder as a unit; 18 generic camera names still described`.
+
+Named photos (`ceremony-kiss.jpg`) stay deferred. Extract (tags/EXIF)
+still runs so unit summaries and later inspect/search have facts. Uncheck
+**Reuse previous analysis** (or pass `--fresh`) when you want those
+workers to run again from scratch.

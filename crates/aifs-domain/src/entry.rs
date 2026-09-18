@@ -138,6 +138,36 @@ pub fn category_date_suffix(entry: &ObservedEntry, captured_on: Option<&str>) ->
         .and_then(|stamp| utc_year_month_label(stamp.as_millis()))
 }
 
+const CAMERA_STEM_PREFIXES: &[&str] = &[
+    "img_", "img-", "dsc_", "dscn", "dsc", "pxl_", "mvimg_", "photo_", "vid_", "mov_", "mvi_",
+];
+
+/// Camera-generated file stem (`IMG_1042`, `PXL_20260915_123`, `DSC01234`).
+pub fn is_generic_camera_stem(stem: &str) -> bool {
+    let stem = stem.to_ascii_lowercase();
+    if stem.contains("-wa") && stem.starts_with("img-") {
+        return true;
+    }
+    if let Some(rest) = stem.strip_prefix("burst") {
+        let rest = rest.trim_start_matches(['_', '-']);
+        if rest_is_camera_sequence(rest) {
+            return true;
+        }
+    }
+    CAMERA_STEM_PREFIXES.iter().any(|prefix| {
+        stem.strip_prefix(prefix)
+            .is_some_and(rest_is_camera_sequence)
+    })
+}
+
+fn rest_is_camera_sequence(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_digit() && chars.all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '-')
+}
+
 /// True when the file name looks like a screenshot or UI capture.
 pub fn filename_looks_like_screenshot(file_name: &str) -> bool {
     let name = file_name.to_ascii_lowercase();
@@ -333,6 +363,22 @@ mod tests {
         };
         assert_eq!(entry.extension(), None);
         assert_eq!(entry.stem(), ".bashrc");
+    }
+
+    #[test]
+    fn camera_stems_match_common_makers() {
+        assert!(is_generic_camera_stem("IMG_1042"));
+        assert!(is_generic_camera_stem("DSC01234"));
+        assert!(is_generic_camera_stem("PXL_20260915_123456"));
+        assert!(is_generic_camera_stem("IMG-20260915-WA0001"));
+        assert!(is_generic_camera_stem("VID_0001"));
+        assert!(is_generic_camera_stem("BURST_0001"));
+        assert!(!is_generic_camera_stem("Italy-sunset"));
+        assert!(!is_generic_camera_stem("cover"));
+        assert!(!is_generic_camera_stem("video_1"));
+        assert!(!is_generic_camera_stem("movie_1"));
+        assert!(!is_generic_camera_stem("description1"));
+        assert!(!is_generic_camera_stem("photo_album1"));
     }
 
     #[test]
