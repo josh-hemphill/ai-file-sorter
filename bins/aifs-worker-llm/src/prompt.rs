@@ -1,6 +1,9 @@
 //! Prompts for local infer. Model output is evidence, never a path or SQL.
 
-use aifs_domain::{EntryKind, Evidence, ObservedEntry, evidence::keys, looks_like_screenshot};
+use aifs_domain::{
+    EntryKind, Evidence, ObservedEntry, evidence::keys, is_generic_camera_stem,
+    looks_like_screenshot,
+};
 use aifs_protocol::FolderStyle;
 
 const EVIDENCE_CHARS: usize = 1500;
@@ -26,13 +29,19 @@ grouping is one of those labels, never a path. Do not invent SQL or filesystem c
 pub const DESCRIBE_SYSTEM: &str = "You describe an image for a desktop organizer. \
 When a bitmap is attached, use what you see plus filename and EXIF facts. \
 When no bitmap is attached, use only the filename and EXIF facts. \
-Reply with one JSON object only: {\"description\":\"short caption\"}. \
+Reply with one JSON object only: \
+{\"description\":\"short caption\",\"suggested_name\":\"subject-or-pose.ext\"}. \
+suggested_name is a filename only, from subject, pose, or a distinguishing element. \
+Keep the original extension. Do not keep generic camera stems such as IMG_, DSC, or PXL. \
 Do not invent SQL or filesystem commands.";
 
 /// System prompt for hosted describe. Pixels are never uploaded.
 pub const DESCRIBE_SYSTEM_TEXT: &str = "You describe an image for a desktop organizer. \
 Use only the filename, path, and any EXIF or metadata facts. \
-Reply with one JSON object only: {\"description\":\"short caption\"}. \
+Reply with one JSON object only: \
+{\"description\":\"short caption\",\"suggested_name\":\"subject-or-pose.ext\"}. \
+suggested_name is a filename only, from subject, pose, or a distinguishing element. \
+Keep the original extension. Do not keep generic camera stems such as IMG_, DSC, or PXL. \
 Do not invent SQL or filesystem commands.";
 
 /// System prompt for assistant chat. Patches are JSON; the engine applies them.
@@ -125,12 +134,18 @@ pub fn grouping_user(entry: &ObservedEntry, evidence: &[Evidence]) -> String {
 
 /// Builds the user turn for describe.
 pub fn describe_user(entry: &ObservedEntry, evidence: &[Evidence]) -> String {
-    format!(
+    let mut user = format!(
         "Relative path: {}\nFamily: {:?}\n{}",
         entry.path.as_str(),
         entry.family,
         format_evidence(evidence)
-    )
+    );
+    if is_generic_camera_stem(entry.stem()) {
+        user.push_str(
+            "\nFilename is a generic camera name. suggested_name should identify the subject, pose, or another distinguishing element. Keep the original extension.",
+        );
+    }
+    user
 }
 
 fn format_evidence(evidence: &[Evidence]) -> String {
@@ -312,12 +327,22 @@ mod tests {
         assert!(CATEGORIZE_SYSTEM.contains("JSON"));
         assert!(DESCRIBE_SYSTEM.contains("EXIF"));
         assert!(DESCRIBE_SYSTEM.contains("bitmap"));
+        assert!(DESCRIBE_SYSTEM.contains("suggested_name"));
+        assert!(DESCRIBE_SYSTEM.contains("subject, pose"));
         assert!(DESCRIBE_SYSTEM_TEXT.contains("EXIF"));
+        assert!(DESCRIBE_SYSTEM_TEXT.contains("suggested_name"));
         assert!(!DESCRIBE_SYSTEM_TEXT.contains("bitmap"));
         assert!(CHAT_SYSTEM.contains("SQL"));
         assert!(CHAT_SYSTEM.contains("patches"));
         let described = describe_user(&entry, &[]);
         assert!(described.contains("notes.txt"));
+        let camera = file("IMG_1042.jpg", aifs_domain::FileFamily::Image);
+        let camera_user = describe_user(&camera, &[]);
+        assert!(camera_user.contains("generic camera name"));
+        assert!(camera_user.contains("suggested_name"));
+        let named = file("ceremony-kiss.jpg", aifs_domain::FileFamily::Image);
+        let named_user = describe_user(&named, &[]);
+        assert!(!named_user.contains("generic camera name"));
     }
 
     #[test]
